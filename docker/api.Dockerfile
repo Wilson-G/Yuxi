@@ -56,3 +56,7 @@ RUN uv sync --no-cache --group test --no-dev --frozen
 
 # 复制 server 代码
 COPY backend/server /app/server
+
+EXPOSE 5050
+
+CMD ["sh", "-c", "if [ \"${YUXI_PROCESS_TYPE:-api}\" = worker ]; then exec uv run --no-sync --no-dev arq server.worker_main.WorkerSettings; else exec uv run --no-sync --no-dev uvicorn server.main:app --host 0.0.0.0 --port ${PORT:-5050}; fi"]
