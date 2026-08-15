@@ -47,5 +47,6 @@ RUN find /usr/share/nginx/html -type d -exec chmod 755 {} \; \
 COPY ./docker/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY ./docker/nginx/default.conf /etc/nginx/templates/default.conf.template
 COPY ./docker/nginx/05-resolver.envsh /docker-entrypoint.d/05-resolver.envsh
+RUN chmod +x /docker-entrypoint.d/05-resolver.envsh
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
