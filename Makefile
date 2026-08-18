@@ -1,5 +1,5 @@
 
-.PHONY: up up-lite down logs lint format seed reset
+.PHONY: up up-lite up-legacy-knowledge down logs lint format seed reset
 
 PYTEST_ARGS ?=
 BACKEND_PYTHON ?= $(shell cat backend/.python-version)
@@ -32,6 +32,13 @@ up-lite:
 		exit 1; \
 	fi
 	LITE_MODE=true VITE_USE_RUNS_API=false docker compose up -d postgres redis minio api web
+
+up-legacy-knowledge:
+	@if [ ! -f .env ]; then \
+		echo "Error: .env file not found. Please create it from .env.template"; \
+		exit 1; \
+	fi
+	YUXI_EXPERT_MODE=false LITE_MODE=false docker compose --profile legacy-knowledge up -d
 
 logs:
 	@docker logs --tail=50 api-dev

@@ -73,6 +73,49 @@ async def test_resolve_runtime_skills_derives_prompt_and_readable_closure(monkey
 
 
 @pytest.mark.asyncio
+async def test_resolve_runtime_skills_hides_legacy_knowledge_skill_in_expert_mode(monkeypatch):
+    async def fake_list_skills_from_db(db=None, user=None):
+        del db, user
+        return [
+            SimpleNamespace(
+                slug="knowledge-base",
+                name="Knowledge Base",
+                description="legacy",
+                source_scope="shared",
+                source_dir="/tmp/shared/knowledge-base",
+                tool_dependencies=["query_kb"],
+                mcp_dependencies=[],
+                skill_dependencies=[],
+            ),
+            SimpleNamespace(
+                slug="expert-guide",
+                name="Expert Guide",
+                description="expert",
+                source_scope="shared",
+                source_dir="/tmp/shared/expert-guide",
+                tool_dependencies=[],
+                mcp_dependencies=[],
+                skill_dependencies=[],
+            ),
+        ]
+
+    monkeypatch.setattr(skills_middleware, "_list_skills_from_db", fake_list_skills_from_db)
+    monkeypatch.setenv("YUXI_EXPERT_MODE", "true")
+    monkeypatch.setenv("LITE_MODE", "true")
+
+    expert_scope = await resolve_runtime_skills_for_context(SimpleNamespace(skills=None))
+
+    assert set(expert_scope["runtime_skill_metadata"]) == {"expert-guide"}
+    assert "knowledge-base" not in expert_scope["runtime_skill_dependency_map"]
+
+    monkeypatch.setenv("YUXI_EXPERT_MODE", "false")
+    monkeypatch.setenv("LITE_MODE", "false")
+    legacy_scope = await resolve_runtime_skills_for_context(SimpleNamespace(skills=["knowledge-base"]))
+
+    assert legacy_scope["context_skills"] == ["knowledge-base"]
+
+
+@pytest.mark.asyncio
 async def test_skills_prompt_uses_prepared_prompt_skills_at_request_level():
     context = SimpleNamespace(
         system_prompt="context base",

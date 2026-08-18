@@ -12,6 +12,12 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.agents.skills.service import init_builtin_skills
+from yuxi.expert.service import (
+    compile_expert_package,
+    compile_expert_package_with_prime,
+    mark_expert_package_failed,
+    update_expert_package,
+)
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.agent_request_queue_service import (
     RUN_STATUS_TO_DELIVERY_STATUS,
@@ -36,6 +42,41 @@ LOADING_FLUSH_INTERVAL_MS = 100
 LOADING_FLUSH_MAX_CHARS = 512
 RUN_CANCEL_POLL_SECONDS = 0.2
 SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
+
+
+class ExpertCompileContext:
+    """为专家编译 Worker 提供进度和取消检查。"""
+
+    def __init__(self, package_id: str, task_id: str):
+        self.package_id = package_id
+        self.task_id = task_id
+
+    async def set_progress(self, progress: float, message: str | None = None) -> None:
+        await asyncio.to_thread(
+            update_expert_package,
+            self.package_id,
+            progress=max(0, min(float(progress), 100)),
+            message=message or "",
+        )
+
+    async def raise_if_cancelled(self) -> None:
+        return None
+
+
+async def process_expert_package_compile(ctx, package_id: str, task_id: str, compiler: str = "quick"):
+    """在可恢复 ARQ Worker 中执行专家包编译。"""
+
+    del ctx
+    try:
+        context = ExpertCompileContext(package_id, task_id)
+        if compiler == "quick":
+            return await compile_expert_package(package_id, context)
+        if compiler == "prime":
+            return await compile_expert_package_with_prime(package_id, context)
+        raise ValueError(f"不支持的专家编译器: {compiler}")
+    except Exception as error:
+        await asyncio.to_thread(mark_expert_package_failed, package_id, str(error))
+        raise
 
 
 class RetryableRunError(Exception):
@@ -752,7 +793,7 @@ async def _worker_shutdown(ctx):
 
 
 class WorkerSettings:
-    functions = [process_agent_run]
+    functions = [process_agent_run, process_expert_package_compile]
     max_tries = 2
     retry_jobs = True
     # 单任务最长执行时间（秒），可配置：超长图谱构建/深度检索场景需调大，

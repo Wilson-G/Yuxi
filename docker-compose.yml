@@ -1,6 +1,7 @@
 x-api-worker-env: &api-worker-env
   HOST_IP: ${HOST_IP:-}
-  LITE_MODE: ${LITE_MODE:-false}
+  LITE_MODE: ${LITE_MODE:-true}
+  YUXI_EXPERT_MODE: ${YUXI_EXPERT_MODE:-true}
   RUNNING_IN_DOCKER: "true"
   YUXI_ENV: development
   LANGGRAPH_CHECKPOINTER_BACKEND: ${LANGGRAPH_CHECKPOINTER_BACKEND:-postgres}
@@ -34,6 +35,9 @@ x-api-worker-env: &api-worker-env
   RUN_EVENTS_STREAM_TTL_SECONDS: ${RUN_EVENTS_STREAM_TTL_SECONDS:-7200}
   YUXI_CORS_ORIGINS: ${YUXI_CORS_ORIGINS:-}
   YUXI_DATASET_PERSIST_BATCH_SIZE: ${YUXI_DATASET_PERSIST_BATCH_SIZE:-1}
+  PRIME_AGENT_COMMAND: ${PRIME_AGENT_COMMAND:-prime-agent}
+  PRIME_AGENT_PROVIDER: ${PRIME_AGENT_PROVIDER:-}
+  PRIME_AGENT_MODEL: ${PRIME_AGENT_MODEL:-}
   # 其他环境变量
   NO_PROXY: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn
   no_proxy: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn
@@ -56,6 +60,7 @@ services:
       - ./docker/sandbox_provisioner:/app/docker/sandbox_provisioner:ro
       - ./.env:/app/.env
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${PRIME_AGENT_HOST_DIR:-/tmp/yuxi-prime-agent-empty}:/opt/prime-agent-host:ro
       - nltk_data:/root/nltk_data  # 使用命名卷持久化NLTK数据，避免路径展开差异
     ports:
       - "5050:5050"
@@ -106,6 +111,7 @@ services:
       - ./backend/pyproject.toml:/app/pyproject.toml
       - ./backend/uv.lock:/app/uv.lock
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${PRIME_AGENT_HOST_DIR:-/tmp/yuxi-prime-agent-empty}:/opt/prime-agent-host:ro
     networks:
       - app-network
     extra_hosts:
@@ -203,11 +209,13 @@ services:
       - VITE_API_URL=http://api:5050
       - VITE_USE_RUNS_API=${VITE_USE_RUNS_API:-false}
       - VITE_LITE_MODE=${LITE_MODE:-}
+      - VITE_EXPERT_MODE=${YUXI_EXPERT_MODE:-true}
     command: pnpm run server
     restart: unless-stopped
 
   # region neo4j
   graph:
+    profiles: ["legacy-knowledge"]
     image: neo4j:5.26
     container_name: graph
     ports:
@@ -233,6 +241,7 @@ services:
   # endregion neo4j
 
   etcd:
+    profiles: ["legacy-knowledge"]
     container_name: milvus-etcd-dev
     image: quay.io/coreos/etcd:v3.5.5
     environment:
@@ -277,6 +286,7 @@ services:
     restart: unless-stopped
 
   milvus:
+    profiles: ["legacy-knowledge"]
     image: milvusdb/milvus:v2.5.6
     container_name: milvus
     command: ["milvus", "run", "standalone"]

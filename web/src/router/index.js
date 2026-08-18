@@ -112,16 +112,6 @@ const router = createRouter({
           },
           children: [
             {
-              path: 'knowledgebase/:kbId',
-              name: 'ExtensionKnowledgeBaseDetail',
-              component: () => import('../views/DataBaseInfoView.vue'),
-              meta: {
-                keepAlive: false,
-                requiresAuth: true,
-                requiresAdmin: true
-              }
-            },
-            {
               path: 'mcp/:slug',
               name: 'ExtensionMcpDetail',
               component: () => import('../components/extensions/McpDetailView.vue'),

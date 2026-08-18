@@ -16,7 +16,12 @@ from yuxi.agents.skills.service import (
     normalize_string_list,
     sync_thread_readable_skills_async,
 )
-from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS, VIRTUAL_PATH_OUTPUTS
+from yuxi.utils.paths import (
+    VIRTUAL_PATH_CONVERSATION_HISTORY,
+    VIRTUAL_PATH_LARGE_TOOL_RESULTS,
+    VIRTUAL_PATH_OUTPUTS,
+    VIRTUAL_SKILLS_PATH,
+)
 
 from .sandbox import ProvisionerSandboxBackend
 from .skills_backend import SelectedSkillsReadonlyBackend
@@ -183,7 +188,7 @@ class _BackendScope:
                 skills_thread_id=self.skills_thread_id,
             ),
             routes={
-                "/skills/": SelectedSkillsReadonlyBackend(
+                f"{VIRTUAL_SKILLS_PATH}/": SelectedSkillsReadonlyBackend(
                     selected_slugs=list(self.skill_sources),
                     root_dir=thread_skills_root,
                 ),

@@ -27,6 +27,7 @@ from yuxi.config import get_save_dir
 from yuxi.permissions import ResourcePermission, normalize_permission_config, resolve_skill_permission
 from yuxi.storage.postgres.models_business import Skill, User
 from yuxi.storage.redis import get_async_redis_client
+from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import ensure_within_root
 
@@ -1492,6 +1493,49 @@ async def import_skill_dir(
     )
 
 
+async def replace_skill_dir(
+    db: AsyncSession,
+    *,
+    slug: str,
+    source_dir: Path | str,
+    updated_by: str | None,
+    version: str | None = None,
+    content_hash: str | None = None,
+) -> Skill:
+    """原子替换已有 Skill 的文件，并同步其数据库元数据。"""
+
+    source_skill_dir = Path(source_dir).resolve()
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    if not source_skill_dir.is_relative_to(tmp_root):
+        raise ValueError("技能目录路径不合法")
+    if not source_skill_dir.is_dir():
+        raise ValueError("技能目录不存在")
+
+    repo = SkillRepository(db)
+    item = await repo.get_by_slug(slug, for_update=True)
+    if item is None:
+        raise ValueError(f"技能 '{slug}' 不存在")
+    _ensure_non_builtin(item)
+    parsed = _parse_skill_dir_metadata(source_skill_dir)
+    if parsed["slug"] != slug:
+        raise ValueError("替换 Skill 的 slug 必须保持不变")
+
+    target_dir = _resolve_skill_dir(item)
+    await asyncio.to_thread(_replace_skill_target, target_dir, source_skill_dir)
+    item.name = parsed["name"]
+    item.description = parsed["description"]
+    item.tool_dependencies = parsed["tool_dependencies"]
+    item.mcp_dependencies = parsed["mcp_dependencies"]
+    item.skill_dependencies = parsed["skill_dependencies"]
+    item.version = version
+    item.content_hash = content_hash
+    item.updated_by = updated_by
+    item.updated_at = utc_now_naive()
+    await db.commit()
+    await db.refresh(item)
+    return item
+
+
 async def get_skill_or_raise(db: AsyncSession, slug: str) -> Skill:
     slug = slug.strip() if isinstance(slug, str) else ""
     if not is_valid_skill_slug(slug):
@@ -1767,10 +1811,15 @@ def list_builtin_skill_specs() -> list[dict[str, Any]]:
 
 
 async def init_builtin_skills(db: AsyncSession, *, created_by: str = "system") -> list[Skill]:
+    from yuxi.runtime_mode import expert_mode_enabled
+
     repo = SkillRepository(db)
     synced_items: list[Skill] = []
+    specs = list_builtin_skill_specs()
+    if expert_mode_enabled():
+        specs = [spec for spec in specs if spec["slug"] != "knowledge-base"]
 
-    for spec in list_builtin_skill_specs():
+    for spec in specs:
         slug = spec["slug"]
         existing = await repo.get_by_slug(slug)
         if existing and not is_builtin_skill(existing):

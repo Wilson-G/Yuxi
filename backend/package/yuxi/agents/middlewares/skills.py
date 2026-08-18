@@ -155,6 +155,10 @@ def expand_skill_closure(
 
 async def resolve_runtime_skills_for_context(context, *, db: AsyncSession | None = None, user=None) -> dict[str, Any]:
     skill_items = await _list_skills_from_db(db, user)
+    from yuxi.runtime_mode import legacy_knowledge_enabled
+
+    if not legacy_knowledge_enabled():
+        skill_items = [skill for skill in skill_items if skill.slug != "knowledge-base"]
     dependency_map = build_dependency_map(skill_items)
     prompt_metadata = build_prompt_metadata(skill_items)
     available = set(dependency_map)

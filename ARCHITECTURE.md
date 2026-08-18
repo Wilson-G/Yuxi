@@ -8,6 +8,8 @@
 
 Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平台。用户通过 Vue 前端管理智能体、知识库、模型、工具、Skills、MCP 与 SubAgents；前端通过 `/api` 调用 FastAPI；后端服务层协调 PostgreSQL、Redis、MinIO、Milvus、Neo4j、LangGraph 和沙盒。
 
+当前默认运行路线是专家 Skill 模式（`YUXI_EXPERT_MODE=true`）：用户通过 `/api/experts` 上传 Markdown 材料包，后台生成自包含 Skill、目录和轻量检索索引；运行时 Agent 先调用 `expert_search` 定位原文，再用文件工具精读并回答。专家编译可通过 `?compiler=prime` 使用宿主机 Prime Agent 的 ACP stdio 会话生成 `method.md`。旧知识库、图谱、评估和工作区知识库路径只有在显式关闭专家模式并关闭 LITE 模式后才注册。
+
 普通智能体请求先在 PostgreSQL 中保存为请求和消息，再立即派发或进入线程级 FIFO 队列。派发后的 `AgentRun` 通过 Redis/ARQ 交给独立 worker 执行，运行事件写入 Redis Stream，最终状态和业务记录写回 PostgreSQL，前端通过 SSE 消费排队与运行事件。
 
 核心开发服务包括：
@@ -35,6 +37,8 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
 `LITE_MODE` 下保留认证、智能体、聊天、Skills、MCP、模型、工作区和系统管理接口，但不注册 `external_kb`、`knowledge`、`evaluation` 和 `graph` 路由，也不初始化知识库管理器。
+
+专家模式进一步只初始化业务表，并默认不启动 Milvus、etcd、Neo4j；兼容旧知识库时使用 `YUXI_EXPERT_MODE=false LITE_MODE=false make up-legacy-knowledge`。
 
 ### `backend/package/yuxi`
 
@@ -99,6 +103,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 - PostgreSQL 保存业务事实状态；Redis 承担投递、事件、取消和缓存，不作为 AgentRun 最终状态的唯一来源。
 - 前端 API 调用集中在 `web/src/apis`，组件不要散落拼接普通 HTTP 接口。
 - 智能体能力通过 context、middleware、toolkits、Skills、MCP 和 backends 组合；不要把知识库、沙盒或扩展逻辑硬编码进单个页面或路由。
+- 专家材料包是文件事实源，不进入向量库。`backend/package/yuxi/expert` 负责材料保存、快速/Prime ACP 编译和索引；`expert_search` 只做确定性候选召回，领域判断仍由 Agent 完成。
 - Skill 依赖工具只有在对应 Skill 激活后才对模型开放；基础工具与受 Skill 门控的工具要保持边界。
 - LITE 模式必须允许跳过知识库、图谱和评估等重依赖能力，新增导入、路由和启动逻辑时要尊重该边界。
 - 沙盒虚拟路径以 `SANDBOX_VIRTUAL_PATH_PREFIX` 为边界，用户可见路径、对象存储 URL 与宿主机真实路径不能混用。

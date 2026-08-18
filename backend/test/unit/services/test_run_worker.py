@@ -37,6 +37,24 @@ class _BytesAsyncIter:
         return value
 
 
+@pytest.mark.asyncio
+async def test_expert_compile_context_only_updates_progress(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+
+    def fake_update(package_id: str, **changes):
+        captured["package_id"] = package_id
+        captured["changes"] = changes
+
+    monkeypatch.setattr(run_worker, "update_expert_package", fake_update)
+
+    await run_worker.ExpertCompileContext("expert-test", "task-test").set_progress(100, "已完成")
+
+    assert captured == {
+        "package_id": "expert-test",
+        "changes": {"progress": 100.0, "message": "已完成"},
+    }
+
+
 def _build_run() -> SimpleNamespace:
     return SimpleNamespace(
         id="run-1",

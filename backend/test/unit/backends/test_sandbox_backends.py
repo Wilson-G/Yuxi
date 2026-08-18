@@ -22,7 +22,7 @@ from yuxi.agents.backends.composite import (
 from yuxi.agents.backends.sandbox import ProvisionerSandboxProvider, resolve_virtual_path, sandbox_id_for_thread
 from yuxi.agents.backends.sandbox.backend import ProvisionerSandboxBackend
 from yuxi.agents.middlewares.skills import SkillsMiddleware
-from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS
+from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS, VIRTUAL_SKILLS_PATH
 
 
 def _runtime(
@@ -72,8 +72,25 @@ def test_create_agent_composite_backend_uses_prepared_readable_skills(monkeypatc
     assert isinstance(backend.default, ProvisionerSandboxBackend)
     assert backend.default._readable_skills == ["reporter"]
     assert backend.artifacts_root == "/home/gem/user-data/outputs"
-    assert "/skills/" in backend.routes
+    assert f"{VIRTUAL_SKILLS_PATH}/" in backend.routes
     assert "/home/gem/kbs/" not in backend.routes
+
+
+def test_composite_backend_reads_shared_skill_from_local_projection(monkeypatch, tmp_path):
+    monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
+    monkeypatch.setenv("SAVE_DIR", str(tmp_path))
+    projected_file = tmp_path / "threads" / "thread-1" / "skills" / "reporter" / "references" / "release.md"
+    projected_file.parent.mkdir(parents=True)
+    projected_file.write_text("发布材料原文", encoding="utf-8")
+
+    backend = create_agent_composite_backend(
+        _runtime(readable_skills=["reporter"], skill_sources={"reporter": "/tmp/reporter"})
+    )
+
+    result = backend.read(f"{VIRTUAL_SKILLS_PATH}/reporter/references/release.md")
+
+    assert result.error is None
+    assert result.file_data["content"] == "发布材料原文"
 
 
 def test_sandbox_provider_release_deletes_sandbox_and_clears_cache():
@@ -301,7 +318,7 @@ def test_context_backend_rebuild_drops_shared_projection_after_personal_override
 
     assert before_install.default._readable_skills == ["demo"]
     assert after_install.default._readable_skills == []
-    assert after_install.routes["/skills/"]._selected_slugs == set()
+    assert after_install.routes[f"{VIRTUAL_SKILLS_PATH}/"]._selected_slugs == set()
 
 
 def test_create_agent_composite_backend_does_not_project_personal_skills(monkeypatch):
@@ -316,7 +333,7 @@ def test_create_agent_composite_backend_does_not_project_personal_skills(monkeyp
     )
 
     assert backend.default._readable_skills == ["shared-skill"]
-    assert backend.routes["/skills/"]._selected_slugs == {"shared-skill"}
+    assert backend.routes[f"{VIRTUAL_SKILLS_PATH}/"]._selected_slugs == {"shared-skill"}
 
 
 def test_create_agent_filesystem_middleware_uses_outputs_for_internal_artifacts() -> None:

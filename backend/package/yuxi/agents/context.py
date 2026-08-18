@@ -450,12 +450,17 @@ async def resolve_agent_resource_options(
             if tool.get("slug")
         ]
     if "knowledges" in fields_to_load:
-        from yuxi.knowledge.runtime import knowledge_base
+        from yuxi.runtime_mode import legacy_knowledge_enabled
 
-        databases = await knowledge_base.get_databases_by_user(user)
-        options["knowledges"] = [
-            _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
-        ]
+        if legacy_knowledge_enabled():
+            from yuxi.knowledge.runtime import knowledge_base
+
+            databases = await knowledge_base.get_databases_by_user(user)
+            options["knowledges"] = [
+                _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
+            ]
+        else:
+            options["knowledges"] = []
     if "mcps" in fields_to_load:
         from yuxi.agents.mcp.service import get_all_mcp_servers, get_enabled_mcp_server_slugs
 
@@ -468,8 +473,11 @@ async def resolve_agent_resource_options(
         ]
     if "skills" in fields_to_load:
         from yuxi.agents.skills.service import list_accessible_skills
+        from yuxi.runtime_mode import legacy_knowledge_enabled
 
         skills = await list_accessible_skills(db, user)
+        if not legacy_knowledge_enabled():
+            skills = [skill for skill in skills if skill.slug != "knowledge-base"]
         options["skills"] = [
             _resource_option(skill.slug, skill.name, skill.description) for skill in skills if skill.slug
         ]
@@ -531,9 +539,9 @@ async def prepare_agent_runtime_context(
     if not uid:
         return context
 
-    from yuxi.agents.backends.knowledge_base_backend import resolve_visible_knowledge_bases_for_context
     from yuxi.agents.middlewares.skills import resolve_runtime_skills_for_context
     from yuxi.repositories.user_repository import UserRepository
+    from yuxi.runtime_mode import legacy_knowledge_enabled
     from yuxi.storage.postgres.manager import pg_manager
 
     resource_fields = _AGENT_RESOURCE_FIELDS
@@ -568,7 +576,14 @@ async def prepare_agent_runtime_context(
             if hasattr(context, field_name):
                 setattr(context, field_name, normalized.get(field_name, []))
 
-        await resolve_visible_knowledge_bases_for_context(context)
+        if legacy_knowledge_enabled():
+            from yuxi.agents.backends.knowledge_base_backend import resolve_visible_knowledge_bases_for_context
+
+            await resolve_visible_knowledge_bases_for_context(context)
+        else:
+            if hasattr(context, "knowledges"):
+                context.knowledges = []
+            setattr(context, "_visible_knowledge_bases", [])
         skill_scope = await resolve_runtime_skills_for_context(context, db=db, user=user)
         context.skills = skill_scope["context_skills"]
         setattr(context, "_prompt_skills", skill_scope["prompt_skills"])

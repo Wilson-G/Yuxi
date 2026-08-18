@@ -9,7 +9,8 @@ from server.routers.agent_router import agent_router
 from server.routers.auth_dept_router import department
 from server.routers.auth_router import auth
 from server.routers.chat_router import chat
-from server.routers.dashboard_router import dashboard
+from server.routers.dashboard_router import dashboard, dashboard_knowledge
+from server.routers.expert_router import experts
 from server.routers.filesystem_router import filesystem_router
 from server.routers.mcp_router import mcp
 from server.routers.mention_router import mention_router
@@ -19,9 +20,10 @@ from server.routers.system_router import system
 from server.routers.system_task_router import tasks
 from server.routers.tool_router import tools
 from server.routers.user_router import user_router
-from server.routers.workspace_router import workspace
+from server.routers.workspace_router import workspace, workspace_knowledge
+from yuxi.runtime_mode import legacy_knowledge_enabled
 
-_LITE_MODE = os.environ.get("LITE_MODE", "").lower() in ("true", "1")
+_LITE_MODE = os.environ.get("LITE_MODE", "true").lower() in ("true", "1")
 
 router = APIRouter()
 
@@ -46,9 +48,10 @@ router.include_router(tools)  # /api/system/tools/* 工具列表与配置
 router.include_router(user_router)  # /api/user/* 用户级配置与凭据
 router.include_router(filesystem_router)  # /api/viewer/filesystem/* 工作台文件系统视图
 router.include_router(workspace)  # /api/workspace/* 用户个人工作区
+router.include_router(experts)  # /api/experts/* 专家材料包、编译与激活
 router.include_router(mention_router)  # /api/mention/* 提及文件搜索接口
 
-if not _LITE_MODE:
+if legacy_knowledge_enabled() and not _LITE_MODE:
     from server.routers.external_kb_router import external_kb
     from server.routers.graph_router import graph
     from server.routers.knowledge_eval_router import evaluation
@@ -59,3 +62,5 @@ if not _LITE_MODE:
     router.include_router(knowledge)  # /api/knowledge/* 知识库管理与检索
     router.include_router(evaluation)  # /api/evaluation/* 知识库评估
     router.include_router(graph)  # /api/graph/* 图谱查询与管理
+    router.include_router(workspace_knowledge)  # /api/workspace/knowledge/* 旧知识库文件浏览
+    router.include_router(dashboard_knowledge)  # /api/dashboard/stats/knowledge 旧知识库统计

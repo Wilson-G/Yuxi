@@ -7,8 +7,7 @@ from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.models.providers.service import ensure_builtin_model_providers_in_db
 from yuxi.services.run_queue_service import close_queue_clients, get_redis_client
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.neo4j import close_shared_neo4j_connection
-from yuxi.knowledge.runtime import knowledge_base
+from yuxi.runtime_mode import legacy_knowledge_enabled
 from yuxi.utils import logger
 from yuxi.agents.backends.sandbox import init_sandbox_provider, shutdown_sandbox_provider
 from yuxi import get_version
@@ -17,12 +16,17 @@ from yuxi import get_version
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """FastAPI lifespan事件管理器"""
+    legacy_knowledge = legacy_knowledge_enabled()
     # 初始化数据库连接
     try:
         pg_manager.initialize()
-        await pg_manager.create_tables()
+        if legacy_knowledge:
+            await pg_manager.create_tables()
+        else:
+            await pg_manager.create_business_tables()
         await pg_manager.ensure_business_schema()
-        await pg_manager.ensure_knowledge_schema()
+        if legacy_knowledge:
+            await pg_manager.ensure_knowledge_schema()
     except Exception as e:
         logger.error(f"Failed to initialize database during startup: {e}")
 
@@ -84,13 +88,15 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize model cache during startup: {e}")
 
     # 初始化知识库管理器
-    if os.environ.get("LITE_MODE", "").lower() in ("true", "1"):
-        logger.info("LITE_MODE enabled, skipping knowledge base initialization")
-    else:
+    if legacy_knowledge:
         try:
+            from yuxi.knowledge.runtime import knowledge_base
+
             await knowledge_base.initialize()
         except Exception as e:
             logger.error(f"Failed to initialize knowledge base manager: {e}")
+    else:
+        logger.info("Expert mode enabled, skipping legacy knowledge base initialization")
 
     # 预热 Redis（run 队列）
     try:
@@ -124,5 +130,8 @@ async def lifespan(app: FastAPI):
     await tasker.shutdown()
     shutdown_sandbox_provider()
     await close_queue_clients()
-    close_shared_neo4j_connection()
+    if legacy_knowledge:
+        from yuxi.storage.neo4j import close_shared_neo4j_connection
+
+        close_shared_neo4j_connection()
     await pg_manager.close()

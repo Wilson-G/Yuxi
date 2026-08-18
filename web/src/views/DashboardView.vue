@@ -41,7 +41,7 @@
       </div>
 
       <!-- 知识库使用情况 - 占据1x1网格 -->
-      <div class="grid-item knowledge-stats">
+      <div v-if="legacyKnowledgeEnabled" class="grid-item knowledge-stats">
         <KnowledgeStatsComponent
           :knowledge-stats="allStatsData?.knowledge"
           :loading="loading"
@@ -72,6 +72,8 @@ import FeedbackModalComponent from '@/components/dashboard/FeedbackModalComponen
 
 // 组件引用
 const feedbackModal = ref(null)
+const legacyKnowledgeEnabled =
+  import.meta.env.VITE_EXPERT_MODE === 'false' && import.meta.env.VITE_LITE_MODE === 'false'
 
 // 统计数据 - 使用新的响应式结构
 const basicStats = ref({})

@@ -50,6 +50,7 @@
           :current-path="currentPath"
           :databases="databases"
           :loading-databases="loadingDatabases"
+          :show-legacy-knowledge="legacyKnowledgeEnabled"
           :current-uid="userStore.uid"
           @select-personal="selectPersonalWorkspace"
           @select-database="selectDatabase"
@@ -253,6 +254,8 @@ const newDirectoryName = ref('')
 const creatingDirectory = ref(false)
 const uploadingFile = ref(false)
 const uploadInputRef = ref(null)
+const legacyKnowledgeEnabled =
+  import.meta.env.VITE_EXPERT_MODE === 'false' && import.meta.env.VITE_LITE_MODE === 'false'
 const deletingPaths = ref([])
 const sidebarCollapsed = ref(false)
 const previewWidthPercent = ref(50)
@@ -896,7 +899,7 @@ const startPreviewResize = (event) => {
 let workspaceResizeObserver = null
 
 onMounted(async () => {
-  await Promise.all([loadWorkspaceEntries('/'), loadDatabases()])
+  await Promise.all([loadWorkspaceEntries('/'), legacyKnowledgeEnabled ? loadDatabases() : Promise.resolve()])
 
   if (workspaceMainRef.value && typeof ResizeObserver !== 'undefined') {
     workspaceMainWidth.value = workspaceMainRef.value.clientWidth || 0

@@ -190,6 +190,7 @@ const STATUS_CONFIG = {
   cancelled: { label: '已取消', terminal: true, cancelable: false, progress: 'normal' }
 }
 const TASK_TYPE_LABELS = {
+  expert_package_compile: '专家包编译',
   knowledge_ingest: '知识库导入',
   knowledge_parse: '文档解析',
   knowledge_index: '文档入库',
@@ -228,7 +229,7 @@ const emptyHint = computed(() => {
     default:
       return {
         title: '暂无任务',
-        subtitle: '提交知识库导入等后台任务后，将在这里展示实时进度（仅展示最近的 100 个任务）。'
+        subtitle: '提交专家包编译等后台任务后，将在这里展示实时进度（仅展示最近的 100 个任务）。'
       }
   }
 })

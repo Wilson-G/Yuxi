@@ -136,6 +136,13 @@ async def _fake_visible_kbs(runtime):
     return [{"kb_id": "db-1", "name": "FAQ", "kb_type": "milvus"}]
 
 
+def _enable_legacy_document_support(monkeypatch) -> None:
+    """让兼容链路测试不依赖当前进程是否注册了 Milvus。"""
+
+    manager = tools._get_knowledge_base()
+    monkeypatch.setattr(manager, "database_type_supports_documents", lambda kb_type: kb_type == "milvus")
+
+
 @pytest.mark.asyncio
 async def test_get_mindmap_resolves_current_visible_knowledge_base(monkeypatch) -> None:
     async def fake_get_by_kb_id(_self, kb_id: str):
@@ -545,6 +552,7 @@ async def test_search_file_requires_kb_name_or_query(monkeypatch) -> None:
 async def test_search_file_returns_files(monkeypatch, kwargs: dict, fake_files, expected_filenames: list[str]) -> None:
     from yuxi.repositories.knowledge_file_repository import KnowledgeFileRepository
 
+    _enable_legacy_document_support(monkeypatch)
     monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
 
     async def _fake_search_files(
@@ -572,6 +580,7 @@ async def test_search_file_returns_files(monkeypatch, kwargs: dict, fake_files, 
 
 @pytest.mark.asyncio
 async def test_search_file_pagination(monkeypatch) -> None:
+    _enable_legacy_document_support(monkeypatch)
     monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
 
     from types import SimpleNamespace as SN
@@ -647,6 +656,7 @@ async def test_search_file_skips_read_only_kbs(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_search_file_total_reflects_full_set_not_page(monkeypatch) -> None:
     """total/has_more 必须基于全量文件，而非按 limit/offset 截断的窗口。"""
+    _enable_legacy_document_support(monkeypatch)
     monkeypatch.setattr(tools, "_resolve_visible_knowledge_bases_for_query", _fake_visible_kbs)
 
     from types import SimpleNamespace as SN

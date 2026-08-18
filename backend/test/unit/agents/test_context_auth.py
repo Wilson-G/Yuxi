@@ -131,6 +131,9 @@ async def test_resolve_agent_resource_options_empty_fields_loads_nothing(monkeyp
 
 @pytest.mark.asyncio
 async def test_normalize_agent_context_config_expands_null_and_filters_explicit_lists(monkeypatch):
+    monkeypatch.setenv("YUXI_EXPERT_MODE", "false")
+    monkeypatch.setenv("LITE_MODE", "false")
+
     async def fake_get_databases_by_user(_user):
         return [_knowledge_summary("kb-a"), _knowledge_summary("kb-b")]
 
@@ -236,6 +239,9 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
 
 @pytest.mark.asyncio
 async def test_prepare_agent_runtime_context_filters_resources_and_derives_runtime_scope(monkeypatch):
+    monkeypatch.setenv("YUXI_EXPERT_MODE", "false")
+    monkeypatch.setenv("LITE_MODE", "false")
+
     async def fake_get_databases_by_user(_user):
         return [_knowledge_summary("kb-a"), _knowledge_summary("kb-b")]
 

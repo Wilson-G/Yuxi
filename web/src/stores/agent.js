@@ -4,6 +4,9 @@ import { agentApi, databaseApi, mcpApi, skillApi, toolApi } from '@/apis'
 import { isDefaultAllAgentResourceKind } from '@/utils/agentConfigUtils'
 import { handleChatError } from '@/utils/errorHandler'
 
+const legacyKnowledgeEnabled =
+  import.meta.env.VITE_EXPERT_MODE === 'false' && import.meta.env.VITE_LITE_MODE === 'false'
+
 function normalizeAgent(agent) {
   const agentId = agent?.agent_id || agent?.slug || agent?.id
   return agentId
@@ -87,7 +90,9 @@ export const useAgentStore = defineStore(
     async function fetchMentionResources() {
       try {
         const [dbsRes, mcpsRes, skillsRes] = await Promise.all([
-          databaseApi.getAccessibleDatabases().catch(() => ({ databases: [] })),
+          legacyKnowledgeEnabled
+            ? databaseApi.getAccessibleDatabases().catch(() => ({ databases: [] }))
+            : Promise.resolve({ databases: [] }),
           mcpApi.getMcpServers().catch(() => ({ data: [] })),
           skillApi.listAccessibleSkills().catch(() => ({ data: [] }))
         ])

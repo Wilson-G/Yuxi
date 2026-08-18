@@ -11,8 +11,8 @@
     />
 
     <div v-if="!isDetailPage" class="extensions-content">
-      <div v-if="userStore.isAdmin && activeTab === 'knowledge'" class="tab-panel">
-        <DataBaseView ref="knowledgeRef" embedded />
+      <div v-if="userStore.isAdmin && activeTab === 'expert-packages'" class="tab-panel">
+        <ExpertPackageList ref="expertPackagesRef" />
       </div>
       <div v-if="userStore.isAdmin && activeTab === 'tools'" class="tab-panel">
         <ToolsCardList ref="toolsRef" />
@@ -35,21 +35,21 @@ import { useRoute, useRouter } from 'vue-router'
 import ToolsCardList from '@/components/extensions/ToolsCardList.vue'
 import McpCardList from '@/components/extensions/McpCardList.vue'
 import SkillCardList from '@/components/extensions/SkillCardList.vue'
+import ExpertPackageList from '@/components/extensions/ExpertPackageList.vue'
 import PageHeader from '@/components/shared/PageHeader.vue'
-import DataBaseView from '@/views/DataBaseView.vue'
 import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const activeTab = ref(null)
-const knowledgeRef = ref(null)
+const expertPackagesRef = ref(null)
 const skillsRef = ref(null)
 const mcpRef = ref(null)
 const toolsRef = ref(null)
 
 const adminExtensionTabs = [
-  { key: 'knowledge', label: '知识库' },
+  { key: 'expert-packages', label: '专家包' },
   { key: 'skills', label: '技能' },
   { key: 'tools', label: '工具' },
   { key: 'mcp', label: 'MCP' }
@@ -75,16 +75,12 @@ const replaceTabQuery = (tab) => {
 }
 
 const isDetailPage = computed(() => {
-  return (
-    route.path.startsWith('/extensions/knowledgebase/') ||
-    route.path.startsWith('/extensions/mcp/') ||
-    route.path.startsWith('/extensions/skill/')
-  )
+  return route.path.startsWith('/extensions/mcp/') || route.path.startsWith('/extensions/skill/')
 })
 
 const activeChildLoading = computed(() => {
   const refMap = {
-    knowledge: knowledgeRef,
+    'expert-packages': expertPackagesRef,
     tools: toolsRef,
     skills: skillsRef,
     mcp: mcpRef

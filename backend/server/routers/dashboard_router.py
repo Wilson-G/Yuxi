@@ -25,6 +25,7 @@ from yuxi.utils.logging_config import logger
 
 
 dashboard = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+dashboard_knowledge = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
 def _get_time_group_format(column, time_range: str) -> Any:
@@ -394,7 +395,7 @@ async def get_tool_call_stats(
 # =============================================================================
 
 
-@dashboard.get("/stats/knowledge", response_model=KnowledgeStats)
+@dashboard_knowledge.get("/stats/knowledge", response_model=KnowledgeStats)
 async def get_knowledge_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_superadmin_user),

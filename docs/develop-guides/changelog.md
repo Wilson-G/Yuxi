@@ -10,6 +10,10 @@
 1. 升级到 v0.7.2 后，管理员此前创建的 stdio MCP 会被禁用，也无法重新启用。请在详情页迁移为 SSE 或 Streamable HTTP，或直接删除；代码内置的系统 stdio MCP 不受影响。
 :::
 
+- 默认切换为专家 Skill 模式：普通 Compose 不再启动或注册 Milvus、Neo4j、知识库和图谱链路；新增 Markdown/ZIP 专家材料包上传、后台快速编译、全局激活/停用，以及 `expert_search` 目录检索后精读原文的回答流程。旧知识库可通过 `make up-legacy-knowledge` 显式启用。
+- 专家包编译改由 ARQ Worker 执行并可恢复；专家包记录编译版本、源/发布哈希和当前激活版本，重新编译激活会原子替换同名 Skill。共享 Skill 文件工具路由到本地投影，避免回落到沙盒超时。
+- 借鉴 t3code `feat/prime-agent-provider` 的 ACP stdio 方案，专家编译支持 `?compiler=prime`：按会话启动 `prime-agent --mode acp`，生成 `method.md` 并重新计算发布哈希；宿主机 Prime CLI 可通过 `PRIME_AGENT_HOST_DIR` 挂载到 Docker Worker。
+
 - 清理测试套件冗余：删除 5 个自证式/假绿/重复覆盖的测试文件（`test_hash_utils`、`test_skills_backend_error_handling`、`test_graph_router_list`、`test_agent_sync_e2e`、`test_viewer_filesystem_e2e`），合并约 50 个文件的重复场景与参数转发断言，抽取 eval 与 e2e 共享 helper；净减约 2,900 行测试代码，真实回归覆盖不变。
 
 

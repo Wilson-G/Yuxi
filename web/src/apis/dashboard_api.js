@@ -1,5 +1,8 @@
 import { apiAdminGet } from './base'
 
+const legacyKnowledgeEnabled =
+  import.meta.env.VITE_EXPERT_MODE === 'false' && import.meta.env.VITE_LITE_MODE === 'false'
+
 /**
  * Dashboard API模块
  * 用于管理员查看所有用户的对话记录
@@ -103,7 +106,7 @@ export const dashboardApi = {
         apiAdminGet('/api/dashboard/stats'),
         apiAdminGet('/api/dashboard/stats/users'),
         apiAdminGet('/api/dashboard/stats/tools'),
-        apiAdminGet('/api/dashboard/stats/knowledge'),
+        legacyKnowledgeEnabled ? apiAdminGet('/api/dashboard/stats/knowledge') : Promise.resolve(null),
         apiAdminGet('/api/dashboard/stats/agents')
       ])
 

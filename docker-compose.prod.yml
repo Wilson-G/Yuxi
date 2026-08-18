@@ -1,6 +1,7 @@
 x-api-worker-env: &api-worker-env
   HOST_IP: ${HOST_IP:-}
-  LITE_MODE: ${LITE_MODE:-}
+  LITE_MODE: ${LITE_MODE:-true}
+  YUXI_EXPERT_MODE: ${YUXI_EXPERT_MODE:-true}
   RUNNING_IN_DOCKER: "true"
   YUXI_ENV: production
   LANGGRAPH_CHECKPOINTER_BACKEND: ${LANGGRAPH_CHECKPOINTER_BACKEND:-postgres}
@@ -12,6 +13,9 @@ x-api-worker-env: &api-worker-env
   RUN_CANCEL_KEY_TTL_SECONDS: ${RUN_CANCEL_KEY_TTL_SECONDS:-1800}
   RUN_EVENTS_STREAM_TTL_SECONDS: ${RUN_EVENTS_STREAM_TTL_SECONDS:-7200}
   YUXI_CORS_ORIGINS: ${YUXI_CORS_ORIGINS:-}
+  PRIME_AGENT_COMMAND: ${PRIME_AGENT_COMMAND:-prime-agent}
+  PRIME_AGENT_PROVIDER: ${PRIME_AGENT_PROVIDER:-}
+  PRIME_AGENT_MODEL: ${PRIME_AGENT_MODEL:-}
   NEO4J_URI: ${NEO4J_URI:-bolt://graph:7687}
   NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env.prod}
@@ -43,6 +47,7 @@ services:
     volumes:
       - ./docker/volumes/yuxi:/app/saves
       - ./docker/volumes/models:/app/models
+      - ${PRIME_AGENT_HOST_DIR:-/tmp/yuxi-prime-agent-empty}:/opt/prime-agent-host:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
@@ -81,6 +86,7 @@ services:
     volumes:
       - ./docker/volumes/yuxi:/app/saves
       - ./docker/volumes/models:/app/models
+      - ${PRIME_AGENT_HOST_DIR:-/tmp/yuxi-prime-agent-empty}:/opt/prime-agent-host:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     env_file:
@@ -162,10 +168,12 @@ services:
     environment:
       - NODE_ENV=production
       - VITE_LITE_MODE=${LITE_MODE:-}
+      - VITE_EXPERT_MODE=${YUXI_EXPERT_MODE:-true}
     command: nginx -g "daemon off;"
     restart: unless-stopped
 
   graph:
+    profiles: ["legacy-knowledge"]
     image: neo4j:5.26
     container_name: graph
     volumes:
@@ -187,6 +195,7 @@ services:
     restart: unless-stopped
 
   etcd:
+    profiles: ["legacy-knowledge"]
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.5
     environment:
@@ -228,6 +237,7 @@ services:
     restart: unless-stopped
 
   milvus:
+    profiles: ["legacy-knowledge"]
     image: milvusdb/milvus:v2.5.6
     container_name: milvus
     command: ["milvus", "run", "standalone"]

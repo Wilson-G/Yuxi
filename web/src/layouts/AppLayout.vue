@@ -18,7 +18,6 @@ import { useConfigStore } from '@/stores/config'
 import { useAgentStore } from '@/stores/agent'
 import { useChatThreadsStore } from '@/stores/chatThreads'
 import { useChatUIStore } from '@/stores/chatUI'
-import { useDatabaseStore } from '@/stores/database'
 import { useInfoStore } from '@/stores/info'
 import { useTaskerStore } from '@/stores/tasker'
 import { useUserStore } from '@/stores/user'
@@ -34,7 +33,6 @@ const configStore = useConfigStore()
 const agentStore = useAgentStore()
 const chatThreadsStore = useChatThreadsStore()
 const chatUIStore = useChatUIStore()
-const databaseStore = useDatabaseStore()
 const infoStore = useInfoStore()
 const taskerStore = useTaskerStore()
 const userStore = useUserStore()
@@ -75,14 +73,6 @@ const getRemoteConfig = async () => {
   }
 }
 
-const getRemoteDatabase = async () => {
-  try {
-    await databaseStore.loadDatabases()
-  } catch (error) {
-    console.warn('加载知识库列表失败:', error)
-  }
-}
-
 // Fetch GitHub stars count
 const fetchGithubStars = async () => {
   try {
@@ -99,8 +89,7 @@ const fetchGithubStars = async () => {
 }
 
 onMounted(async () => {
-  // 加载信息配置与知识库数据无依赖，可并行
-  await Promise.all([infoStore.loadInfoConfig(), getRemoteDatabase()])
+  await infoStore.loadInfoConfig()
   await initAgentNavigation()
   await getRemoteConfig()
   // 仅管理员加载任务中心数据
@@ -174,7 +163,7 @@ const mainList = computed(() => {
   })
 
   items.push({
-    name: '知识库 · 技能',
+    name: '专家 · 技能',
     path: '/extensions',
     activePaths: ['/extensions'],
     icon: LibraryBig,
