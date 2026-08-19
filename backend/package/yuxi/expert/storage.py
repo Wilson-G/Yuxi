@@ -69,6 +69,14 @@ def create_project_workspace(project_id: str) -> Path:
     return root
 
 
+def create_project_output_workspace(project_id: str) -> Path:
+    """为资料库选材的新项目创建仅保存编译产物的目录。"""
+
+    root = _project_root(project_id)
+    root.mkdir(parents=False, exist_ok=False)
+    return root
+
+
 def delete_project_workspace(project_id: str) -> None:
     """删除一个尚未发布或已明确删除的项目私有目录。"""
 
@@ -220,6 +228,7 @@ def _zip_entry_is_symlink(info: zipfile.ZipInfo) -> bool:
 __all__ = [
     "ParsedMaterial",
     "StoredMaterialSource",
+    "create_project_output_workspace",
     "create_project_workspace",
     "delete_project_workspace",
     "get_expert_projects_root",

@@ -71,6 +71,22 @@ async def _add_project(
             project.method_confirmed_at = utc_now_naive()
             project.method_calibration_completed_at = utc_now_naive()
             project.method_calibration_baseline = [{"material_alias": "M001"}]
+        if stage == "material_learning":
+            await ExpertRepository(db).create_materials(
+                project_id,
+                [
+                    {
+                        "material_id": f"{project_id}-material",
+                        "title": f"{project_id} 材料",
+                        "source_path": f"{project_id}.md",
+                        "raw_path": f"raw/{project_id}.md",
+                        "text_path": f"text/{project_id}.md",
+                        "file_type": ".md",
+                        "status": "pending",
+                        "line_count": 1,
+                    }
+                ],
+            )
         await db.commit()
 
 
@@ -158,8 +174,8 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
             {"_job_id": "expert:method-calibration:calibration:v2"},
         ),
         (
-            ("process_expert_material_learning", "learning", 3),
-            {"_job_id": "expert:materials:learning:v3:recovery"},
+            ("process_expert_material_learning", "learning", "learning-material", 3),
+            {"_job_id": "expert:material:learning:learning-material:v3"},
         ),
     ]
 
@@ -190,8 +206,13 @@ async def test_explicit_resume_enqueues_current_stage(worker_env, monkeypatch: p
 
     assert jobs == [
         (
-            ("process_expert_material_learning", "resumed-learning", 4),
-            {"_job_id": "expert:materials:resumed-learning:v4:resume"},
+            (
+                "process_expert_material_learning",
+                "resumed-learning",
+                "resumed-learning-material",
+                4,
+            ),
+            {"_job_id": "expert:material:resumed-learning:resumed-learning-material:v4"},
         )
     ]
 
@@ -211,7 +232,7 @@ async def test_method_calibration_queues_material_learning_after_success(
         queued.append((project_id, method_version))
 
     monkeypatch.setattr(worker, "run_method_calibration", finish_calibration)
-    monkeypatch.setattr(worker, "enqueue_material_learning", queue_material_learning)
+    monkeypatch.setattr(worker, "enqueue_pending_material_learning", queue_material_learning)
 
     result = await worker.process_expert_method_calibration({"job_try": 1}, "calibrated-project", 2)
 
@@ -220,16 +241,17 @@ async def test_method_calibration_queues_material_learning_after_success(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_project_runners_wait_for_the_active_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_independent_material_jobs_do_not_share_project_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     first_started = asyncio.Event()
     release_first = asyncio.Event()
     call_count = 0
     active = 0
     max_active = 0
 
-    async def fake_run_material_learning_stage(project_id: str, method_version: int) -> dict:
+    async def fake_run_material_learning_stage(project_id: str, material_id: str, method_version: int) -> dict:
         nonlocal active, call_count, max_active
         assert project_id == "serialized-project"
+        assert material_id in {"material-1", "material-2"}
         assert method_version == 1
         call_count += 1
         active += 1
@@ -242,44 +264,74 @@ async def test_duplicate_project_runners_wait_for_the_active_runner(monkeypatch:
 
     monkeypatch.setattr(worker, "run_material_learning_stage", fake_run_material_learning_stage)
 
-    first = asyncio.create_task(worker.process_expert_material_learning({"job_try": 1}, "serialized-project", 1))
+    first = asyncio.create_task(
+        worker.process_expert_material_learning({"job_try": 1}, "serialized-project", "material-1", 1)
+    )
     await first_started.wait()
-    second = asyncio.create_task(worker.process_expert_material_learning({"job_try": 1}, "serialized-project", 1))
+    second = asyncio.create_task(
+        worker.process_expert_material_learning({"job_try": 1}, "serialized-project", "material-2", 1)
+    )
     await asyncio.sleep(0)
     calls_before_release = call_count
     release_first.set()
     await asyncio.gather(first, second)
 
-    assert calls_before_release == 1
+    assert calls_before_release == 2
     assert call_count == 2
-    assert max_active == 1
+    assert max_active == 2
 
 
 @pytest.mark.asyncio
 async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    attention: list[tuple[str, str]] = []
+    attention: list[tuple[str, str, int, str]] = []
 
-    async def fail_material_stage(project_id: str, method_version: int) -> dict:
-        del project_id, method_version
-        raise RuntimeError("材料阶段数据库连接中断")
+    async def fail_material_stage(project_id: str, material_id: str, method_version: int) -> dict:
+        del project_id, material_id, method_version
+        raise TimeoutError("材料阶段数据库连接中断")
 
-    async def record_attention(project_id: str, error: str) -> None:
-        attention.append((project_id, error))
+    async def record_attention(project_id: str, material_id: str, method_version: int, error: str) -> None:
+        attention.append((project_id, material_id, method_version, error))
 
     monkeypatch.setattr(worker, "run_material_learning_stage", fail_material_stage)
-    monkeypatch.setattr(worker, "mark_project_attention", record_attention)
+    monkeypatch.setattr(worker, "mark_material_learning_attention", record_attention)
 
     with pytest.raises(Retry):
-        await worker.process_expert_material_learning({"job_try": 1}, "material-retry-project", 1)
+        await worker.process_expert_material_learning({"job_try": 1}, "material-retry-project", "material-1", 1)
     assert attention == []
 
-    with pytest.raises(RuntimeError, match="数据库连接中断"):
+    with pytest.raises(TimeoutError, match="数据库连接中断"):
         await worker.process_expert_material_learning(
             {"job_try": worker.SYSTEM_TASK_MAX_TRIES},
             "material-retry-project",
+            "material-1",
             1,
         )
-    assert attention == [("material-retry-project", "材料阶段数据库连接中断")]
+    assert attention == [("material-retry-project", "material-1", 1, "材料阶段数据库连接中断")]
+
+
+@pytest.mark.asyncio
+async def test_material_contract_failure_goes_directly_to_attention(monkeypatch: pytest.MonkeyPatch) -> None:
+    attention: list[tuple[str, str, int, str]] = []
+
+    async def fail_contract(project_id: str, material_id: str, method_version: int) -> dict:
+        del project_id, material_id, method_version
+        raise ValueError("笔记响应不符合 JSONL 合同")
+
+    async def record_attention(project_id: str, material_id: str, method_version: int, error: str) -> None:
+        attention.append((project_id, material_id, method_version, error))
+
+    monkeypatch.setattr(worker, "run_material_learning_stage", fail_contract)
+    monkeypatch.setattr(worker, "mark_material_learning_attention", record_attention)
+
+    with pytest.raises(ValueError, match="JSONL 合同"):
+        await worker.process_expert_material_learning(
+            {"job_try": 1},
+            "material-contract-project",
+            "material-1",
+            2,
+        )
+
+    assert attention == [("material-contract-project", "material-1", 2, "笔记响应不符合 JSONL 合同")]
 
 
 @pytest.mark.asyncio

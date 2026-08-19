@@ -9,6 +9,11 @@ import os
 import uuid
 
 import pytest
+from sqlalchemy import delete
+
+from yuxi.repositories.material_library_repository import MaterialLibraryRepository
+from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_material import MaterialLibrary, MaterialSourceFile
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -41,10 +46,7 @@ async def test_standard_user_keeps_tasker_read_contract_without_expert_projectio
         (
             "post",
             "/api/expert-projects",
-            {
-                "data": {"name": "普通用户项目"},
-                "files": {"files": ("material.md", b"material", "text/markdown")},
-            },
+            {"json": {"name": "普通用户项目", "material_unit_ids": ["unit-1"]}},
         ),
         (
             "post",
@@ -76,10 +78,43 @@ async def test_admin_can_list_tasks(test_client, admin_headers):
 async def test_admin_can_read_waiting_expert_projection_without_completion(test_client, admin_headers):
     """管理员能读取专家项目投影，等待确认不会进入完成筛选。"""
 
+    library_id = f"pytest-library-{uuid.uuid4().hex}"
+    file_id = f"pytest-file-{uuid.uuid4().hex}"
+    unit_id = f"pytest-unit-{uuid.uuid4().hex}"
+    async with pg_manager.get_async_session_context() as db:
+        repo = MaterialLibraryRepository(db)
+        await repo.create_library(library_id=library_id, name="任务投影资料库", created_by="pytest")
+        await repo.create_source_file(
+            file_id=file_id,
+            library_id=library_id,
+            directory_id=None,
+            original_filename="material.md",
+            relative_path="material.md",
+            file_type=".md",
+            file_size=20,
+            source_bucket="materials",
+            source_object=f"pytest/{file_id}/original.md",
+            markdown_bucket="materials",
+            markdown_object=f"pytest/{file_id}/content.md",
+            status="ready",
+            unit_status="ready",
+            progress=100,
+            line_count=2,
+            error_message=None,
+            created_by="pytest",
+        )
+        await repo.create_material_units(
+            file_id,
+            [{"unit_id": unit_id, "title": "完整材料", "start_line": 1, "end_line": 2}],
+        )
+        await db.commit()
+
     create_response = await test_client.post(
         "/api/expert-projects",
-        data={"name": f"pytest_task_project_{uuid.uuid4().hex[:8]}"},
-        files={"files": ("material.md", b"# Material\n\nComplete text.", "text/markdown")},
+        json={
+            "name": f"pytest_task_project_{uuid.uuid4().hex[:8]}",
+            "material_unit_ids": [unit_id],
+        },
         headers=admin_headers,
     )
     assert create_response.status_code == 200, create_response.text
@@ -115,6 +150,20 @@ async def test_admin_can_read_waiting_expert_projection_without_completion(test_
     finally:
         delete_response = await test_client.delete(f"/api/expert-projects/{project_id}", headers=admin_headers)
         assert delete_response.status_code == 200, delete_response.text
+        async with pg_manager.get_async_session_context() as db:
+            await db.execute(delete(MaterialSourceFile).where(MaterialSourceFile.file_id == file_id))
+            await db.execute(delete(MaterialLibrary).where(MaterialLibrary.library_id == library_id))
+
+
+async def test_admin_cannot_create_new_project_with_legacy_multipart_upload(test_client, admin_headers):
+    response = await test_client.post(
+        "/api/expert-projects",
+        data={"name": "旧上传入口"},
+        files={"files": ("material.md", b"material", "text/markdown")},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
 
 
 async def test_cancel_unknown_task_returns_client_error(test_client, admin_headers):

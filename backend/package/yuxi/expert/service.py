@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,22 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.agents.skills.repository import SkillRepository
 from yuxi.expert.contracts import MaterialNoteResult, MaterialReviewResult, ProjectPromptPack
+from yuxi.expert.materials import read_expert_material_text
 from yuxi.expert.model_tasks import ExpertModelTasks
 from yuxi.expert.storage import (
     StoredMaterialSource,
-    create_project_workspace,
+    create_project_output_workspace,
     delete_project_workspace,
     parse_material,
-    read_material_text,
-    store_uploaded_sources,
 )
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.expert_repository import ExpertRepository
+from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
 
 MATERIAL_PARSE_CONCURRENCY = int(os.getenv("EXPERT_MATERIAL_PARSE_CONCURRENCY", "8"))
-MATERIAL_LEARNING_CONCURRENCY = int(os.getenv("EXPERT_LEARNING_CONCURRENCY", "50"))
 MAX_MATERIAL_REVISIONS = 2
 ORIENTATION_STAGE = "orientation"
 MATERIAL_LEARNING_STAGE = "material_learning"
@@ -41,25 +39,32 @@ async def create_expert_project(
     description: str,
     model_spec: str,
     created_by: str,
-    uploads: list[tuple[str, Path]],
+    material_unit_ids: list[str],
 ) -> Any:
-    """保存上传材料并创建等待正文转换的专家项目。"""
+    """从资料库就绪单元创建正文已经可读的专家项目。"""
 
     clean_name = str(name or "").strip()
     if not clean_name:
         raise ValueError("专家项目名称不能为空")
-    if not uploads:
-        raise ValueError("请至少上传一份材料")
+    selected_ids = [str(unit_id or "").strip() for unit_id in material_unit_ids]
+    if not selected_ids or any(not unit_id for unit_id in selected_ids):
+        raise ValueError("请至少选择一份已处理材料")
+    if len(selected_ids) != len(set(selected_ids)):
+        raise ValueError("不能重复选择同一材料单元")
     model_info = model_cache.get_model_info(model_spec)
     if model_info is None or model_info.model_type != "chat":
         raise ValueError(f"专家项目模型不可用: {model_spec}")
     if not int(model_info.context_length or 0):
         raise ValueError("专家项目模型缺少上下文长度配置，请先在模型管理中补充")
 
+    material_rows = await MaterialLibraryRepository(db).list_ready_material_units_by_ids(selected_ids)
+    material_by_id = {unit.unit_id: (unit, source_file) for unit, source_file in material_rows}
+    if set(material_by_id) != set(selected_ids):
+        raise ValueError("所选材料单元不存在或尚未处理完成")
+
     project_id = uuid.uuid4().hex
-    create_project_workspace(project_id)
+    create_project_output_workspace(project_id)
     try:
-        sources = await asyncio.to_thread(store_uploaded_sources, project_id, uploads)
         repo = ExpertRepository(db)
         project = await repo.create_project(
             project_id=project_id,
@@ -68,21 +73,28 @@ async def create_expert_project(
             model_spec=model_spec,
             created_by=created_by,
             stage=ORIENTATION_STAGE,
-            status="preparing",
+            status="ready",
         )
-        project.message = f"正在把 {len(sources)} 份材料转换为可靠正文"
+        project.message = "材料正文已准备好，请选择代表样本"
         await repo.create_materials(
             project_id,
             [
                 {
-                    "material_id": source.material_id,
-                    "title": source.title,
-                    "source_path": source.source_path,
-                    "raw_path": source.raw_path,
-                    "file_type": source.file_type,
-                    "status": "pending",
+                    "material_id": uuid.uuid4().hex,
+                    "material_unit_id": unit.unit_id,
+                    "source_file_id": source_file.file_id,
+                    "title": unit.title,
+                    "source_path": source_file.relative_path,
+                    "source_start_line": unit.start_line,
+                    "source_end_line": unit.end_line,
+                    "raw_path": None,
+                    "text_path": None,
+                    "file_type": source_file.file_type,
+                    "status": "ready",
+                    "line_count": unit.end_line - unit.start_line + 1,
+                    "token_count": 0,
                 }
-                for source in sources
+                for unit, source_file in (material_by_id[unit_id] for unit_id in selected_ids)
             ],
         )
         await db.commit()
@@ -158,13 +170,11 @@ async def get_expert_material_text(
     material = await repo.get_material(material_id)
     if project is None or material is None or material.project_id != project_id:
         raise ValueError("专家材料不存在")
-    if not material.text_path:
-        raise ValueError("材料尚未得到可靠正文")
     return {
         "material_id": material.material_id,
         "title": material.title,
         "source_path": material.source_path,
-        "text": read_material_text(project_id, material.text_path),
+        "text": await read_expert_material_text(material),
     }
 
 
@@ -461,7 +471,7 @@ async def run_project_orientation(
     representative_materials = []
     for material_id in project_snapshot["representative_ids"]:
         material = next((item for item in materials if item.material_id == material_id), None)
-        if material is None or not material.text_path:
+        if material is None:
             raise ValueError("代表性材料正文不存在")
         representative_materials.append(material)
         samples.append(
@@ -469,7 +479,7 @@ async def run_project_orientation(
                 "alias": aliases[material.material_id],
                 "title": material.title,
                 "source": material.source_path,
-                "text": read_material_text(project_id, material.text_path),
+                "text": await read_expert_material_text(material),
             }
         )
 
@@ -794,37 +804,49 @@ async def run_method_calibration(
 
 async def run_material_learning_stage(
     project_id: str,
+    material_id: str,
     method_version: int,
     *,
     model_tasks: ExpertModelTasks | None = None,
 ) -> dict[str, Any]:
-    """以持续补位并发逐份完成笔记、Review 和最多两次定点修订。"""
+    """在一个独立 Worker 工作中完成一份材料的笔记与 Review。"""
+
+    await _learn_one_material(project_id, material_id, method_version, model_tasks or ExpertModelTasks())
+    async with pg_manager.get_async_session_context() as db:
+        status = await _finish_material_learning(db, project_id, method_version)
+    return {
+        "project_id": project_id,
+        "material_id": material_id,
+        "method_version": method_version,
+        "status": status,
+    }
+
+
+async def mark_material_learning_attention(
+    project_id: str,
+    material_id: str,
+    method_version: int,
+    error: str,
+) -> None:
+    """把单材料工作的确定性失败保存为需要处理。"""
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
-        project = await repo.get_project(project_id)
-        if project is None:
-            raise ValueError("专家项目不存在")
-        if project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
-            return {"project_id": project_id, "ignored": True}
-        if project.status == "paused":
-            return {"project_id": project_id, "status": "paused"}
-        materials = await repo.list_project_materials(project_id)
-        pending_ids = [
-            item.material_id for item in materials if item.status in {"pending", "learning", "review_revise"}
-        ]
-
-    tasks = model_tasks or ExpertModelTasks()
-    semaphore = asyncio.Semaphore(max(1, MATERIAL_LEARNING_CONCURRENCY))
-
-    async def learn(material_id: str) -> None:
-        async with semaphore:
-            await _learn_one_material(project_id, material_id, method_version, tasks)
-
-    await asyncio.gather(*(learn(material_id) for material_id in pending_ids))
-    async with pg_manager.get_async_session_context() as db:
-        status = await _finish_material_learning(db, project_id, method_version)
-    return {"project_id": project_id, "method_version": method_version, "status": status}
+        project = await repo.lock_project(project_id)
+        material = await repo.lock_material(material_id)
+        if (
+            project is None
+            or material is None
+            or material.project_id != project_id
+            or project.stage != MATERIAL_LEARNING_STAGE
+            or project.method_version != method_version
+            or project.status == "paused"
+            or material.status not in {"pending", "learning", "review_revise"}
+        ):
+            return
+        material.status = "needs_attention"
+        material.error_message = error
+        await _finish_material_learning(db, project_id, method_version)
 
 
 async def retry_material_learning(
@@ -1001,10 +1023,6 @@ async def _learn_one_material(
             or material.status not in {"pending", "learning", "review_revise"}
         ):
             return
-        if not material.text_path:
-            material.status = "needs_attention"
-            material.error_message = "材料缺少可靠正文"
-            return
         resume_note_contract = material.note_contract if material.status in {"learning", "review_revise"} else None
         resume_review = material.review if resume_note_contract else None
         resume_revision_count = material.revision_count if resume_note_contract else 0
@@ -1016,50 +1034,47 @@ async def _learn_one_material(
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "title": material.title,
             "source_path": material.source_path,
-            "text_path": material.text_path,
             "line_count": material.line_count,
+            "material": SimpleNamespace(
+                project_id=material.project_id,
+                material_unit_id=material.material_unit_id,
+                source_file_id=material.source_file_id,
+                source_start_line=material.source_start_line,
+                source_end_line=material.source_end_line,
+                text_path=material.text_path,
+                line_count=material.line_count,
+            ),
             "resume_note_contract": resume_note_contract,
             "resume_review": resume_review,
             "resume_revision_count": resume_revision_count,
         }
         await db.commit()
 
-    text = read_material_text(project_id, snapshot["text_path"])
-    result = None
-    last_error = None
-    for attempt in range(2):
-        try:
-            material_view = SimpleNamespace(
-                material_id=material_id,
-                title=snapshot["title"],
-                source_path=snapshot["source_path"],
-                line_count=snapshot["line_count"],
-            )
-            result = await _run_method_sample(
-                tasks=tasks,
-                model_spec=snapshot["model_spec"],
-                learning_plan=snapshot["learning_plan"],
-                prompt_pack=snapshot["prompt_pack"],
-                material=material_view,
-                alias="CURRENT_MATERIAL",
-                text=text,
-                starting_note=(
-                    MaterialNoteResult.model_validate(snapshot["resume_note_contract"])
-                    if snapshot["resume_note_contract"]
-                    else None
-                ),
-                starting_review=(
-                    MaterialReviewResult.model_validate(snapshot["resume_review"])
-                    if snapshot["resume_review"]
-                    else None
-                ),
-                starting_revision_count=snapshot["resume_revision_count"],
-            )
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-            if attempt == 0:
-                await asyncio.sleep(2)
+    text = await read_expert_material_text(snapshot["material"])
+    material_view = SimpleNamespace(
+        material_id=material_id,
+        title=snapshot["title"],
+        source_path=snapshot["source_path"],
+        line_count=snapshot["line_count"],
+    )
+    result = await _run_method_sample(
+        tasks=tasks,
+        model_spec=snapshot["model_spec"],
+        learning_plan=snapshot["learning_plan"],
+        prompt_pack=snapshot["prompt_pack"],
+        material=material_view,
+        alias="CURRENT_MATERIAL",
+        text=text,
+        starting_note=(
+            MaterialNoteResult.model_validate(snapshot["resume_note_contract"])
+            if snapshot["resume_note_contract"]
+            else None
+        ),
+        starting_review=(
+            MaterialReviewResult.model_validate(snapshot["resume_review"]) if snapshot["resume_review"] else None
+        ),
+        starting_revision_count=snapshot["resume_revision_count"],
+    )
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -1073,11 +1088,6 @@ async def _learn_one_material(
             or material.status != "learning"
         ):
             return
-        if result is None:
-            material.status = "needs_attention"
-            material.error_message = str(last_error or "材料学习任务未返回结果")
-            return
-
         final_note = result["revision"] or result["note"]
         material.status = result["status"]
         material.method_version = method_version
@@ -1090,7 +1100,7 @@ async def _learn_one_material(
 
 async def _finish_material_learning(db: AsyncSession, project_id: str, method_version: int) -> str:
     repo = ExpertRepository(db)
-    project = await repo.get_project(project_id)
+    project = await repo.lock_project(project_id)
     if project is None or project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
         return "ignored"
     if project.status == "paused":
@@ -1325,19 +1335,17 @@ def _build_method_calibration_samples(samples: list[Any], sample_ids: list[str])
 def _build_material_catalog(materials: list[Any], aliases: dict[str, str]) -> str:
     lines = []
     for material in materials:
-        lines.append(
-            " | ".join(
-                [
-                    aliases[material.material_id],
-                    material.title,
-                    material.source_path,
-                    material.file_type,
-                    f"{material.line_count} 行",
-                    f"约 {material.token_count} tokens",
-                    material.status,
-                ]
-            )
-        )
+        facts = [
+            aliases[material.material_id],
+            material.title,
+            material.source_path,
+            material.file_type,
+            f"{material.line_count} 行",
+        ]
+        if material.token_count:
+            facts.append(f"约 {material.token_count} tokens")
+        facts.append(material.status)
+        lines.append(" | ".join(facts))
     return "\n".join(lines)
 
 
@@ -1363,6 +1371,7 @@ __all__ = [
     "get_expert_project_detail",
     "get_expert_material_text",
     "list_expert_projects",
+    "mark_material_learning_attention",
     "mark_project_attention",
     "pause_expert_project",
     "prepare_expert_project",

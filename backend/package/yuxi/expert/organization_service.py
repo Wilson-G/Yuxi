@@ -20,8 +20,9 @@ from yuxi.expert.contracts import (
     TopicMapResult,
     TopicResearchResult,
 )
+from yuxi.expert.materials import format_expert_material_excerpt, load_expert_material_source_texts
 from yuxi.expert.model_tasks import ExpertModelTasks
-from yuxi.expert.storage import read_material_text
+from yuxi.expert.storage import read_material_text as read_legacy_material_text
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -423,6 +424,7 @@ async def prepare_topic_evidence(
             return _serialize_sample_topic(topic)
         materials = await repo.list_project_materials(project_id)
         selected = [material for material in materials if material.material_id in set(topic.material_ids or [])]
+        source_texts = await load_expert_material_source_texts(selected)
         topic.status = "preparing_evidence"
         topic.error_message = None
         snapshot = {
@@ -430,7 +432,7 @@ async def prepare_topic_evidence(
             "learning_plan": project.learning_plan or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "topic": format_topic_definition(topic),
-            "notes_and_evidence": _format_notes_with_source_evidence(project_id, selected, note_aliases),
+            "notes_and_evidence": _format_notes_with_source_evidence(selected, note_aliases, source_texts),
             "topic_key": topic.topic_key,
             "allowed_materials": {note_aliases[item.material_id]: item for item in selected},
         }
@@ -506,6 +508,7 @@ async def write_topic_handout(
             return {"topic_id": topic_id, "status": "needs_attention", "reason": "主题证据包尚未准备完成"}
         materials = await repo.list_project_materials(project_id)
         selected = [material for material in materials if material.material_id in set(topic.material_ids or [])]
+        source_texts = await load_expert_material_source_texts(selected)
         topic.status = "writing"
         snapshot = {
             "model_spec": project.model_spec,
@@ -522,6 +525,7 @@ async def write_topic_handout(
             selected,
             note_aliases,
             snapshot["evidence_pack"],
+            source_texts,
         )
         await db.commit()
 
@@ -759,18 +763,22 @@ def format_handout_notes_with_evidence(
     materials: list[Any],
     aliases: dict[str, str],
     evidence_pack: TopicEvidencePack,
+    source_texts: dict[str, str] | None = None,
 ) -> str:
     """把完整已审笔记与证据包指定的可靠正文原文组装为讲义输入。"""
 
     material_by_alias = {aliases[material.material_id]: material for material in materials}
+    source_texts = source_texts or {
+        material.material_id: read_legacy_material_text(project_id, material.text_path) for material in materials
+    }
     evidence_sections = []
     for item in evidence_pack.evidence:
         material = material_by_alias.get(item.note_alias)
         if material is None:
             raise ValueError("主题证据引用了当前主题范围外的材料")
-        excerpt = _format_source_excerpt(
-            project_id,
+        excerpt = format_expert_material_excerpt(
             material,
+            source_texts[material.material_id],
             start_line=item.start_line,
             end_line=item.end_line,
         )
@@ -786,9 +794,9 @@ def format_handout_notes_with_evidence(
 
 
 def _format_notes_with_source_evidence(
-    project_id: str,
     materials: list[Any],
     aliases: dict[str, str],
+    source_texts: dict[str, str],
 ) -> str:
     sections = []
     for material in materials:
@@ -796,9 +804,9 @@ def _format_notes_with_source_evidence(
         for anchor in (material.note_contract or {}).get("evidence") or []:
             start = int(anchor["start_line"])
             end = int(anchor["end_line"])
-            excerpt = _format_source_excerpt(
-                project_id,
+            excerpt = format_expert_material_excerpt(
                 material,
+                source_texts[material.material_id],
                 start_line=start,
                 end_line=end,
             )
@@ -808,19 +816,6 @@ def _format_notes_with_source_evidence(
             f"来源：{material.source_path}\n\n{material.note or ''}\n\n" + "\n\n".join(evidence_sections)
         )
     return "\n\n".join(sections)
-
-
-def _format_source_excerpt(
-    project_id: str,
-    material: Any,
-    *,
-    start_line: int,
-    end_line: int,
-) -> str:
-    lines = read_material_text(project_id, material.text_path).splitlines()
-    if start_line < 1 or start_line > end_line or end_line > len(lines):
-        raise ValueError("主题证据引用超出可靠正文范围")
-    return "\n".join(f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start_line, end_line + 1))
 
 
 def _format_excluded_materials(materials: list[Any]) -> str:

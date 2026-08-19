@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,9 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.expert import service, storage, worker
+from yuxi.expert import service, storage
 from yuxi.expert.contracts import (
     MaterialNoteResult,
     MaterialReviewResult,
@@ -21,6 +23,7 @@ from yuxi.expert.contracts import (
     ProjectPromptPack,
 )
 from yuxi.repositories.expert_repository import ExpertRepository
+from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.models_business import Base
 
 pytestmark = pytest.mark.unit
@@ -90,26 +93,76 @@ async def _create_project(
     stage: str = service.ORIENTATION_STAGE,
     status: str = "preparing",
 ):
-    uploads = []
-    for index in range(1, count + 1):
-        path = expert_env.save_dir / f"upload-{index:02d}.md"
-        path.write_text(f"RAW-{index:02d}", encoding="utf-8")
-        uploads.append((f"{index:02d}-material.md", path))
-
+    project_id = uuid.uuid4().hex
+    project_root = storage.create_project_workspace(project_id)
     async with expert_env.factory() as db:
-        project = await service.create_expert_project(
-            db,
+        repo = ExpertRepository(db)
+        await repo.create_project(
+            project_id=project_id,
             name="判断方法项目",
             description="学习材料中的判断条件与边界",
             model_spec="provider:model",
             created_by="user-1",
-            uploads=uploads,
+            stage=stage,
+            status=status,
         )
-        project.stage = stage
-        project.status = status
+        materials = []
+        for index in range(1, count + 1):
+            material_id = uuid.uuid4().hex
+            raw_path = f"raw/{material_id}.md"
+            (project_root / raw_path).write_text(f"RAW-{index:02d}", encoding="utf-8")
+            materials.append(
+                {
+                    "material_id": material_id,
+                    "title": f"{index:02d}-material",
+                    "source_path": f"{index:02d}-material.md",
+                    "raw_path": raw_path,
+                    "file_type": ".md",
+                    "status": "pending",
+                }
+            )
+        await repo.create_materials(project_id, materials)
         await db.commit()
-        materials = await ExpertRepository(db).list_project_materials(project.project_id)
-        return project.project_id, [material.material_id for material in materials]
+        stored = await repo.list_project_materials(project_id)
+        return project_id, [material.material_id for material in stored]
+
+
+async def _create_ready_library_units(expert_env) -> list[str]:
+    """创建两个可供新项目选择的资料库材料单元。"""
+
+    async with expert_env.factory() as db:
+        repo = MaterialLibraryRepository(db)
+        await repo.create_library(library_id="library-1", name="测试资料库", created_by="user-1")
+        unit_ids = []
+        for index, relative_path in enumerate(("first.md", "nested/second.md"), start=1):
+            file_id = f"file-{index}"
+            await repo.create_source_file(
+                file_id=file_id,
+                library_id="library-1",
+                directory_id=None,
+                original_filename=Path(relative_path).name,
+                relative_path=relative_path,
+                file_type=".md",
+                file_size=10,
+                source_bucket="materials",
+                source_object=f"sources/{file_id}.md",
+                markdown_bucket="materials",
+                markdown_object=f"normalized/{file_id}.md",
+                status="ready",
+                unit_status="ready",
+                progress=100,
+                line_count=3,
+                error_message=None,
+                created_by="user-1",
+            )
+            unit_id = f"unit-{index}"
+            await repo.create_material_units(
+                file_id,
+                [{"unit_id": unit_id, "title": f"材料 {index}", "start_line": 1, "end_line": 3}],
+            )
+            unit_ids.append(unit_id)
+        await db.commit()
+        return unit_ids
 
 
 async def _make_materials_ready(expert_env, project_id: str) -> list[str]:
@@ -404,14 +457,10 @@ async def _wait_until(predicate, *, timeout: float = 3.0) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_project_commits_independent_materials_before_queue_submission(
+async def test_create_project_uses_ready_units_without_raw_or_text_copies(
     expert_env,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = expert_env.save_dir / "first.md"
-    second = expert_env.save_dir / "second.md"
-    first.write_text("FIRST MATERIAL", encoding="utf-8")
-    second.write_text("SECOND MATERIAL", encoding="utf-8")
+    unit_ids = await _create_ready_library_units(expert_env)
 
     async with expert_env.factory() as db:
         project = await service.create_expert_project(
@@ -420,37 +469,78 @@ async def test_create_project_commits_independent_materials_before_queue_submiss
             description="",
             model_spec="provider:model",
             created_by="user-1",
-            uploads=[("first.md", first), ("nested/second.md", second)],
+            material_unit_ids=unit_ids,
         )
         project_id = project.project_id
-        await db.rollback()
+        assert project.status == "ready"
 
-    observed_at_enqueue: list[tuple[str, list[str]]] = []
-
-    class FakePool:
-        async def enqueue_job(self, _function: str, project_id: str, **_kwargs) -> None:
-            async with expert_env.factory() as observer:
-                stored_project = await ExpertRepository(observer).get_project(project_id)
-                materials = await ExpertRepository(observer).list_project_materials(project_id)
-                assert stored_project is not None
-                observed_at_enqueue.append((stored_project.status, [item.source_path for item in materials]))
-
-    async def fake_get_arq_pool():
-        return FakePool()
-
-    monkeypatch.setattr(worker, "get_arq_pool", fake_get_arq_pool)
-    await worker.enqueue_project_preparation(project_id)
-
-    assert observed_at_enqueue == [("preparing", ["first.md", "nested/second.md"])]
     project_root = storage.get_expert_projects_root() / project_id
     async with expert_env.factory() as db:
         materials = await ExpertRepository(db).list_project_materials(project_id)
-    assert len(materials) == 2
-    assert len({material.material_id for material in materials}) == 2
-    assert [(project_root / material.raw_path).read_text(encoding="utf-8") for material in materials] == [
-        "FIRST MATERIAL",
-        "SECOND MATERIAL",
-    ]
+    assert [material.material_unit_id for material in materials] == unit_ids
+    assert [material.source_path for material in materials] == ["first.md", "nested/second.md"]
+    assert all(material.status == "ready" for material in materials)
+    assert all(material.raw_path is None and material.text_path is None for material in materials)
+    assert project_root.is_dir()
+    assert not (project_root / "raw").exists()
+    assert not (project_root / "text").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_duplicate_or_unready_units_without_partial_project(expert_env) -> None:
+    [ready_unit, _] = await _create_ready_library_units(expert_env)
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="不能重复选择"):
+            await service.create_expert_project(
+                db,
+                name="重复材料项目",
+                description="",
+                model_spec="provider:model",
+                created_by="user-1",
+                material_unit_ids=[ready_unit, ready_unit],
+            )
+        with pytest.raises(ValueError, match="不存在或尚未处理完成"):
+            await service.create_expert_project(
+                db,
+                name="未就绪材料项目",
+                description="",
+                model_spec="provider:model",
+                created_by="user-1",
+                material_unit_ids=["not-ready"],
+            )
+
+    async with expert_env.factory() as db:
+        assert await ExpertRepository(db).list_projects() == []
+
+
+@pytest.mark.asyncio
+async def test_create_project_commit_failure_removes_project_and_output_workspace(expert_env) -> None:
+    unit_ids = await _create_ready_library_units(expert_env)
+    projects_root = storage.get_expert_projects_root()
+    before = {path.name for path in projects_root.iterdir()}
+
+    async with expert_env.factory() as db:
+
+        def fail_commit(_session) -> None:
+            raise RuntimeError("项目提交失败")
+
+        event.listen(db.sync_session, "before_commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="项目提交失败"):
+                await service.create_expert_project(
+                    db,
+                    name="事务失败项目",
+                    description="",
+                    model_spec="provider:model",
+                    created_by="user-1",
+                    material_unit_ids=unit_ids,
+                )
+        finally:
+            event.remove(db.sync_session, "before_commit", fail_commit)
+
+    async with expert_env.factory() as db:
+        assert await ExpertRepository(db).list_projects() == []
+    assert {path.name for path in projects_root.iterdir()} == before
 
 
 @pytest.mark.asyncio
@@ -458,8 +548,6 @@ async def test_create_project_requires_configured_model_context_length(
     expert_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = expert_env.save_dir / "material.md"
-    source.write_text("完整材料", encoding="utf-8")
     monkeypatch.setattr(
         service.model_cache,
         "get_model_info",
@@ -474,7 +562,7 @@ async def test_create_project_requires_configured_model_context_length(
                 description="",
                 model_spec="provider:model",
                 created_by="user-1",
-                uploads=[("material.md", source)],
+                material_unit_ids=["unit-1"],
             )
 
 
@@ -659,10 +747,7 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
 
 
 @pytest.mark.asyncio
-async def test_material_learning_refills_slots_and_attention_blocks_until_explicit_exclusion(
-    expert_env,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_material_learning_runs_one_independent_job_per_material(expert_env) -> None:
     project_id, _ = await _create_project(expert_env, count=5)
     material_ids = await _make_materials_ready(expert_env, project_id)
     async with expert_env.factory() as db:
@@ -681,58 +766,18 @@ async def test_material_learning_refills_slots_and_attention_blocks_until_explic
         materials = await repo.list_project_materials(project_id)
         titles = [material.title for material in materials]
 
-    tasks = ConcurrentLearningTasks(titles, failing_title=titles[-1])
-    monkeypatch.setattr(service, "MATERIAL_LEARNING_CONCURRENCY", 2)
-
-    async def fast_retry_sleep(delay: float) -> None:
-        await REAL_ASYNCIO_SLEEP(0 if delay == 2 else delay)
-
-    monkeypatch.setattr(service.asyncio, "sleep", fast_retry_sleep)
-
-    stage_task = asyncio.create_task(service.run_material_learning_stage(project_id, 1, model_tasks=tasks))
-    await _wait_until(lambda: len(tasks.start_order) == 2)
-    assert set(tasks.start_order) == set(titles[:2])
-    assert tasks.active_titles == set(titles[:2])
-    assert tasks.max_active == 2
-
-    tasks.gates[titles[0]].set()
-    await _wait_until(lambda: len(tasks.start_order) == 3)
-    assert set(tasks.start_order[:3]) == set(titles[:3])
-    assert tasks.active_titles == {titles[1], titles[2]}
+    tasks = ConcurrentLearningTasks(titles, failing_title="")
+    jobs = [
+        asyncio.create_task(service.run_material_learning_stage(project_id, material_id, 1, model_tasks=tasks))
+        for material_id in material_ids
+    ]
+    await _wait_until(lambda: len(tasks.start_order) == len(material_ids))
+    assert set(tasks.start_order) == set(titles)
+    assert tasks.max_active == len(material_ids)
 
     for gate in tasks.gates.values():
         gate.set()
-    result = await stage_task
-
-    async with expert_env.factory() as db:
-        repo = ExpertRepository(db)
-        project = await repo.get_project(project_id)
-        materials = await repo.list_project_materials(project_id)
-    statuses = {material.title: material.status for material in materials}
-    assert result["status"] == "needs_attention"
-    assert project is not None
-    assert project.stage == service.MATERIAL_LEARNING_STAGE
-    assert project.status == "needs_attention"
-    assert statuses == {**{title: "passed" for title in titles[:-1]}, titles[-1]: "needs_attention"}
-    assert tasks.max_active == 2
-    assert set(tasks.start_order) == set(titles)
-    assert tasks.call_counts == Counter({**{title: 1 for title in titles[:-1]}, titles[-1]: 2})
-
-    calls_before_recovery = tasks.call_counts.copy()
-    second_result = await service.run_material_learning_stage(project_id, 1, model_tasks=tasks)
-    assert second_result["status"] == "needs_attention"
-    assert tasks.call_counts == calls_before_recovery
-
-    failed_material = next(material for material in materials if material.title == titles[-1])
-    async with expert_env.factory() as db:
-        should_start_organization = await service.exclude_material(
-            db,
-            project_id=project_id,
-            material_id=failed_material.material_id,
-            created_by="user-1",
-            reason="模型两次失败，用户明确排除后继续",
-        )
-    assert should_start_organization is True
+    await asyncio.gather(*jobs)
 
     async with expert_env.factory() as db:
         repo = ExpertRepository(db)
@@ -741,10 +786,18 @@ async def test_material_learning_refills_slots_and_attention_blocks_until_explic
     assert project is not None
     assert project.stage == "organization"
     assert project.status == "preparing"
-    assert {material.title: material.status for material in materials} == {
-        **{title: "passed" for title in titles[:-1]},
-        titles[-1]: "excluded",
-    }
+    assert all(material.status == "passed" for material in materials)
+    assert tasks.call_counts == Counter({title: 1 for title in titles})
+
+    calls_before_recovery = tasks.call_counts.copy()
+    second_result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=tasks,
+    )
+    assert second_result["status"] == "ignored"
+    assert tasks.call_counts == calls_before_recovery
 
 
 @pytest.mark.asyncio
@@ -780,7 +833,12 @@ async def test_nontransferable_note_is_not_promoted_to_passed(expert_env, note_d
         await repo.update_material(material_ids[0], status="pending")
         await db.commit()
 
-    result = await service.run_material_learning_stage(project_id, 1, model_tasks=NontransferableTasks())
+    result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=NontransferableTasks(),
+    )
 
     async with expert_env.factory() as db:
         material = await ExpertRepository(db).get_material(material_ids[0])
@@ -855,6 +913,7 @@ async def test_material_learning_revises_until_reviewer_passes(expert_env) -> No
     tasks = RepeatedRevisionTasks()
     result = await service.run_material_learning_stage(
         project_id,
+        material_ids[0],
         1,
         model_tasks=tasks,
     )
@@ -924,6 +983,7 @@ async def test_material_learning_requires_attention_after_two_unsuccessful_revis
 
     result = await service.run_material_learning_stage(
         project_id,
+        material_ids[0],
         1,
         model_tasks=NeverPassingReviewTasks(),
     )
@@ -1016,7 +1076,12 @@ async def test_recovered_material_uses_only_its_remaining_revision(expert_env) -
         await db.commit()
 
     tasks = RemainingRevisionTasks()
-    result = await service.run_material_learning_stage(project_id, 1, model_tasks=tasks)
+    result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=tasks,
+    )
 
     async with expert_env.factory() as db:
         material = await ExpertRepository(db).get_material(material_ids[0])

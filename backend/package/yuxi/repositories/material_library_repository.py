@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.storage.postgres.models_business import ExpertMaterial
 from yuxi.storage.postgres.models_material import MaterialDirectory, MaterialLibrary, MaterialSourceFile, MaterialUnit
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -116,6 +117,14 @@ class MaterialLibraryRepository:
         """按 ID 读取来源文件。"""
 
         result = await self.db.execute(select(MaterialSourceFile).where(MaterialSourceFile.file_id == file_id))
+        return result.scalar_one_or_none()
+
+    async def lock_source_file(self, file_id: str) -> MaterialSourceFile | None:
+        """锁定来源文件，供引用建立、删除和重新章节化互斥使用。"""
+
+        result = await self.db.execute(
+            select(MaterialSourceFile).where(MaterialSourceFile.file_id == file_id).with_for_update()
+        )
         return result.scalar_one_or_none()
 
     async def get_source_file_by_path(self, library_id: str, relative_path: str) -> MaterialSourceFile | None:
@@ -243,6 +252,35 @@ class MaterialLibraryRepository:
             )
         )
         return [(row[0], row[1]) for row in result.all()]
+
+    async def list_ready_material_units_by_ids(
+        self,
+        unit_ids: list[str],
+    ) -> list[tuple[MaterialUnit, MaterialSourceFile]]:
+        """读取一组来源和边界都已就绪的材料单元。"""
+
+        if not unit_ids:
+            return []
+        result = await self.db.execute(
+            select(MaterialUnit, MaterialSourceFile)
+            .join(MaterialSourceFile, MaterialSourceFile.file_id == MaterialUnit.file_id)
+            .where(
+                MaterialUnit.unit_id.in_(unit_ids),
+                MaterialUnit.status == "ready",
+                MaterialSourceFile.status == "ready",
+                MaterialSourceFile.unit_status == "ready",
+            )
+            .with_for_update()
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def source_file_has_expert_references(self, file_id: str) -> bool:
+        """判断来源文件是否已经被专家项目材料引用。"""
+
+        count = await self.db.scalar(
+            select(func.count()).select_from(ExpertMaterial).where(ExpertMaterial.source_file_id == file_id)
+        )
+        return int(count or 0) > 0
 
     async def delete_material_units(self, file_id: str) -> None:
         """删除一份来源文件的边界确认结果。"""

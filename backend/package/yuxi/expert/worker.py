@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 from arq import Retry
+from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+from sqlalchemy.exc import OperationalError
 
 from yuxi.expert.compilation_service import run_handout_compilation
 from yuxi.expert.organization_service import initialize_organization_stage, run_organization_stage
 from yuxi.expert.service import (
+    mark_material_learning_attention,
     mark_project_attention,
     prepare_expert_project,
     run_material_learning_stage,
@@ -58,16 +62,40 @@ async def enqueue_method_calibration(project_id: str, method_version: int) -> No
     )
 
 
-async def enqueue_material_learning(project_id: str, method_version: int, *, token: str = "initial") -> None:
-    """提交逐份材料学习阶段任务。"""
+async def enqueue_material_learning(project_id: str, material_id: str, method_version: int) -> None:
+    """使用项目、材料和方法版本提交一个稳定的单材料工作。"""
 
     pool = await get_arq_pool()
     await pool.enqueue_job(
         "process_expert_material_learning",
         project_id,
+        material_id,
         method_version,
-        _job_id=f"expert:materials:{project_id}:v{method_version}:{token}",
+        _job_id=f"expert:material:{project_id}:{material_id}:v{method_version}",
     )
+
+
+async def enqueue_pending_material_learning(project_id: str, method_version: int) -> None:
+    """只投递当前方法版本下尚未完成的材料工作。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        if (
+            project is None
+            or project.stage != "material_learning"
+            or project.status != "running"
+            or project.method_version != method_version
+        ):
+            return
+        materials = await repo.list_project_materials(project_id)
+        pending_ids = [
+            material.material_id
+            for material in materials
+            if material.status in {"pending", "learning", "review_revise"}
+        ]
+    for material_id in pending_ids:
+        await enqueue_material_learning(project_id, material_id, method_version)
 
 
 async def enqueue_organization(project_id: str, organization_version: int) -> None:
@@ -120,7 +148,7 @@ async def enqueue_resumed_expert_project(project_id: str) -> None:
     elif stage == "orientation" and status == "running":
         await enqueue_project_orientation(project_id, method_version)
     elif stage == "material_learning" and status == "running":
-        await enqueue_material_learning(project_id, method_version, token="resume")
+        await enqueue_pending_material_learning(project_id, method_version)
     elif stage == "organization" and status == "preparing":
         organization_version = await initialize_organization_stage(project_id)
         await enqueue_organization(project_id, organization_version)
@@ -163,7 +191,7 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
         try:
             result = await run_method_calibration(project_id, method_version)
             if result.get("status") == "running":
-                await enqueue_material_learning(project_id, method_version)
+                await enqueue_pending_material_learning(project_id, method_version)
             return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
@@ -172,22 +200,26 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
             raise
 
 
-async def process_expert_material_learning(ctx, project_id: str, method_version: int) -> dict:
-    """在 Worker 中持续补位处理项目内独立材料任务。"""
+async def process_expert_material_learning(
+    ctx,
+    project_id: str,
+    material_id: str,
+    method_version: int,
+) -> dict:
+    """在 Worker 中执行一份材料，并由持久化事实决定阶段交接。"""
 
-    async with _project_job_lock(project_id):
-        try:
-            result = await run_material_learning_stage(project_id, method_version)
-            if result.get("status") == "preparing":
-                organization_version = await initialize_organization_stage(project_id)
-                await enqueue_organization(project_id, organization_version)
-                result["organization_version"] = organization_version
-            return result
-        except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=10) from exc
-            await mark_project_attention(project_id, str(exc))
-            raise
+    try:
+        result = await run_material_learning_stage(project_id, material_id, method_version)
+        if result.get("status") == "preparing":
+            organization_version = await initialize_organization_stage(project_id)
+            await enqueue_organization(project_id, organization_version)
+            result["organization_version"] = organization_version
+        return result
+    except Exception as exc:
+        if _is_transient_material_error(exc) and _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            raise Retry(defer=10) from exc
+        await mark_material_learning_attention(project_id, material_id, method_version, str(exc))
+        raise
 
 
 async def process_expert_organization(ctx, project_id: str, organization_version: int) -> dict:
@@ -258,7 +290,7 @@ async def recover_expert_project_jobs() -> None:
         elif project.status == "running" and project.method_version > 0:
             await enqueue_project_orientation(project.project_id, project.method_version)
     for project in learning_projects:
-        await enqueue_material_learning(project.project_id, project.method_version, token="recovery")
+        await enqueue_pending_material_learning(project.project_id, project.method_version)
     for project in organization_projects:
         version = project.organization_version
         if project.status == "preparing":
@@ -277,6 +309,29 @@ def _job_try(ctx: dict) -> int:
         return max(1, int(ctx.get("job_try", 1)))
     except (TypeError, ValueError):
         return 1
+
+
+def _is_transient_material_error(exc: Exception) -> bool:
+    """只识别当前供应商调用中可明确重试的瞬时失败。"""
+
+    if isinstance(
+        exc,
+        (
+            OperationalError,
+            ConnectionError,
+            TimeoutError,
+            asyncio.TimeoutError,
+            httpx.TransportError,
+            APIConnectionError,
+            APITimeoutError,
+            RateLimitError,
+            InternalServerError,
+        ),
+    ):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code in {502, 503, 504}
+    return False
 
 
 def _project_job_lock(project_id: str) -> asyncio.Lock:
@@ -346,6 +401,7 @@ async def _mark_handout_compilation_attention(
 
 __all__ = [
     "enqueue_material_learning",
+    "enqueue_pending_material_learning",
     "enqueue_handout_compilation",
     "enqueue_method_calibration",
     "enqueue_organization",

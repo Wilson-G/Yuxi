@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
-
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +39,7 @@ from yuxi.expert.worker import (
     enqueue_handout_compilation,
     enqueue_method_calibration,
     enqueue_material_learning,
+    enqueue_pending_material_learning,
     enqueue_organization,
     enqueue_project_orientation,
     enqueue_project_preparation,
@@ -51,14 +48,21 @@ from yuxi.expert.worker import (
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.logging_config import logger
-from yuxi.utils.upload_utils import write_upload_to_path
 
 expert_projects = APIRouter(
     prefix="/expert-projects",
     tags=["expert-projects"],
     dependencies=[Depends(get_admin_user)],
 )
-MAX_PROJECT_UPLOAD_BYTES = int(os.getenv("EXPERT_PROJECT_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+
+
+class CreateExpertProjectRequest(BaseModel):
+    """新项目基础信息和已就绪资料库单元。"""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    model_spec: str = ""
+    material_unit_ids: list[str] = Field(min_length=1)
 
 
 class OrientationRequest(BaseModel):
@@ -154,57 +158,30 @@ async def get_expert_candidate_preview_route(
 
 @expert_projects.post("")
 async def create_expert_project_route(
-    name: str = Form(...),
-    description: str = Form(""),
-    model_spec: str = Form(""),
-    files: list[UploadFile] = File(...),
+    payload: CreateExpertProjectRequest,
     current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建项目并把上传文件保存为待转换的自然材料单元。"""
+    """从资料库中已经处理完成的材料单元创建专家项目。"""
 
-    requested_model = str(model_spec or "").strip()
+    requested_model = str(payload.model_spec or "").strip()
     if not requested_model:
         requested_model = resolve_chat_model_spec((await system_options.get(db))["default_model"])
 
     try:
-        with tempfile.TemporaryDirectory(prefix="expert-project-upload-") as temp_dir:
-            staged_uploads = []
-            total_bytes = 0
-            for index, upload in enumerate(files):
-                remaining = MAX_PROJECT_UPLOAD_BYTES - total_bytes
-                if remaining <= 0:
-                    raise ValueError("专家项目上传内容过大")
-                suffix = Path(upload.filename or "").suffix
-                target = Path(temp_dir) / f"upload-{index}{suffix}"
-                written = await write_upload_to_path(
-                    upload,
-                    target,
-                    max_size_bytes=remaining,
-                    too_large_message="专家项目上传内容过大",
-                )
-                total_bytes += written
-                staged_uploads.append((upload.filename or f"material-{index}", target))
-
-            project = await create_expert_project(
-                db,
-                name=name,
-                description=description,
-                model_spec=requested_model,
-                created_by=str(current_user.uid),
-                uploads=staged_uploads,
-            )
-        await enqueue_project_preparation(project.project_id)
+        project = await create_expert_project(
+            db,
+            name=payload.name,
+            description=payload.description,
+            model_spec=requested_model,
+            created_by=str(current_user.uid),
+            material_unit_ids=payload.material_unit_ids,
+        )
         return {"item": project.to_dict()}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Failed to create expert project")
-        if "project" in locals():
-            raise HTTPException(
-                status_code=503,
-                detail="项目已保存，但后台任务暂时无法投递；Worker 恢复后会继续",
-            ) from exc
         raise HTTPException(status_code=500, detail="创建专家项目失败") from exc
 
 
@@ -255,7 +232,7 @@ async def confirm_project_method_route(
         if project is not None and project.stage == "orientation":
             await enqueue_method_calibration(project_id, method_version)
         else:
-            await enqueue_material_learning(project_id, method_version)
+            await enqueue_pending_material_learning(project_id, method_version)
         return {"project_id": project_id, "method_version": method_version, "status": "running"}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -497,7 +474,7 @@ async def retry_material_learning_route(
             material_id=material_id,
             created_by=str(current_user.uid),
         )
-        await enqueue_material_learning(project_id, method_version, token=material_id)
+        await enqueue_material_learning(project_id, material_id, method_version)
         return {"project_id": project_id, "material_id": material_id, "status": "pending"}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

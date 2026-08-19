@@ -15,7 +15,8 @@ import yaml
 
 from yuxi.agents.skills.service import parse_skill_dir_metadata
 from yuxi.expert.index import build_search_row
-from yuxi.expert.storage import get_project_root, read_material_text
+from yuxi.expert.materials import format_expert_material_excerpt, map_expert_material_source_lines
+from yuxi.expert.storage import get_project_root, read_material_text as read_legacy_material_text
 
 FINAL_SKILL_ENTRIES = {"SKILL.md", "nav", "references", "wiki", "search", "sources.jsonl"}
 
@@ -33,6 +34,7 @@ def build_candidate_skill(
     topics: list[Any],
     navigation: str,
     skill_body: str,
+    material_source_texts: dict[str, str] | None = None,
 ) -> str:
     """生成通过结构和引用检查的版本化候选 Skill，并原子晋升。"""
 
@@ -47,6 +49,7 @@ def build_candidate_skill(
             temp,
             project=project,
             materials=materials,
+            material_source_texts=material_source_texts,
             topics=topics,
             navigation=navigation,
             skill_body=skill_body,
@@ -102,6 +105,7 @@ def _write_candidate_files(
     topics: list[Any],
     navigation: str,
     skill_body: str,
+    material_source_texts: dict[str, str] | None,
 ) -> None:
     for directory in ("nav", "references", "wiki", "search"):
         (root / directory).mkdir()
@@ -135,23 +139,34 @@ def _write_candidate_files(
             topic_evidence_keys[topic.topic_key].append(key)
 
     evidence_ids = {key: f"E{index:04d}" for index, key in enumerate(evidence_uses, start=1)}
+    if material_source_texts is None:
+        material_source_texts = {
+            material.material_id: read_legacy_material_text(project.project_id, material.text_path)
+            for material in materials
+        }
     source_rows = []
     search_rows = []
     for key, details in evidence_uses.items():
         material_id, start_line, end_line = key
         material = details["material"]
         evidence_id = evidence_ids[key]
-        lines = read_material_text(project.project_id, material.text_path).splitlines()
-        if start_line < 1 or start_line > end_line or end_line > len(lines):
-            raise ValueError("讲义引用行号超出可靠正文范围")
-        excerpt = "\n".join(
-            f"L{line_number}: {lines[line_number - 1]}" for line_number in range(start_line, end_line + 1)
+        source_start_line, source_end_line = map_expert_material_source_lines(
+            material,
+            start_line=start_line,
+            end_line=end_line,
+        )
+        excerpt = format_expert_material_excerpt(
+            material,
+            material_source_texts[material_id],
+            start_line=start_line,
+            end_line=end_line,
+            source_line_numbers=True,
         )
         reference_path = f"references/{evidence_id.lower()}.md"
         reference = (
             f"# {evidence_id} · {material.title}\n\n"
             f"来源：{material.source_path}\n\n"
-            f"位置：L{start_line}-L{end_line}\n\n"
+            f"位置：L{source_start_line}-L{source_end_line}\n\n"
             f"支撑判断：{'；'.join(details['supports'])}\n\n"
             f"{excerpt}\n"
         )
@@ -163,8 +178,8 @@ def _write_candidate_files(
                 "reference_path": reference_path,
                 "source_title": material.title,
                 "source_path": material.source_path,
-                "start_line": start_line,
-                "end_line": end_line,
+                "start_line": source_start_line,
+                "end_line": source_end_line,
                 "supports": details["supports"],
                 "handout_topic_keys": details["topic_keys"],
             }

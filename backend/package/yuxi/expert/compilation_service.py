@@ -29,6 +29,7 @@ from yuxi.expert.contracts import (
     ReviewIssue,
     TopicEvidencePack,
 )
+from yuxi.expert.materials import load_expert_material_source_texts
 from yuxi.expert.model_tasks import ExpertContextLimitError, ExpertModelTasks
 from yuxi.expert.organization_service import (
     format_handout_notes_with_evidence,
@@ -280,10 +281,12 @@ async def run_handout_compilation(
             or project.status != "running"
         ):
             return {"project_id": project_id, "ignored": True}
+        material_source_texts = await load_expert_material_source_texts(materials)
         skill_dir = await asyncio.to_thread(
             build_candidate_skill,
             project=project,
             materials=materials,
+            material_source_texts=material_source_texts,
             topics=topics,
             navigation=navigation,
             skill_body=skill_body.skill_markdown,
@@ -557,6 +560,7 @@ async def _revise_topic_from_book_review(
             return False
         materials = await repo.list_project_materials(project_id)
         selected = [item for item in materials if item.material_id in set(topic.material_ids or [])]
+        source_texts = await load_expert_material_source_texts(selected)
         evidence_pack = TopicEvidencePack.model_validate(topic.evidence_pack)
         snapshot = {
             "model_spec": project.model_spec,
@@ -569,6 +573,7 @@ async def _revise_topic_from_book_review(
                 selected,
                 note_aliases,
                 evidence_pack,
+                source_texts,
             ),
             "evidence_pack": evidence_pack,
             "handout": HandoutDraftResult.model_validate(topic.handout_contract),

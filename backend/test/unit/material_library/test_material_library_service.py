@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from yuxi.material_library import service
 from yuxi.material_library.boundary import MaterialBoundaryNeedsAttention, MaterialRange
+from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.models_business import Base
 from yuxi.storage.postgres.models_material import MaterialUnit
@@ -371,3 +372,76 @@ async def test_retry_units_resets_only_selected_source(material_env) -> None:
         untouched_source = await MaterialLibraryRepository(db).get_source_file(untouched["file_id"])
     assert [unit.file_id for unit in remaining_units] == [untouched["file_id"]]
     assert untouched_source.unit_status == "ready"
+
+
+async def test_referenced_source_cannot_be_deleted_or_rechapterized(material_env) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    selected = await _upload_source(material_env, fake_minio, "selected.md")
+    unit_id = f"unit-{selected['file_id']}"
+
+    async with material_env() as db:
+        library_repo = MaterialLibraryRepository(db)
+        await library_repo.update_source_file(
+            selected["file_id"],
+            status="ready",
+            unit_status="ready",
+            markdown_bucket="materials",
+            markdown_object="selected.md",
+            line_count=1,
+        )
+        await library_repo.create_material_units(
+            selected["file_id"],
+            [{"unit_id": unit_id, "title": "已引用材料", "start_line": 1, "end_line": 1}],
+        )
+        expert_repo = ExpertRepository(db)
+        await expert_repo.create_project(
+            project_id="project-1",
+            name="专家项目",
+            description="",
+            model_spec="provider:model",
+            created_by="admin-1",
+            status="ready",
+        )
+        await expert_repo.create_materials(
+            "project-1",
+            [
+                {
+                    "material_id": "expert-material-1",
+                    "material_unit_id": unit_id,
+                    "source_file_id": selected["file_id"],
+                    "title": "已引用材料",
+                    "source_path": "selected.md",
+                    "source_start_line": 1,
+                    "source_end_line": 1,
+                    "raw_path": None,
+                    "text_path": None,
+                    "file_type": ".md",
+                    "status": "ready",
+                    "line_count": 1,
+                }
+            ],
+        )
+        await db.commit()
+
+    async with material_env() as db:
+        with pytest.raises(ValueError, match="已被专家项目引用"):
+            await service.reset_material_source_units(
+                db,
+                library_id="library-1",
+                file_id=selected["file_id"],
+            )
+        await db.rollback()
+    async with material_env() as db:
+        with pytest.raises(ValueError, match="已被专家项目引用"):
+            await service.delete_material_source_file(
+                db,
+                library_id="library-1",
+                file_id=selected["file_id"],
+                minio_client=fake_minio,
+            )
+        await db.rollback()
+
+    async with material_env() as db:
+        assert await MaterialLibraryRepository(db).get_material_unit(unit_id) is not None
+    assert fake_minio.deleted_prefixes == []

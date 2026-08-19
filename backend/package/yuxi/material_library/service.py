@@ -242,9 +242,11 @@ async def reset_material_source_file(db: AsyncSession, *, library_id: str, file_
     """把一份需要处理的来源文件重置为等待处理。"""
 
     repo = MaterialLibraryRepository(db)
-    source_file = await _require_source_file(repo, library_id, file_id)
+    source_file = await _require_source_file(repo, library_id, file_id, for_update=True)
     if source_file.status != SOURCE_ATTENTION_STATUS:
         raise ValueError("只有需要处理的来源文件可以重试")
+    if await repo.source_file_has_expert_references(file_id):
+        raise ValueError("来源文件已被专家项目引用，不能重新处理")
     source_file = await repo.update_source_file(
         file_id,
         status=SOURCE_PENDING_STATUS,
@@ -263,7 +265,7 @@ async def reset_material_source_units(db: AsyncSession, *, library_id: str, file
     """只清除并重跑一份正文已经就绪的边界确认结果。"""
 
     repo = MaterialLibraryRepository(db)
-    source_file = await _require_source_file(repo, library_id, file_id)
+    source_file = await _require_source_file(repo, library_id, file_id, for_update=True)
     if source_file.status != SOURCE_READY_STATUS or source_file.unit_status not in {
         UNIT_PENDING_STATUS,
         UNIT_READY_STATUS,
@@ -272,6 +274,8 @@ async def reset_material_source_units(db: AsyncSession, *, library_id: str, file
         raise ValueError("只有正文就绪且边界确认未在处理的来源文件可以重跑")
     if not source_file.markdown_bucket or not source_file.markdown_object:
         raise ValueError("来源文件规范化 Markdown 不存在")
+    if await repo.source_file_has_expert_references(file_id):
+        raise ValueError("来源文件已被专家项目引用，不能重新确认材料单元")
 
     await repo.delete_material_units(file_id)
     source_file = await repo.update_source_file(
@@ -315,9 +319,11 @@ async def delete_material_source_file(
     """删除一份当前没有下游引用的资料库来源文件。"""
 
     repo = MaterialLibraryRepository(db)
-    source_file = await _require_source_file(repo, library_id, file_id)
+    source_file = await _require_source_file(repo, library_id, file_id, for_update=True)
     if source_file.status == SOURCE_PROCESSING_STATUS or source_file.unit_status == UNIT_PROCESSING_STATUS:
         raise ValueError("来源文件正在处理，不能删除")
+    if await repo.source_file_has_expert_references(file_id):
+        raise ValueError("来源文件已被专家项目引用，不能删除")
 
     prefix = source_file_object_prefix(library_id, file_id)
     client = minio_client or get_minio_client()
@@ -548,8 +554,16 @@ async def _require_library(repo: MaterialLibraryRepository, library_id: str):
     return library
 
 
-async def _require_source_file(repo: MaterialLibraryRepository, library_id: str, file_id: str):
-    source_file = await repo.get_source_file(file_id)
+async def _require_source_file(
+    repo: MaterialLibraryRepository,
+    library_id: str,
+    file_id: str,
+    *,
+    for_update: bool = False,
+):
+    """读取资料库来源文件，并在写入边界按需锁定。"""
+
+    source_file = await repo.lock_source_file(file_id) if for_update else await repo.get_source_file(file_id)
     if source_file is None or source_file.library_id != library_id:
         raise LookupError("来源文件不存在")
     return source_file

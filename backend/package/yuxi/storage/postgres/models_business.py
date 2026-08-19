@@ -409,10 +409,30 @@ class ExpertMaterial(Base):
         index=True,
         comment="所属专家项目 ID",
     )
+    material_unit_id = Column(
+        String(64),
+        ForeignKey("material_units.unit_id", ondelete="RESTRICT", name="fk_expert_materials_material_unit_id"),
+        nullable=True,
+        index=True,
+        comment="资料库材料单元 ID；旧项目为空",
+    )
+    source_file_id = Column(
+        String(64),
+        ForeignKey(
+            "material_source_files.file_id",
+            ondelete="RESTRICT",
+            name="fk_expert_materials_source_file_id",
+        ),
+        nullable=True,
+        index=True,
+        comment="资料库来源文件 ID；旧项目为空",
+    )
     title = Column(String(512), nullable=False, comment="用户可读材料标题")
-    source_path = Column(String(1024), nullable=False, comment="导入材料包中的相对路径")
-    raw_path = Column(String(1024), nullable=False, comment="项目内原始文件路径")
-    text_path = Column(String(1024), nullable=True, comment="项目内可靠正文路径")
+    source_path = Column(String(1024), nullable=False, comment="原始来源相对路径")
+    source_start_line = Column(Integer, nullable=True, comment="规范化 Markdown 起始行；旧项目为空")
+    source_end_line = Column(Integer, nullable=True, comment="规范化 Markdown 结束行；旧项目为空")
+    raw_path = Column(String(1024), nullable=True, comment="旧项目内原始文件路径")
+    text_path = Column(String(1024), nullable=True, comment="旧项目内可靠正文路径")
     file_type = Column(String(64), nullable=False, comment="原始文件类型")
     status = Column(String(32), nullable=False, default="pending", index=True, comment="材料处理状态")
     token_count = Column(Integer, nullable=False, default=0, comment="可靠正文 token 数")
@@ -436,7 +456,7 @@ class ExpertMaterial(Base):
 
     project = relationship("ExpertProject", back_populates="materials")
 
-    __table_args__ = (UniqueConstraint("project_id", "source_path", name="uq_expert_materials_project_source_path"),)
+    __table_args__ = (UniqueConstraint("project_id", "material_unit_id", name="uq_expert_materials_project_unit"),)
 
     def to_dict(self) -> dict[str, Any]:
         """返回材料处理事实和当前产物。"""
@@ -444,8 +464,12 @@ class ExpertMaterial(Base):
         return {
             "material_id": self.material_id,
             "project_id": self.project_id,
+            "material_unit_id": self.material_unit_id,
+            "source_file_id": self.source_file_id,
             "title": self.title,
             "source_path": self.source_path,
+            "source_start_line": self.source_start_line,
+            "source_end_line": self.source_end_line,
             "raw_path": self.raw_path,
             "text_path": self.text_path,
             "file_type": self.file_type,

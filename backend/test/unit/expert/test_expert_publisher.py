@@ -49,9 +49,11 @@ async def test_candidate_skill_contains_only_runtime_outputs_selected_evidence_a
     )
     material = SimpleNamespace(
         material_id="material-1",
+        material_unit_id=None,
         title="老师口述案例",
         source_path="series/source-1.md",
         text_path=text_path,
+        line_count=4,
         status="passed",
         note="PRIVATE-NOTE",
         review="PRIVATE-REVIEW",
@@ -212,9 +214,11 @@ def test_candidate_skill_rebuilds_existing_version_from_current_outputs(
     )
     material = SimpleNamespace(
         material_id="material-1",
+        material_unit_id=None,
         title="老师口述案例",
         source_path="series/source-1.md",
         text_path=text_path,
+        line_count=1,
         status="passed",
     )
     topic = SimpleNamespace(
@@ -244,7 +248,7 @@ def test_candidate_skill_rebuilds_existing_version_from_current_outputs(
     )
 
     topic.handout_contract["citations"][0]["end_line"] = 2
-    with pytest.raises(ValueError, match="引用行号超出可靠正文范围"):
+    with pytest.raises(ValueError, match="材料证据引用超出可靠正文范围"):
         publisher.build_candidate_skill(
             project=project,
             materials=[material],

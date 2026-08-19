@@ -548,6 +548,37 @@ class PostgresManager(metaclass=SingletonMeta):
                 "unit_status VARCHAR(32) NOT NULL DEFAULT 'pending'"
             ),
             ("CREATE INDEX IF NOT EXISTS ix_material_source_files_unit_status ON material_source_files(unit_status)"),
+            ("ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS material_unit_id VARCHAR(64)"),
+            ("ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS source_file_id VARCHAR(64)"),
+            "ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS source_start_line INTEGER",
+            "ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS source_end_line INTEGER",
+            "ALTER TABLE IF EXISTS expert_materials ALTER COLUMN raw_path DROP NOT NULL",
+            "ALTER TABLE IF EXISTS expert_materials DROP CONSTRAINT IF EXISTS uq_expert_materials_project_source_path",
+            (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_expert_materials_project_unit "
+                "ON expert_materials(project_id, material_unit_id) WHERE material_unit_id IS NOT NULL"
+            ),
+            "CREATE INDEX IF NOT EXISTS ix_expert_materials_material_unit_id ON expert_materials(material_unit_id)",
+            "CREATE INDEX IF NOT EXISTS ix_expert_materials_source_file_id ON expert_materials(source_file_id)",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'fk_expert_materials_material_unit_id'
+                ) THEN
+                    ALTER TABLE expert_materials
+                    ADD CONSTRAINT fk_expert_materials_material_unit_id
+                    FOREIGN KEY (material_unit_id) REFERENCES material_units(unit_id) ON DELETE RESTRICT;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint WHERE conname = 'fk_expert_materials_source_file_id'
+                ) THEN
+                    ALTER TABLE expert_materials
+                    ADD CONSTRAINT fk_expert_materials_source_file_id
+                    FOREIGN KEY (source_file_id) REFERENCES material_source_files(file_id) ON DELETE RESTRICT;
+                END IF;
+            END $$
+            """,
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS mcp_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS skill_dependencies JSONB DEFAULT '[]'::jsonb",
