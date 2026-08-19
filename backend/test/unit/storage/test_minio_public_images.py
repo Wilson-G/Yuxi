@@ -2,7 +2,7 @@ import json
 
 import pytest
 from minio.error import S3Error
-from yuxi.storage.minio.client import MinIOClient, normalize_public_minio_url
+from yuxi.storage.minio.client import MinIOClient, StorageError, normalize_public_minio_url
 
 
 class FakeMinio:
@@ -66,3 +66,19 @@ async def test_delete_prefix_from_missing_bucket_reports_zero_deleted() -> None:
     client._client = MissingBucketMinio()
 
     assert await client.adelete_objects_by_prefix("kb-images", "material-libraries/library-1") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("code", "retryable"), [("SlowDown", True), ("NoSuchKey", False)])
+async def test_download_marks_only_transient_s3_errors_retryable(code: str, retryable: bool) -> None:
+    class FailingMinio:
+        def get_object(self, *_args, **_kwargs):
+            raise S3Error(None, code, "download failed", "object", "request", "host")
+
+    client = MinIOClient()
+    client._client = FailingMinio()
+
+    with pytest.raises(StorageError) as exc_info:
+        await client.adownload_file("materials", "normalized/source.md")
+
+    assert exc_info.value.retryable is retryable

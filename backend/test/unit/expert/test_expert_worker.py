@@ -6,13 +6,21 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
+from anthropic import InternalServerError as AnthropicInternalServerError
+from anthropic import RateLimitError as AnthropicRateLimitError
 from arq import Retry
+from google.genai.errors import ClientError as GeminiClientError
+from google.genai.errors import ServerError as GeminiServerError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from yuxi.expert import worker
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.services import task_service
+from yuxi.services.run_worker import WorkerSettings
+from yuxi.storage.minio.client import StorageError
 from yuxi.storage.postgres.models_business import Base
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -281,6 +289,116 @@ async def test_independent_material_jobs_do_not_share_project_lock(monkeypatch: 
     assert max_active == 2
 
 
+def test_material_jobs_do_not_keep_arq_results_that_block_explicit_retry() -> None:
+    material_job = next(
+        function
+        for function in WorkerSettings.functions
+        if getattr(function, "name", "") == "process_expert_material_learning"
+    )
+
+    assert material_job.keep_result_s == 0
+
+
+@pytest.mark.asyncio
+async def test_material_job_retry_finishes_organization_handoff_after_first_enqueue_failure(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "handoff-retry",
+        stage="organization",
+        status="running",
+        method_version=1,
+        organization_version=1,
+    )
+    enqueue_attempts = 0
+
+    async def stale_material_job(_project_id: str, _material_id: str, _method_version: int) -> dict:
+        return {"project_id": "handoff-retry", "status": "ignored"}
+
+    async def enqueue_organization(_project_id: str, _organization_version: int) -> None:
+        nonlocal enqueue_attempts
+        enqueue_attempts += 1
+        if enqueue_attempts == 1:
+            raise ConnectionError("Redis 暂时不可用")
+
+    monkeypatch.setattr(worker, "run_material_learning_stage", stale_material_job)
+    monkeypatch.setattr(worker, "enqueue_organization", enqueue_organization)
+
+    with pytest.raises(Retry):
+        await worker.process_expert_material_learning(
+            {"job_try": 1},
+            "handoff-retry",
+            "handoff-retry-material",
+            1,
+        )
+
+    result = await worker.process_expert_material_learning(
+        {"job_try": 2},
+        "handoff-retry",
+        "handoff-retry-material",
+        1,
+    )
+
+    assert result["organization_version"] == 1
+    assert enqueue_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_material_job_retry_restarts_handoff_after_initialization_failure(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "handoff-initialization-retry",
+        stage="organization",
+        status="preparing",
+        method_version=1,
+    )
+    initialization_attempts = 0
+    enqueued: list[tuple[str, int]] = []
+
+    async def stale_material_job(_project_id: str, _material_id: str, _method_version: int) -> dict:
+        return {"project_id": "handoff-initialization-retry", "status": "ignored"}
+
+    original_initialize = worker.initialize_organization_stage
+
+    async def initialize_with_first_failure(project_id: str) -> int:
+        nonlocal initialization_attempts
+        initialization_attempts += 1
+        if initialization_attempts == 1:
+            raise ConnectionError("PostgreSQL 暂时不可用")
+        return await original_initialize(project_id)
+
+    async def record_enqueue(project_id: str, organization_version: int) -> None:
+        enqueued.append((project_id, organization_version))
+
+    monkeypatch.setattr(worker, "run_material_learning_stage", stale_material_job)
+    monkeypatch.setattr(worker, "initialize_organization_stage", initialize_with_first_failure)
+    monkeypatch.setattr(worker, "enqueue_organization", record_enqueue)
+
+    with pytest.raises(Retry):
+        await worker.process_expert_material_learning(
+            {"job_try": 1},
+            "handoff-initialization-retry",
+            "material-1",
+            1,
+        )
+
+    result = await worker.process_expert_material_learning(
+        {"job_try": 2},
+        "handoff-initialization-retry",
+        "material-1",
+        1,
+    )
+
+    assert result["organization_version"] == 1
+    assert initialization_attempts == 2
+    assert enqueued == [("handoff-initialization-retry", 1)]
+
+
 @pytest.mark.asyncio
 async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     attention: list[tuple[str, str, int, str]] = []
@@ -307,6 +425,31 @@ async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: py
             1,
         )
     assert attention == [("material-retry-project", "material-1", 1, "材料阶段数据库连接中断")]
+
+
+def _anthropic_status_error(error_type, status_code: int):
+    request = httpx.Request("POST", "https://model.example/v1/messages")
+    response = httpx.Response(status_code, request=request)
+    return error_type("模型服务暂时不可用", response=response, body=None)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AnthropicAPITimeoutError(httpx.Request("POST", "https://model.example/v1/messages")),
+        _anthropic_status_error(AnthropicRateLimitError, 429),
+        _anthropic_status_error(AnthropicInternalServerError, 503),
+        GeminiClientError(429, {"error": {"message": "请求限流"}}),
+        GeminiServerError(503, {"error": {"message": "服务暂时不可用"}}),
+        StorageError("MinIO 暂时不可用", retryable=True),
+    ],
+)
+def test_supported_model_and_minio_transient_errors_are_retryable(error: Exception) -> None:
+    assert worker._is_transient_material_error(error) is True
+
+
+def test_deterministic_minio_error_is_not_retryable() -> None:
+    assert worker._is_transient_material_error(StorageError("规范化正文对象不存在")) is False
 
 
 @pytest.mark.asyncio

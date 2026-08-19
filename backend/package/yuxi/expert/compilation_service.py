@@ -281,11 +281,12 @@ async def run_handout_compilation(
             or project.status != "running"
         ):
             return {"project_id": project_id, "ignored": True}
-        material_source_texts = await load_expert_material_source_texts(materials)
+        published_materials = [material for material in materials if material.status == "passed"]
+        material_source_texts = await load_expert_material_source_texts(published_materials)
         skill_dir = await asyncio.to_thread(
             build_candidate_skill,
             project=project,
-            materials=materials,
+            materials=published_materials,
             material_source_texts=material_source_texts,
             topics=topics,
             navigation=navigation,

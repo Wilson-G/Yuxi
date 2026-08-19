@@ -787,6 +787,7 @@ class WorkerSettings:
         func(
             process_expert_material_learning,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+            keep_result=0,
         ),
         func(
             process_expert_organization,

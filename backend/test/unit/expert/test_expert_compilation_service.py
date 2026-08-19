@@ -357,11 +357,29 @@ async def test_evidence_preparation_is_concurrent_but_handout_editor_is_serial_a
 
 
 @pytest.mark.asyncio
-async def test_book_revision_and_context_grouping_finish_candidate_without_activation(
+async def test_book_revision_ignores_excluded_legacy_material_without_text_path(
     compilation_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, topic_keys = await _seed_compilation_project(compilation_env)
+    async with compilation_env.factory() as db:
+        await ExpertRepository(db).create_materials(
+            PROJECT_ID,
+            [
+                {
+                    "material_id": "excluded-material",
+                    "title": "转换失败后明确排除的旧材料",
+                    "source_path": "series/excluded.pdf",
+                    "raw_path": "raw/excluded.pdf",
+                    "text_path": None,
+                    "file_type": ".pdf",
+                    "status": "excluded",
+                    "line_count": 0,
+                    "exclusion_reason": "旧项目中该文件无法转换，用户明确排除",
+                }
+            ],
+        )
+        await db.commit()
     monkeypatch.setattr(compilation_service, "EVIDENCE_PREPARATION_CONCURRENCY", 3)
     tasks = GroupedBookModelTasks()
 

@@ -20,13 +20,28 @@ from minio.error import S3Error
 
 
 class StorageError(Exception):
-    """存储相关异常基类"""
+    """存储错误，并标明当前操作是否适合有限重试。"""
 
-    pass
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class StorageUploadError(StorageError):
     """存储相关异常基类"""
+
+
+def _is_transient_s3_error(error: S3Error) -> bool:
+    """识别 MinIO/S3 明确表示限流或服务暂不可用的错误。"""
+
+    return error.code in {
+        "InternalError",
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "ServiceUnavailable",
+        "SlowDown",
+        "XMinioServerNotInitialized",
+    }
 
 
 class UploadResult:
@@ -219,7 +234,7 @@ class MinIOClient:
         except S3Error as e:
             if e.code == "NoSuchKey":
                 raise StorageError(f"对象 '{object_name}' 在存储桶 '{bucket_name}' 中不存在")
-            raise StorageError(f"下载文件失败: {e}")
+            raise StorageError(f"下载文件失败: {e}", retryable=_is_transient_s3_error(e)) from e
 
     async def adownload_response(self, bucket_name: str, object_name: str) -> BaseHTTPResponse:
         """异步下载文件"""
@@ -234,7 +249,7 @@ class MinIOClient:
         except S3Error as e:
             if e.code == "NoSuchKey":
                 raise StorageError(f"对象 '{object_name}' 在存储桶 '{bucket_name}' 中不存在")
-            raise StorageError(f"下载文件失败: {e}")
+            raise StorageError(f"下载文件失败: {e}", retryable=_is_transient_s3_error(e)) from e
 
     async def adownload_file(self, bucket_name: str, object_name: str) -> bytes:
         """异步下载文件"""
@@ -248,7 +263,7 @@ class MinIOClient:
         except S3Error as e:
             if e.code == "NoSuchKey":
                 raise StorageError(f"对象 '{object_name}' 在存储桶 '{bucket_name}' 中不存在")
-            raise StorageError(f"下载文件失败: {e}")
+            raise StorageError(f"下载文件失败: {e}", retryable=_is_transient_s3_error(e)) from e
 
     def get_presigned_url(self, bucket_name: str, object_name: str, days=7) -> str:
         """将minio放在内网访问，外部通过返回代理链接访问"""

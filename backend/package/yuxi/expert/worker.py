@@ -5,9 +5,15 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
+from anthropic import InternalServerError as AnthropicInternalServerError
+from anthropic import RateLimitError as AnthropicRateLimitError
 from arq import Retry
+from google.genai.errors import ClientError as GeminiClientError
+from google.genai.errors import ServerError as GeminiServerError
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 from sqlalchemy.exc import OperationalError
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ProtocolError, ReadTimeoutError
 
 from yuxi.expert.compilation_service import run_handout_compilation
 from yuxi.expert.organization_service import initialize_organization_stage, run_organization_stage
@@ -21,6 +27,7 @@ from yuxi.expert.service import (
 )
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.services.run_queue_service import get_arq_pool
+from yuxi.storage.minio.client import StorageError
 from yuxi.storage.postgres.manager import pg_manager
 
 SYSTEM_TASK_MAX_TRIES = 2
@@ -210,9 +217,11 @@ async def process_expert_material_learning(
 
     try:
         result = await run_material_learning_stage(project_id, material_id, method_version)
-        if result.get("status") == "preparing":
-            organization_version = await initialize_organization_stage(project_id)
-            await enqueue_organization(project_id, organization_version)
+        if result.get("status") in {"preparing", "ignored"}:
+            organization_version = await _enqueue_material_learning_handoff(project_id)
+        else:
+            organization_version = None
+        if organization_version is not None:
             result["organization_version"] = organization_version
         return result
     except Exception as exc:
@@ -326,12 +335,37 @@ def _is_transient_material_error(exc: Exception) -> bool:
             APITimeoutError,
             RateLimitError,
             InternalServerError,
+            AnthropicAPIConnectionError,
+            AnthropicRateLimitError,
+            AnthropicInternalServerError,
+            GeminiServerError,
+            ConnectTimeoutError,
+            MaxRetryError,
+            ProtocolError,
+            ReadTimeoutError,
         ),
     ):
         return True
+    if isinstance(exc, GeminiClientError):
+        return exc.code == 429
+    if isinstance(exc, StorageError):
+        return exc.retryable
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code in {502, 503, 504}
     return False
+
+
+async def _enqueue_material_learning_handoff(project_id: str) -> int | None:
+    """在材料任务重试时继续尚未完成的组织阶段交接。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        if project is None or project.stage != "organization" or project.status not in {"preparing", "running"}:
+            return None
+
+    organization_version = await initialize_organization_stage(project_id)
+    await enqueue_organization(project_id, organization_version)
+    return organization_version
 
 
 def _project_job_lock(project_id: str) -> asyncio.Lock:

@@ -31,13 +31,17 @@ ORGANIZATION_RESEARCH_CONCURRENCY = int(os.getenv("EXPERT_ORGANIZATION_RESEARCH_
 
 
 async def initialize_organization_stage(project_id: str, *, feedback: str = "") -> int:
-    """创建新的知识组织版本，并清空上一版非正式研究产物。"""
+    """创建知识组织版本；已开始的同一版本直接返回以支持交接重试。"""
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
         if project is None:
             raise ValueError("专家项目不存在")
+        if project.stage == "organization" and project.status == "running":
+            if project.organization_version < 1:
+                raise ValueError("当前项目缺少有效的知识组织版本")
+            return project.organization_version
         if project.stage != "organization" or project.status not in {
             "preparing",
             "awaiting_confirmation",

@@ -142,7 +142,7 @@ def _write_candidate_files(
     if material_source_texts is None:
         material_source_texts = {
             material.material_id: read_legacy_material_text(project.project_id, material.text_path)
-            for material in materials
+            for material in passed_materials
         }
     source_rows = []
     search_rows = []
