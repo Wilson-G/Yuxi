@@ -189,7 +189,7 @@ const mainList = computed(() => {
   })
 
   items.push({
-    name: '专家 · 技能',
+    name: userStore.isAdmin ? '专家 · 技能' : '技能',
     path: '/extensions',
     activePaths: ['/extensions'],
     icon: LibraryBig,

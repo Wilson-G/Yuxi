@@ -14,6 +14,9 @@
       <div v-if="activeTab === 'expert-projects'" class="tab-panel">
         <ExpertProjectList ref="expertProjectsRef" />
       </div>
+      <div v-if="userStore.isAdmin && activeTab === 'materials'" class="tab-panel">
+        <MaterialLibraryView ref="materialsRef" />
+      </div>
       <div v-if="userStore.isAdmin && activeTab === 'knowledge'" class="tab-panel">
         <DataBaseView ref="knowledgeRef" embedded />
       </div>
@@ -41,6 +44,7 @@ import SkillCardList from '@/components/extensions/SkillCardList.vue'
 import ExpertProjectList from '@/components/extensions/ExpertProjectList.vue'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import DataBaseView from '@/views/DataBaseView.vue'
+import MaterialLibraryView from '@/views/MaterialLibraryView.vue'
 import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
@@ -48,6 +52,7 @@ const router = useRouter()
 const userStore = useUserStore()
 const activeTab = ref(null)
 const expertProjectsRef = ref(null)
+const materialsRef = ref(null)
 const knowledgeRef = ref(null)
 const skillsRef = ref(null)
 const mcpRef = ref(null)
@@ -55,15 +60,13 @@ const toolsRef = ref(null)
 
 const adminExtensionTabs = [
   { key: 'expert-projects', label: '专家项目' },
+  { key: 'materials', label: '资料库' },
   { key: 'skills', label: '技能' },
   { key: 'knowledge', label: '知识库' },
   { key: 'tools', label: '工具' },
   { key: 'mcp', label: 'MCP' }
 ]
-const userExtensionTabs = [
-  { key: 'expert-projects', label: '专家项目' },
-  { key: 'skills', label: '技能' }
-]
+const userExtensionTabs = [{ key: 'skills', label: '技能' }]
 const extensionTabs = computed(() => (userStore.isAdmin ? adminExtensionTabs : userExtensionTabs))
 const allowedTabKeys = computed(() => extensionTabs.value.map((tab) => tab.key))
 const defaultTabKey = computed(() => extensionTabs.value[0]?.key || 'skills')
@@ -95,6 +98,7 @@ const isDetailPage = computed(() => {
 const activeChildLoading = computed(() => {
   const refMap = {
     'expert-projects': expertProjectsRef,
+    materials: materialsRef,
     knowledge: knowledgeRef,
     tools: toolsRef,
     skills: skillsRef,

@@ -87,7 +87,7 @@
       :confirm-loading="creating"
       :mask-closable="!creating"
       :keyboard="!creating"
-      ok-text="创建并准备材料"
+      ok-text="创建项目"
       cancel-text="取消"
       @ok="submitProject"
       @cancel="resetCreateForm"
@@ -119,27 +119,18 @@
           />
         </a-form-item>
 
-        <a-form-item label="项目材料" name="files">
-          <a-upload-dragger
-            v-model:file-list="fileList"
-            name="files"
-            :multiple="true"
-            :accept="acceptedMaterialTypes"
-            :before-upload="selectFiles"
-            :disabled="creating"
-          >
-            <div class="upload-prompt">
-              <Upload :size="24" />
-              <strong>选择文件或拖拽到此处</strong>
-              <span>支持 Markdown、文本、PDF、Office、图片与 ZIP 材料包</span>
-            </div>
-          </a-upload-dragger>
+        <a-form-item label="项目材料" name="materialUnitIds">
+          <MaterialUnitSelector
+            ref="materialSelectorRef"
+            v-model="createForm.materialUnitIds"
+            @open-library="openMaterialLibrary"
+          />
         </a-form-item>
 
         <a-alert
           type="info"
           show-icon
-          message="材料会先转换为可靠正文。无法完整阅读的材料会停在项目中等待处理，不会静默截断。"
+          message="项目只关联已经处理完成的材料单元，不会重复上传、OCR 或解析来源文件。"
         />
       </a-form>
     </a-modal>
@@ -147,13 +138,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowRight, BookOpenCheck, LibraryBig, Plus, RefreshCw, Upload } from 'lucide-vue-next'
+import { ArrowRight, BookOpenCheck, LibraryBig, Plus, RefreshCw } from 'lucide-vue-next'
 
 import { expertApi } from '@/apis/expert_api'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
+import MaterialUnitSelector from '@/components/material-library/MaterialUnitSelector.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
@@ -175,41 +167,23 @@ const searchQuery = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
 const createFormRef = ref(null)
-const fileList = ref([])
-
-const acceptedMaterialTypes = [
-  '.txt',
-  '.md',
-  '.docx',
-  '.html',
-  '.htm',
-  '.json',
-  '.csv',
-  '.xls',
-  '.xlsx',
-  '.pdf',
-  '.pptx',
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.bmp',
-  '.tiff',
-  '.tif',
-  '.zip'
-].join(',')
+const materialSelectorRef = ref(null)
 
 const createForm = reactive({
   name: '',
   description: '',
-  modelSpec: ''
+  modelSpec: '',
+  materialUnitIds: []
 })
 
 const createRules = {
   name: [{ required: true, whitespace: true, message: '请输入项目名称', trigger: 'blur' }],
-  files: [
+  materialUnitIds: [
     {
       validator: () =>
-        fileList.value.length ? Promise.resolve() : Promise.reject(new Error('请至少选择一份材料')),
+        createForm.materialUnitIds.length
+          ? Promise.resolve()
+          : Promise.reject(new Error('请至少选择一份已处理材料')),
       trigger: 'change'
     }
   ]
@@ -280,6 +254,8 @@ const openCreateModal = async () => {
   }
   createForm.modelSpec = configStore.config?.default_model || ''
   createOpen.value = true
+  await nextTick()
+  await materialSelectorRef.value?.load()
 }
 
 /** 更新创建表单选择的模型。 */
@@ -287,19 +263,20 @@ const selectModel = (modelSpec) => {
   createForm.modelSpec = modelSpec
 }
 
-/** 由 Ant Upload 保存待提交文件，不在此处提前上传。 */
-const selectFiles = () => {
-  queueMicrotask(() => createFormRef.value?.clearValidate(['files']))
-  return false
-}
-
 /** 清空创建项目表单。 */
 const resetCreateForm = () => {
   createForm.name = ''
   createForm.description = ''
   createForm.modelSpec = configStore.config?.default_model || ''
-  fileList.value = []
+  createForm.materialUnitIds = []
   createFormRef.value?.clearValidate()
+}
+
+/** 资料不足时转到独立资料库处理入口。 */
+const openMaterialLibrary = () => {
+  createOpen.value = false
+  resetCreateForm()
+  router.push({ path: '/extensions', query: { tab: 'materials' } })
 }
 
 /** 创建项目并进入以项目记录为事实源的详情页。 */
@@ -312,16 +289,15 @@ const submitProject = async () => {
 
   creating.value = true
   try {
-    const files = fileList.value.map((item) => item.originFileObj || item)
     const response = await expertApi.create({
       name: createForm.name.trim(),
       description: createForm.description.trim(),
       modelSpec: createForm.modelSpec,
-      files
+      materialUnitIds: createForm.materialUnitIds
     })
     const project = response?.item
     if (!project?.project_id) throw new Error('创建结果缺少专家项目')
-    message.success('专家项目已创建，正在准备材料')
+    message.success('专家项目已创建，请选择代表材料')
     createOpen.value = false
     resetCreateForm()
     openProject(project)
@@ -381,37 +357,10 @@ defineExpose({ loading, fetchProjects })
   padding-right: 0;
 }
 
-.upload-prompt {
-  display: flex;
-  min-height: 132px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--gray-600);
-
-  strong {
-    color: var(--gray-900);
-    font-size: 14px;
-  }
-
-  span {
-    max-width: 420px;
-    font-size: 12px;
-    line-height: 1.6;
-    text-align: center;
-  }
-}
-
 :deep(.info-card-footer) {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-:deep(.ant-upload-list) {
-  max-height: 180px;
-  overflow-y: auto;
 }
 
 @media (max-width: 768px) {

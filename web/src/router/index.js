@@ -117,7 +117,8 @@ const router = createRouter({
               component: () => import('../views/ExpertProjectView.vue'),
               meta: {
                 keepAlive: false,
-                requiresAuth: true
+                requiresAuth: true,
+                requiresAdmin: true
               }
             },
             {

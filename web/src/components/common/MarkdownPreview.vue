@@ -15,6 +15,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useThemeStore } from '@/stores/theme'
 import { useUserStore } from '@/stores/user'
 import { renderMarkdown } from '@/utils/markdown_preview'
+import { isAuthenticatedMarkdownImageUrl } from '@/utils/markdownImages'
 import { HTML_PREVIEW_MAX_HEIGHT, HTML_PREVIEW_MIN_HEIGHT } from '@/utils/htmlPreviewRenderer'
 import 'katex/dist/katex.min.css'
 const props = defineProps({
@@ -38,12 +39,10 @@ const shikiTheme = computed(() => (themeStore.isDark ? 'github-dark' : 'github-l
 const previewRef = ref(null)
 const copiedTimers = new WeakMap()
 const htmlPreviewFrames = new Map()
-const kbImageBlobUrls = new Set()
+const authenticatedImageBlobUrls = new Set()
 let pendingMarkdownHtml = null
 
 const HTML_PREVIEW_HEIGHT_MESSAGE = 'yuxi-html-preview-height'
-
-const KB_IMAGE_PROXY_PATH_RE = /\/api\/knowledge\/databases\/[^/]+\/images\//
 
 const getHtmlPreviewCssNumber = (slot, property, fallback) => {
   const preview = slot.closest('.html-preview-render')
@@ -315,20 +314,20 @@ const enhanceHtmlPreviews = () => {
   })
 }
 
-const revokeKbImageBlobUrls = () => {
-  kbImageBlobUrls.forEach((url) => URL.revokeObjectURL(url))
-  kbImageBlobUrls.clear()
+const revokeAuthenticatedImageBlobUrls = () => {
+  authenticatedImageBlobUrls.forEach((url) => URL.revokeObjectURL(url))
+  authenticatedImageBlobUrls.clear()
 }
 
-const enhanceKbImages = () => {
+const enhanceAuthenticatedImages = () => {
   const root = previewRef.value
   if (!root) return
 
   root.querySelectorAll('img').forEach((img) => {
     const src = img.getAttribute('src')
-    if (!src || !KB_IMAGE_PROXY_PATH_RE.test(src) || img.dataset.kbImageLoaded) return
+    if (!isAuthenticatedMarkdownImageUrl(src) || img.dataset.authenticatedImageLoaded) return
 
-    img.dataset.kbImageLoading = 'true'
+    img.dataset.authenticatedImageLoading = 'true'
     fetch(src, { headers: userStore.getAuthHeaders() })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -337,15 +336,15 @@ const enhanceKbImages = () => {
       .then((blob) => {
         if (!img.isConnected) return
         const objectUrl = URL.createObjectURL(blob)
-        kbImageBlobUrls.add(objectUrl)
+        authenticatedImageBlobUrls.add(objectUrl)
         img.src = objectUrl
-        img.dataset.kbImageLoaded = 'true'
+        img.dataset.authenticatedImageLoaded = 'true'
       })
       .catch((error) => {
-        console.error('加载知识库图片失败:', src, error)
+        console.error('加载鉴权文档图片失败:', src, error)
       })
       .finally(() => {
-        delete img.dataset.kbImageLoading
+        delete img.dataset.authenticatedImageLoading
       })
   })
 }
@@ -356,7 +355,7 @@ onMounted(async () => {
   replaceHtmlPreservingPreviews(pendingMarkdownHtml)
   await nextTick()
   enhanceHtmlPreviews()
-  enhanceKbImages()
+  enhanceAuthenticatedImages()
   if (props.codeCopy) enhanceCodeBlocks()
 })
 
@@ -365,7 +364,7 @@ window.addEventListener('message', handleHtmlPreviewHeight)
 onBeforeUnmount(() => {
   window.removeEventListener('message', handleHtmlPreviewHeight)
   htmlPreviewFrames.clear()
-  revokeKbImageBlobUrls()
+  revokeAuthenticatedImageBlobUrls()
 })
 
 watch(
@@ -378,7 +377,7 @@ watch(
 
     if (!content) {
       htmlPreviewFrames.clear()
-      revokeKbImageBlobUrls()
+      revokeAuthenticatedImageBlobUrls()
       replaceHtmlPreservingPreviews('')
       return
     }
@@ -386,13 +385,13 @@ watch(
     const html = await renderMarkdown(content, { theme })
     if (!expired) {
       replaceHtmlPreservingPreviews(html)
-      revokeKbImageBlobUrls()
+      revokeAuthenticatedImageBlobUrls()
       cleanupHtmlPreviewFrames()
 
       await nextTick()
       if (expired) return
       enhanceHtmlPreviews()
-      enhanceKbImages()
+      enhanceAuthenticatedImages()
       if (codeCopy) enhanceCodeBlocks()
       cleanupHtmlPreviewFrames()
     }
@@ -634,7 +633,7 @@ const showCopiedFeedback = (btn) => {
   blockquote {
     margin: 1rem 0;
     padding: 0.25rem 0 0.25rem 1rem;
-    border-left: 3px solid var(--gray-200);
+    border-left: 1px solid var(--gray-200);
     color: var(--gray-700);
   }
 

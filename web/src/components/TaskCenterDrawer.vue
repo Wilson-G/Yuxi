@@ -124,6 +124,11 @@ import { Modal } from 'ant-design-vue'
 import { useTaskerStore } from '@/stores/tasker'
 import { storeToRefs } from 'pinia'
 import { formatFullDateTime, formatRelative, parseToShanghai } from '@/utils/time'
+import {
+  filterTasksByStatus,
+  isActiveTaskStatus,
+  TASK_STATUS_CONFIG
+} from '@/utils/taskStatus'
 
 const taskerStore = useTaskerStore()
 const {
@@ -132,6 +137,7 @@ const {
   loading,
   lastError,
   activeCount,
+  waitingCount,
   totalCount,
   successCount,
   failedCount
@@ -143,6 +149,7 @@ const loadingState = computed(() => Boolean(loading.value))
 const lastErrorState = computed(() => lastError.value)
 const statusFilter = ref('all')
 const inProgressCount = computed(() => activeCount.value || 0)
+const waitingTaskCount = computed(() => waitingCount.value || 0)
 const completedCount = computed(() => successCount.value || 0)
 const failedTaskCount = computed(() => failedCount.value || 0)
 const totalTaskCount = computed(() => totalCount.value || 0)
@@ -166,6 +173,14 @@ const taskFilterOptions = computed(() => [
   {
     label: () =>
       h('span', { class: 'task-filter-option' }, [
+        '等待操作',
+        h('span', { class: 'filter-count' }, waitingTaskCount.value)
+      ]),
+    value: 'waiting'
+  },
+  {
+    label: () =>
+      h('span', { class: 'task-filter-option' }, [
         '已完成',
         h('span', { class: 'filter-count' }, completedCount.value)
       ]),
@@ -181,14 +196,6 @@ const taskFilterOptions = computed(() => [
   }
 ])
 
-const STATUS_CONFIG = {
-  pending: { label: '等待中', terminal: false, cancelable: true, progress: 'active' },
-  queued: { label: '已排队', terminal: false, cancelable: true, progress: 'active' },
-  running: { label: '进行中', terminal: false, cancelable: true, progress: 'active' },
-  success: { label: '已完成', terminal: true, cancelable: false, progress: 'success' },
-  failed: { label: '失败', terminal: true, cancelable: false, progress: 'exception' },
-  cancelled: { label: '已取消', terminal: true, cancelable: false, progress: 'normal' }
-}
 const TASK_TYPE_LABELS = {
   knowledge_ingest: '知识库导入',
   knowledge_parse: '文档解析',
@@ -196,25 +203,11 @@ const TASK_TYPE_LABELS = {
   knowledge_graph_index: '图谱构建',
   dataset_generation: '评估集生成',
   rag_evaluation: 'RAG 评估',
-  expert_project: '专家项目'
+  expert_project: '专家项目',
+  material_source_file: '资料处理'
 }
 
-const isActiveStatus = (status) => Boolean(STATUS_CONFIG[status]) && !STATUS_CONFIG[status].terminal
-const isFailedStatus = (status) => status === 'failed' || status === 'cancelled'
-
-const filteredTasks = computed(() => {
-  const list = tasks.value
-  switch (statusFilter.value) {
-    case 'active':
-      return list.filter((task) => isActiveStatus(task.status))
-    case 'success':
-      return list.filter((task) => task.status === 'success')
-    case 'failed':
-      return list.filter((task) => isFailedStatus(task.status))
-    default:
-      return list
-  }
-})
+const filteredTasks = computed(() => filterTasksByStatus(tasks.value, statusFilter.value))
 
 const hasTasks = computed(() => filteredTasks.value.length > 0)
 
@@ -222,6 +215,8 @@ const emptyHint = computed(() => {
   switch (statusFilter.value) {
     case 'active':
       return { title: '暂无进行中的任务', subtitle: '当前没有正在执行的后台任务。' }
+    case 'waiting':
+      return { title: '暂无等待操作的任务', subtitle: '需要确认或显式恢复的任务会显示在这里。' }
     case 'success':
       return { title: '暂无已完成的任务', subtitle: '执行成功的后台任务会显示在这里。' }
     case 'failed':
@@ -236,7 +231,8 @@ const emptyHint = computed(() => {
 
 function taskCardClasses(task) {
   return {
-    'task-card--active': isActiveStatus(task.status),
+    'task-card--active': isActiveTaskStatus(task.status),
+    'task-card--waiting': task.status === 'waiting',
     'task-card--success': task.status === 'success',
     'task-card--failed': task.status === 'failed'
   }
@@ -383,27 +379,27 @@ function getTaskDuration(task) {
 }
 
 function isTaskCompleted(task) {
-  return Boolean(STATUS_CONFIG[task.status]?.terminal)
+  return Boolean(TASK_STATUS_CONFIG[task.status]?.terminal)
 }
 
 function statusLabel(status) {
-  return STATUS_CONFIG[status]?.label || status
+  return TASK_STATUS_CONFIG[status]?.label || status
 }
 
 function progressStatus(status) {
-  return STATUS_CONFIG[status]?.progress || 'active'
+  return TASK_STATUS_CONFIG[status]?.progress || 'active'
 }
 
 function canCancel(task) {
   return (
-    task.type !== 'expert_project' &&
-    Boolean(STATUS_CONFIG[task.status]?.cancelable) &&
+    !['expert_project', 'material_source_file'].includes(task.type) &&
+    Boolean(TASK_STATUS_CONFIG[task.status]?.cancelable) &&
     !task.cancel_requested
   )
 }
 
 function canDelete(task) {
-  return task.type !== 'expert_project' && isTaskCompleted(task)
+  return !['expert_project', 'material_source_file'].includes(task.type) && isTaskCompleted(task)
 }
 </script>
 <style scoped lang="less">
@@ -522,6 +518,13 @@ function canDelete(task) {
 }
 .status-running .status-text {
   color: var(--color-success-500);
+}
+
+.status-waiting .status-dot {
+  background: var(--color-warning-500);
+}
+.status-waiting .status-text {
+  color: var(--color-warning-900);
 }
 
 .status-success .status-dot {

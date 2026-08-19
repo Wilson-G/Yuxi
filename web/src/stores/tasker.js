@@ -4,9 +4,7 @@ import { message } from 'ant-design-vue'
 import { taskerApi } from '@/apis/tasker'
 import { useUserStore } from '@/stores/user'
 import { parseToShanghai } from '@/utils/time'
-
-const ACTIVE_STATUSES = new Set(['pending', 'running', 'queued'])
-const FAILED_STATUSES = new Set(['failed', 'cancelled'])
+import { ACTIVE_TASK_STATUSES, FAILED_TASK_STATUSES } from '@/utils/taskStatus'
 
 const createDefaultSummary = () => ({
   total: 0,
@@ -55,23 +53,26 @@ export const useTaskerStore = defineStore('tasker', () => {
   const statusCounts = computed(() => summary.value?.status_counts || {})
 
   const activeCount = computed(() =>
-    Array.from(ACTIVE_STATUSES).reduce(
+    Array.from(ACTIVE_TASK_STATUSES).reduce(
       (count, status) => count + (statusCounts.value?.[status] || 0),
       0
     )
   )
   const failedCount = computed(() =>
-    Array.from(FAILED_STATUSES).reduce(
+    Array.from(FAILED_TASK_STATUSES).reduce(
       (count, status) => count + (statusCounts.value?.[status] || 0),
       0
     )
   )
   const successCount = computed(() => statusCounts.value?.success || 0)
+  const waitingCount = computed(() => statusCounts.value?.waiting || 0)
   const totalCount = computed(() => summary.value?.total || 0)
 
   // 是否存在需要持续轮询的任务：summary 统计或本地乐观登记的活跃任务
   const hasActiveTasks = computed(
-    () => activeCount.value > 0 || tasks.value.some((task) => ACTIVE_STATUSES.has(task.status))
+    () =>
+      activeCount.value > 0 ||
+      tasks.value.some((task) => ACTIVE_TASK_STATUSES.has(task.status))
   )
 
   function upsertTask(rawTask) {
@@ -212,6 +213,7 @@ export const useTaskerStore = defineStore('tasker', () => {
     sortedTasks,
     totalCount,
     successCount,
+    waitingCount,
     failedCount,
     loading,
     lastError,

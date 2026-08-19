@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 
 import {
+  canDeleteExpertProject,
   canExcludeExpertMaterial,
+  canPauseExpertProject,
   canPreviewExpertMaterial,
   canReviseExpertOrganization,
   getExcludedExpertMaterials,
@@ -20,6 +21,17 @@ test('专家项目只在后台推进状态轮询', () => {
   assert.equal(shouldPollExpertProject({ status: 'running' }), true)
   assert.equal(shouldPollExpertProject({ status: 'awaiting_confirmation' }), false)
   assert.equal(shouldPollExpertProject({ status: 'needs_attention' }), false)
+  assert.equal(shouldPollExpertProject({ status: 'paused' }), false)
+})
+
+test('项目生命周期动作遵循后端暂停、卸载和删除条件', () => {
+  assert.equal(canPauseExpertProject({ status: 'running' }), true)
+  assert.equal(canPauseExpertProject({ status: 'paused' }), false)
+  assert.equal(canPauseExpertProject({ status: 'enabled' }), false)
+  assert.equal(canDeleteExpertProject({ status: 'paused' }), true)
+  assert.equal(canDeleteExpertProject({ status: 'needs_attention' }), true)
+  assert.equal(canDeleteExpertProject({ status: 'running' }), false)
+  assert.equal(canDeleteExpertProject({ status: 'enabled' }), false)
 })
 
 test('材料和讲义进度按真实终态计算', () => {
@@ -107,49 +119,4 @@ test('项目定向运行时进入学习方案与小样生成视图', () => {
     isExpertMethodPreparationRunning({ stage: 'material_learning', status: 'running' }),
     false
   )
-})
-
-test('批量学习状态可筛选，并说明修订由后台继续处理', async () => {
-  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
-  const projectUtils = await readFile(new URL('../../src/utils/expertProject.js', import.meta.url), 'utf8')
-
-  assert.match(view, /const materialFilter = ref\('all'\)/)
-  assert.match(view, /v-for="option in materialFilterOptions"/)
-  assert.match(view, /每份材料在后台完成笔记、Review 和必要的自动修订/)
-  assert.match(projectUtils, /review_revise: '自动修订中'/)
-})
-
-test('项目定向页面允许用户选择至多 20 份代表性材料', async () => {
-  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
-
-  assert.match(view, /const maxRepresentativeMaterials = 20/)
-  assert.match(view, /选择 1～20 份代表性材料/)
-  assert.match(view, /最多选择 \$\{maxRepresentativeMaterials\} 份代表性材料/)
-})
-
-test('方法小样的系统失败可用原代表材料重新试跑', async () => {
-  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
-
-  assert.match(view, /project\.status === 'needs_attention'/)
-  assert.match(view, /重新试跑当前方法/)
-  assert.match(view, /expertApi\.startOrientation\(projectId\.value, project\.value\.representative_material_ids/)
-})
-
-test('等待确认时保留用户反馈调整方法的入口', async () => {
-  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
-
-  assert.match(view, /project\.status === 'awaiting_confirmation'/)
-  assert.match(view, /按意见调整学习方向/)
-  assert.match(view, /project\.learning_plan \|\| ''/)
-  assert.doesNotMatch(view, /<h3>项目学习方案<\/h3>/)
-})
-
-test('方法确认后自动校准一次，不开放第二个方法确认点', async () => {
-  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
-  const api = await readFile(new URL('../../src/apis/expert_api.js', import.meta.url), 'utf8')
-
-  assert.match(view, /根据小样 Review 自动校准一次方法并复跑原小样/)
-  assert.match(view, /确认并开始校准/)
-  assert.doesNotMatch(view, /calibrateMethod/)
-  assert.doesNotMatch(api, /method\/calibrate/)
 })

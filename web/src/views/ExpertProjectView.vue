@@ -23,6 +23,37 @@
         <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
           {{ getExpertStatusLabel(project.status) }}
         </span>
+        <a-tooltip :title="project.status === 'paused' ? '恢复项目' : '暂停项目'">
+          <a-button
+            v-if="project.status === 'paused' || canPauseProject"
+            class="icon-button"
+            :aria-label="project.status === 'paused' ? '恢复专家项目' : '暂停专家项目'"
+            :loading="actionKey === 'pause' || actionKey === 'resume'"
+            :disabled="Boolean(actionKey)"
+            @click="project.status === 'paused' ? resumeProject() : pauseProject()"
+          >
+            <Play v-if="project.status === 'paused'" :size="15" />
+            <Pause v-else :size="15" />
+          </a-button>
+        </a-tooltip>
+        <a-dropdown>
+          <a-button class="icon-button" aria-label="更多项目操作" :disabled="Boolean(actionKey)">
+            <MoreHorizontal :size="16" />
+          </a-button>
+          <template #overlay>
+            <a-menu @click="handleProjectMenu">
+              <a-menu-item v-if="project.status === 'enabled'" key="uninstall">
+                <PackageMinus :size="15" />
+                卸载专家 Skill
+              </a-menu-item>
+              <a-menu-divider v-if="project.status === 'enabled'" />
+              <a-menu-item key="delete" danger :disabled="!canDeleteProject">
+                <Trash2 :size="15" />
+                {{ deleteProjectLabel }}
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
         <a-tooltip title="刷新项目">
           <a-button
             class="icon-button"
@@ -100,6 +131,20 @@
       </div>
 
       <main class="project-content">
+        <a-alert
+          v-if="project.status === 'paused'"
+          type="warning"
+          show-icon
+          class="paused-alert"
+          message="项目已暂停"
+          description="后台恢复扫描不会继续投递这个项目。恢复后，系统会从当前项目事实继续必要工作。"
+        >
+          <template #action>
+            <a-button size="small" :loading="actionKey === 'resume'" @click="resumeProject">
+              恢复项目
+            </a-button>
+          </template>
+        </a-alert>
         <section v-if="isReviewingHistory" class="project-section stage-history-section">
           <div class="history-toolbar">
             <div>
@@ -199,6 +244,14 @@
               </article>
             </div>
           </template>
+        </section>
+
+        <section v-else-if="project.status === 'paused'" class="project-section paused-section">
+          <Pause :size="22" />
+          <div>
+            <h2>当前阶段已停止后台推进</h2>
+            <p>{{ project.message || '项目已暂停，等待显式恢复。' }}</p>
+          </div>
         </section>
 
         <template v-else>
@@ -1000,9 +1053,14 @@ import {
   Eye,
   FileText,
   LoaderCircle,
+  MoreHorizontal,
+  PackageMinus,
+  Pause,
+  Play,
   Power,
   RefreshCw,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-vue-next'
 
 import { expertApi } from '@/apis/expert_api'
@@ -1010,7 +1068,9 @@ import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import {
   EXPERT_STAGE_ITEMS,
+  canDeleteExpertProject,
   canExcludeExpertMaterial,
+  canPauseExpertProject,
   canPreviewExpertMaterial,
   canReviseExpertOrganization,
   getExcludedExpertMaterials,
@@ -1111,6 +1171,13 @@ const showCompilationRetry = computed(
     project.value?.status === 'needs_attention' &&
     !(project.value?.topics || []).some((topic) => topic.status === 'needs_attention')
 )
+const canPauseProject = computed(() => canPauseExpertProject(project.value))
+const canDeleteProject = computed(() => canDeleteExpertProject(project.value))
+const deleteProjectLabel = computed(() => {
+  if (project.value?.status === 'enabled') return '删除项目（先卸载 Skill）'
+  if (['running', 'preparing'].includes(project.value?.status)) return '删除项目（先暂停）'
+  return '删除专家项目'
+})
 
 /** 切换已完成阶段的只读回看，不修改项目当前阶段。 */
 const selectStage = (stage, index) => {
@@ -1449,6 +1516,64 @@ const activateProject = () => {
   })
 }
 
+/** 暂停后台推进，保留项目当前阶段和全部正式产物。 */
+const pauseProject = () => {
+  Modal.confirm({
+    title: '暂停这个专家项目？',
+    content: '项目记录和已完成产物会保留；恢复后只继续当前阶段仍需要执行的工作。',
+    okText: '暂停项目',
+    cancelText: '取消',
+    onOk: () => runAction('pause', () => expertApi.pause(projectId.value), '专家项目已暂停')
+  })
+}
+
+/** 依据项目正式事实恢复暂停项目。 */
+const resumeProject = () =>
+  runAction('resume', () => expertApi.resume(projectId.value), '专家项目已恢复')
+
+/** 卸载通用 Skill，候选成品仍留在项目中。 */
+const uninstallProject = () => {
+  Modal.confirm({
+    title: '卸载这个专家 Skill？',
+    content: 'Agent 将不再使用已安装 Skill；项目和候选成品会保留，可再次启用。',
+    okText: '确认卸载',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: () =>
+      runAction('uninstall', () => expertApi.uninstall(projectId.value), '专家 Skill 已卸载')
+  })
+}
+
+/** 删除项目事实和编译产物，不触碰资料库中的来源材料。 */
+const deleteProject = () => {
+  if (!canDeleteProject.value) return
+  Modal.confirm({
+    title: '删除这个专家项目？',
+    content: '项目记录、笔记、Review、讲义和候选成品将被删除；资料库材料不会删除。',
+    okText: '删除项目',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      if (actionKey.value) return
+      actionKey.value = 'delete'
+      try {
+        await expertApi.delete(projectId.value)
+        message.success('专家项目已删除')
+        goBack()
+      } catch (error) {
+        message.error(error.message || '删除专家项目失败')
+      } finally {
+        actionKey.value = ''
+      }
+    }
+  })
+}
+
+const handleProjectMenu = ({ key }) => {
+  if (key === 'uninstall') uninstallProject()
+  if (key === 'delete') deleteProject()
+}
+
 /** 打开当前项目已经启用的通用 Skill 管理页。 */
 const openInstalledSkill = () => {
   router.push({
@@ -1753,7 +1878,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   margin-top: 10px;
   padding: 9px 11px;
-  border-left: 3px solid var(--color-error-500);
+  border: 1px solid var(--color-error-100);
+  border-radius: 6px;
   background: var(--color-error-10);
   color: var(--color-error-700);
   font-size: 13px;
@@ -1767,6 +1893,10 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-x: hidden;
   overflow-y: auto;
+}
+
+.paused-alert {
+  margin: 16px var(--page-padding) 0;
 }
 
 .history-toolbar {
@@ -2275,7 +2405,8 @@ onBeforeUnmount(() => {
 .reader-error {
   margin: 16px 0 0;
   padding: 10px 12px;
-  border-left: 3px solid var(--color-error-500);
+  border: 1px solid var(--color-error-100);
+  border-radius: 6px;
   background: var(--color-error-10);
   color: var(--color-error-700);
   font-size: 13px;
@@ -2341,7 +2472,8 @@ onBeforeUnmount(() => {
 
 .review-box {
   padding: 12px;
-  border-left: 3px solid var(--gray-200);
+  border: 1px solid var(--gray-150);
+  border-radius: 6px;
   background: var(--gray-25);
   color: var(--gray-700);
   font-size: 12px;
@@ -2394,7 +2526,8 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-top: 16px;
   padding: 10px 12px;
-  border-left: 3px solid var(--main-500);
+  border: 1px solid var(--main-100);
+  border-radius: 6px;
   background: var(--main-10);
   color: var(--gray-700);
   font-size: 13px;
@@ -2484,7 +2617,8 @@ onBeforeUnmount(() => {
   }
 }
 
-.processing-section {
+.processing-section,
+.paused-section {
   display: flex;
   min-height: 300px;
   align-items: center;
@@ -2506,6 +2640,10 @@ onBeforeUnmount(() => {
     color: var(--gray-600);
     font-size: 13px;
   }
+}
+
+.paused-section > svg {
+  color: var(--color-warning-700);
 }
 
 .spin {

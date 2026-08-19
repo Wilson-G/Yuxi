@@ -13,6 +13,7 @@ const PROJECT_STATUS_LABELS = {
   running: '进行中',
   awaiting_confirmation: '等待确认',
   needs_attention: '需要处理',
+  paused: '已暂停',
   enabled: '已启用'
 }
 
@@ -61,7 +62,7 @@ export const getExpertMaterialStatusLabel = (status) =>
 /** 返回状态对应的克制视觉语义。 */
 export const getExpertStatusTone = (status) => {
   if (status === 'needs_attention') return 'error'
-  if (status === 'awaiting_confirmation') return 'warning'
+  if (status === 'awaiting_confirmation' || status === 'paused') return 'warning'
   if (
     status === 'ready' ||
     status === 'passed' ||
@@ -84,6 +85,14 @@ export const getExpertStatusTone = (status) => {
 /** 仅对后台确实仍在推进的项目启用详情轮询。 */
 export const shouldPollExpertProject = (project) =>
   project?.status === 'running' || project?.status === 'preparing'
+
+/** 当前项目是否允许直接删除。 */
+export const canDeleteExpertProject = (project) =>
+  Boolean(project) && !['running', 'preparing', 'enabled'].includes(project.status)
+
+/** 已启用项目先卸载，其余非暂停项目均可显式暂停。 */
+export const canPauseExpertProject = (project) =>
+  Boolean(project) && !['paused', 'enabled'].includes(project.status)
 
 /** 区分项目定向中的方法生成，避免误显示为正文转换。 */
 export const isExpertMethodPreparationRunning = (project) =>
