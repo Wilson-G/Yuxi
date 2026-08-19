@@ -207,9 +207,17 @@ def extract_structure_candidates(markdown: str) -> tuple[list[MarkdownHeading], 
         return [], [MaterialRange(title="", start_line=1, end_line=len(lines))]
 
     candidates: list[MaterialRange] = []
-    for index, heading in enumerate(headings):
+    root_headings: list[MarkdownHeading] = []
+    root_level: int | None = None
+    for heading in headings:
+        # 子标题保留在父候选正文内，由模型阅读完整父主题后决定是否拆分。
+        if root_level is None or heading.level <= root_level:
+            root_headings.append(heading)
+            root_level = heading.level
+
+    for index, heading in enumerate(root_headings):
         start_line = 1 if index == 0 else heading.start_line
-        end_line = headings[index + 1].start_line - 1 if index + 1 < len(headings) else len(lines)
+        end_line = root_headings[index + 1].start_line - 1 if index + 1 < len(root_headings) else len(lines)
         candidates.append(MaterialRange(title=heading.title, start_line=start_line, end_line=end_line))
     return headings, candidates
 

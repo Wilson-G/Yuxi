@@ -44,10 +44,46 @@ def test_markdown_parser_preserves_visible_heading_structure_and_source_lines() 
         (1, "卷二", 8, 9),
     ]
     assert [(candidate.title, candidate.start_line, candidate.end_line) for candidate in candidates] == [
-        ("卷一", 1, 4),
-        ("内部主题", 5, 7),
+        ("卷一", 1, 7),
         ("卷二", 8, 10),
     ]
+
+
+async def test_nested_heading_candidate_keeps_parent_subtree_for_model_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks, model = _tasks(
+        monkeypatch,
+        [
+            {
+                "decision": "ready",
+                "units": [
+                    {"title": "子主题一", "start_line": 1, "end_line": 3},
+                    {"title": "子主题二", "start_line": 4, "end_line": 5},
+                ],
+            },
+            {
+                "decision": "ready",
+                "units": [{"title": "另一个主题", "start_line": 6, "end_line": 7}],
+            },
+        ],
+    )
+    markdown = "## 父标题\n### 子标题一\n子一正文\n### 子标题二\n子二正文\n## 另一个父标题\n另一个正文\n"
+
+    units = await tasks.confirm_units(model_spec="provider:model", source_path="books/nested.md", markdown=markdown)
+
+    assert [(unit.title, unit.start_line, unit.end_line) for unit in units] == [
+        ("子主题一", 1, 3),
+        ("子主题二", 4, 5),
+        ("另一个主题", 6, 7),
+    ]
+    first_prompt = model.calls[0][-1].content
+    assert "L1: ## 父标题" in first_prompt
+    assert "L2: ### 子标题一" in first_prompt
+    assert "L3: 子一正文" in first_prompt
+    assert "L4: ### 子标题二" in first_prompt
+    assert "L5: 子二正文" in first_prompt
+    assert len(model.calls) == 2
 
 
 async def test_short_markdown_without_heading_is_confirmed_as_complete_unit(monkeypatch: pytest.MonkeyPatch) -> None:
