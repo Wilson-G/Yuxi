@@ -1,8 +1,10 @@
 x-api-worker-env: &api-worker-env
   HOST_IP: ${HOST_IP:-}
-  LITE_MODE: ${LITE_MODE:-false}
+  LITE_MODE: ${LITE_MODE:-true}
   RUNNING_IN_DOCKER: "true"
   YUXI_ENV: development
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env, or rerun `bash scripts/init.sh`.}
+  YUXI_INSTANCE_ID: ${YUXI_INSTANCE_ID:?Set YUXI_INSTANCE_ID in .env, or rerun `bash scripts/init.sh`.}
   LANGGRAPH_CHECKPOINTER_BACKEND: ${LANGGRAPH_CHECKPOINTER_BACKEND:-postgres}
   # DBs and other services
   POSTGRES_URL: ${POSTGRES_URL:-postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-yuxi}}
@@ -202,12 +204,14 @@ services:
       - NODE_ENV=development
       - VITE_API_URL=http://api:5050
       - VITE_USE_RUNS_API=${VITE_USE_RUNS_API:-false}
-      - VITE_LITE_MODE=${LITE_MODE:-}
+      - VITE_LITE_MODE=${LITE_MODE:-true}
     command: pnpm run server
     restart: unless-stopped
 
   # region neo4j
   graph:
+    profiles:
+      - legacy-knowledge
     image: neo4j:5.26
     container_name: graph
     ports:
@@ -233,6 +237,8 @@ services:
   # endregion neo4j
 
   etcd:
+    profiles:
+      - legacy-knowledge
     container_name: milvus-etcd-dev
     image: quay.io/coreos/etcd:v3.5.5
     environment:
@@ -277,6 +283,8 @@ services:
     restart: unless-stopped
 
   milvus:
+    profiles:
+      - legacy-knowledge
     image: milvusdb/milvus:v2.5.6
     container_name: milvus
     command: ["milvus", "run", "standalone"]

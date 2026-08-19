@@ -26,3 +26,14 @@ def test_api_and_worker_default_to_postgres_checkpointer():
         assert compose["x-api-worker-env"]["LANGGRAPH_CHECKPOINTER_BACKEND"] == (
             "${LANGGRAPH_CHECKPOINTER_BACKEND:-postgres}"
         )
+
+
+def test_api_and_worker_require_persistent_jwt_settings():
+    """Compose 不得允许 API 或 worker 使用会随重启变化的 JWT 配置。"""
+    project_root = _project_root()
+    for filename in ("docker-compose.yml", "docker-compose.prod.yml"):
+        compose = yaml.safe_load((project_root / filename).read_text())
+        environment = compose["x-api-worker-env"]
+
+        assert environment["JWT_SECRET_KEY"].startswith("${JWT_SECRET_KEY:?")
+        assert environment["YUXI_INSTANCE_ID"].startswith("${YUXI_INSTANCE_ID:?")
