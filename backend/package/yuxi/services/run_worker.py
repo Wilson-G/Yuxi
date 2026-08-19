@@ -24,6 +24,7 @@ from yuxi.expert.worker import (
 )
 from yuxi.material_library.worker import (
     process_material_source_file_job,
+    process_material_source_units_job,
     recover_material_source_file_jobs,
 )
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
@@ -797,6 +798,10 @@ class WorkerSettings:
         ),
         func(
             process_material_source_file_job,
+            keep_result=0,
+        ),
+        func(
+            process_material_source_units_job,
             keep_result=0,
         ),
     ]

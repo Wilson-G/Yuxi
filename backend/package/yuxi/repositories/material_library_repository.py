@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuxi.storage.postgres.models_material import MaterialDirectory, MaterialLibrary, MaterialSourceFile
+from yuxi.storage.postgres.models_material import MaterialDirectory, MaterialLibrary, MaterialSourceFile, MaterialUnit
 from yuxi.utils.datetime_utils import utc_now_naive
 
 
@@ -151,6 +151,21 @@ class MaterialLibraryRepository:
         )
         return list(result.scalars().all())
 
+    async def list_source_files_by_unit_statuses(self, statuses: set[str]) -> list[MaterialSourceFile]:
+        """列出正文就绪但单元确认尚未结束的来源文件。"""
+
+        if not statuses:
+            return []
+        result = await self.db.execute(
+            select(MaterialSourceFile)
+            .where(
+                MaterialSourceFile.status == "ready",
+                MaterialSourceFile.unit_status.in_(statuses),
+            )
+            .order_by(MaterialSourceFile.updated_at.asc(), MaterialSourceFile.file_id.asc())
+        )
+        return list(result.scalars().all())
+
     async def update_source_file(self, file_id: str, **changes: Any) -> MaterialSourceFile | None:
         """更新一份来源文件的状态或正文位置。"""
 
@@ -185,6 +200,54 @@ class MaterialLibraryRepository:
         """删除一份来源文件事实。"""
 
         await self.db.execute(delete(MaterialSourceFile).where(MaterialSourceFile.file_id == file_id))
+
+    async def create_material_units(self, file_id: str, units: list[dict[str, Any]]) -> list[MaterialUnit]:
+        """一次写入一份来源文件已经机械校验的最终单元。"""
+
+        records = [MaterialUnit(file_id=file_id, **unit) for unit in units]
+        self.db.add_all(records)
+        await self.db.flush()
+        return records
+
+    async def get_material_unit(self, unit_id: str) -> MaterialUnit | None:
+        """按 ID 读取一个材料单元。"""
+
+        result = await self.db.execute(select(MaterialUnit).where(MaterialUnit.unit_id == unit_id))
+        return result.scalar_one_or_none()
+
+    async def list_ready_material_units(
+        self,
+        library_id: str,
+        *,
+        file_id: str | None = None,
+    ) -> list[tuple[MaterialUnit, MaterialSourceFile]]:
+        """只列出来源和单元都已确认完成的可选材料。"""
+
+        statement = (
+            select(MaterialUnit, MaterialSourceFile)
+            .join(MaterialSourceFile, MaterialSourceFile.file_id == MaterialUnit.file_id)
+            .where(
+                MaterialSourceFile.library_id == library_id,
+                MaterialSourceFile.status == "ready",
+                MaterialSourceFile.unit_status == "ready",
+                MaterialUnit.status == "ready",
+            )
+        )
+        if file_id is not None:
+            statement = statement.where(MaterialUnit.file_id == file_id)
+        result = await self.db.execute(
+            statement.order_by(
+                MaterialSourceFile.relative_path.asc(),
+                MaterialUnit.start_line.asc(),
+                MaterialUnit.unit_id.asc(),
+            )
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def delete_material_units(self, file_id: str) -> None:
+        """删除一份来源文件的边界确认结果。"""
+
+        await self.db.execute(delete(MaterialUnit).where(MaterialUnit.file_id == file_id))
 
 
 __all__ = ["MaterialLibraryRepository"]

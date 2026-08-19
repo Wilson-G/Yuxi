@@ -543,6 +543,11 @@ class PostgresManager(metaclass=SingletonMeta):
         """确保业务 schema 包含后续新增字段（运行时 schema 演进）。"""
         self._check_initialized()
         stmts = [
+            (
+                "ALTER TABLE IF EXISTS material_source_files ADD COLUMN IF NOT EXISTS "
+                "unit_status VARCHAR(32) NOT NULL DEFAULT 'pending'"
+            ),
+            ("CREATE INDEX IF NOT EXISTS ix_material_source_files_unit_status ON material_source_files(unit_status)"),
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS mcp_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS skill_dependencies JSONB DEFAULT '[]'::jsonb",

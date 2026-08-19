@@ -114,6 +114,7 @@ class MaterialSourceFile(Base):
     markdown_bucket = Column(String(255), nullable=True, comment="规范化 Markdown MinIO bucket")
     markdown_object = Column(String(1024), nullable=True, comment="规范化 Markdown MinIO object")
     status = Column(String(32), nullable=False, default="pending", index=True, comment="文件处理状态")
+    unit_status = Column(String(32), nullable=False, default="pending", index=True, comment="材料单元确认状态")
     progress = Column(Integer, nullable=False, default=0, comment="文件处理进度")
     line_count = Column(Integer, nullable=False, default=0, comment="规范化 Markdown 行数")
     error_message = Column(Text, nullable=True, comment="需要处理的具体原因")
@@ -141,6 +142,7 @@ class MaterialSourceFile(Base):
             "file_type": self.file_type,
             "file_size": self.file_size,
             "status": self.status,
+            "unit_status": self.unit_status,
             "progress": self.progress,
             "line_count": self.line_count,
             "error_message": self.error_message,
@@ -150,4 +152,47 @@ class MaterialSourceFile(Base):
         }
 
 
-__all__ = ["Base", "MaterialDirectory", "MaterialLibrary", "MaterialSourceFile"]
+class MaterialUnit(Base):
+    """从一份规范化 Markdown 中确认出的完整可读范围。"""
+
+    __tablename__ = "material_units"
+
+    unit_id = Column(String(64), primary_key=True, comment="材料单元 ID")
+    file_id = Column(
+        String(64),
+        ForeignKey("material_source_files.file_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="来源文件 ID",
+    )
+    title = Column(String(512), nullable=False, comment="模型确认的自然主题标题")
+    start_line = Column(Integer, nullable=False, comment="规范化 Markdown 起始行")
+    end_line = Column(Integer, nullable=False, comment="规范化 Markdown 结束行")
+    status = Column(String(32), nullable=False, default="ready", index=True, comment="材料单元状态")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    __table_args__ = (UniqueConstraint("file_id", "start_line", "end_line", name="uq_material_units_file_range"),)
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回材料选择和正文预览需要的事实。"""
+
+        return {
+            "unit_id": self.unit_id,
+            "file_id": self.file_id,
+            "title": self.title,
+            "start_line": self.start_line,
+            "end_line": self.end_line,
+            "status": self.status,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+__all__ = ["Base", "MaterialDirectory", "MaterialLibrary", "MaterialSourceFile", "MaterialUnit"]

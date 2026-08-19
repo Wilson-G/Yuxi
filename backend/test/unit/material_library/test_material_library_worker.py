@@ -37,7 +37,14 @@ async def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await engine.dispose()
 
 
-async def _add_source(factory, file_id: str, status: str, progress: int) -> None:
+async def _add_source(
+    factory,
+    file_id: str,
+    status: str,
+    progress: int,
+    *,
+    unit_status: str = "pending",
+) -> None:
     async with factory() as db:
         repo = MaterialLibraryRepository(db)
         if await repo.get_library("library-1") is None:
@@ -59,6 +66,7 @@ async def _add_source(factory, file_id: str, status: str, progress: int) -> None
                 else None
             ),
             status=status,
+            unit_status=unit_status,
             progress=progress,
             line_count=3 if status == "ready" else 0,
             error_message="解析失败" if status == "needs_attention" else None,
@@ -74,10 +82,16 @@ async def test_stable_job_id_and_recovery_only_requeue_unfinished_files(
     for file_id, status, progress in [
         ("pending-file", "pending", 0),
         ("processing-file", "processing", 10),
+        ("unit-pending-file", "ready", 100),
+        ("unit-processing-file", "ready", 100),
         ("ready-file", "ready", 100),
         ("attention-file", "needs_attention", 10),
     ]:
-        await _add_source(worker_env, file_id, status, progress)
+        unit_status = {
+            "unit-processing-file": "processing",
+            "ready-file": "ready",
+        }.get(file_id, "pending")
+        await _add_source(worker_env, file_id, status, progress, unit_status=unit_status)
 
     jobs: list[tuple[tuple, dict]] = []
 
@@ -96,6 +110,10 @@ async def test_stable_job_id_and_recovery_only_requeue_unfinished_files(
     assert {args[1]: kwargs["_job_id"] for args, kwargs in jobs[:2]} == {
         "pending-file": "material-source:pending-file",
         "processing-file": "material-source:processing-file",
+    }
+    assert {args[1]: kwargs["_job_id"] for args, kwargs in jobs[2:4]} == {
+        "unit-pending-file": "material-units:unit-pending-file",
+        "unit-processing-file": "material-units:unit-processing-file",
     }
     assert jobs[-1] == (
         ("process_material_source_file_job", "pending-file"),
@@ -138,8 +156,28 @@ async def test_enqueue_failure_stays_pending_for_startup_recovery(worker_env, mo
     ]
 
 
+async def test_source_job_enqueues_boundary_confirmation_after_text_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enqueued: list[str] = []
+
+    async def fake_process(file_id: str):
+        return {"file_id": file_id, "status": "ready", "unit_status": "pending"}
+
+    async def fake_enqueue(file_id: str):
+        enqueued.append(file_id)
+
+    monkeypatch.setattr(worker, "process_material_source_file", fake_process)
+    monkeypatch.setattr(worker, "enqueue_material_source_units", fake_enqueue)
+
+    result = await worker.process_material_source_file_job({}, "file-1")
+
+    assert result == {"file_id": "file-1", "status": "ready", "unit_status": "pending"}
+    assert enqueued == ["file-1"]
+
+
 async def test_task_projection_uses_source_file_fact(worker_env) -> None:
-    await _add_source(worker_env, "ready-file", "ready", 100)
+    await _add_source(worker_env, "ready-file", "ready", 100, unit_status="ready")
     await _add_source(worker_env, "attention-file", "needs_attention", 10)
 
     async with worker_env() as db:

@@ -22,6 +22,9 @@ def test_material_routes_are_registered_when_lite_mode_is_enabled(monkeypatch: p
 
     assert "/material-libraries" in route_paths
     assert "/material-libraries/{library_id}/files" in route_paths
+    assert "/material-libraries/{library_id}/units" in route_paths
+    assert "/material-libraries/{library_id}/units/{unit_id}/text" in route_paths
+    assert "/material-libraries/{library_id}/files/{file_id}/retry-units" in route_paths
     assert "/document-images/{object_path:path}" in route_paths
 
 

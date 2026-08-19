@@ -8,10 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from yuxi.material_library import service
+from yuxi.material_library.boundary import MaterialBoundaryNeedsAttention, MaterialRange
 from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.models_business import Base
+from yuxi.storage.postgres.models_material import MaterialUnit
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -20,10 +23,15 @@ class FakeMinio:
     def __init__(self):
         self.uploads: list[dict] = []
         self.deleted_prefixes: list[tuple[str, str]] = []
+        self.objects: dict[tuple[str, str], bytes] = {}
 
     async def aupload_file(self, **kwargs):
         self.uploads.append(kwargs)
+        self.objects[(kwargs["bucket_name"], kwargs["object_name"])] = kwargs["data"]
         return SimpleNamespace(url="minio://stored")
+
+    async def adownload_file(self, bucket_name: str, object_name: str) -> bytes:
+        return self.objects[(bucket_name, object_name)]
 
     async def adelete_objects_by_prefix(self, bucket_name: str, prefix: str) -> int:
         self.deleted_prefixes.append((bucket_name, prefix))
@@ -121,7 +129,7 @@ async def test_upload_and_process_preserve_path_and_store_complete_markdown(
 
     result = await service.process_material_source_file(file_id)
 
-    assert result == {"file_id": file_id, "status": "ready"}
+    assert result == {"file_id": file_id, "status": "ready", "unit_status": "pending"}
     assert captured == {
         "source": f"minio://materials/{object_prefix}/original/chapter.md",
         "params": {
@@ -139,6 +147,7 @@ async def test_upload_and_process_preserve_path_and_store_complete_markdown(
     async with material_env() as db:
         source_file = await MaterialLibraryRepository(db).get_source_file(file_id)
     assert source_file.status == "ready"
+    assert source_file.unit_status == "pending"
     assert source_file.progress == 100
     assert source_file.line_count == 2
     assert source_file.markdown_bucket == "materials"
@@ -222,3 +231,143 @@ async def test_retry_resets_only_selected_source_file(material_env) -> None:
     async with material_env() as db:
         untouched_source = await MaterialLibraryRepository(db).get_source_file(untouched["file_id"])
     assert untouched_source.status == "pending"
+
+
+async def test_boundary_confirmation_saves_only_ready_units_and_reads_complete_text(
+    material_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    item = await _upload_source(material_env, fake_minio, "book.md")
+    markdown = "# 第一主题\n第一主题正文\n# 第二主题\n第二主题正文\n"
+
+    async def fake_parse_document(*_args, **_kwargs):
+        return markdown
+
+    async def fake_get_options(_db):
+        return {"default_model": "provider:model"}
+
+    async def fake_confirm_units(**_kwargs):
+        return [
+            MaterialRange(title="第一主题", start_line=1, end_line=2),
+            MaterialRange(title="第二主题", start_line=3, end_line=4),
+        ]
+
+    monkeypatch.setattr(service, "parse_document", fake_parse_document)
+    monkeypatch.setattr(service, "get_minio_client", lambda: fake_minio)
+    monkeypatch.setattr(service, "system_options", SimpleNamespace(get=fake_get_options))
+    monkeypatch.setattr(service.material_boundary_tasks, "confirm_units", fake_confirm_units)
+
+    await service.process_material_source_file(item["file_id"])
+    result = await service.process_material_source_units(item["file_id"])
+
+    assert result == {"file_id": item["file_id"], "unit_status": "ready", "unit_count": 2}
+    async with material_env() as db:
+        units = await service.list_material_units(db, library_id="library-1")
+        second_text = await service.get_material_unit_text(
+            db,
+            library_id="library-1",
+            unit_id=units[1]["unit_id"],
+        )
+    assert [(unit["title"], unit["start_line"], unit["end_line"]) for unit in units] == [
+        ("第一主题", 1, 2),
+        ("第二主题", 3, 4),
+    ]
+    assert second_text["content"] == "# 第二主题\n第二主题正文\n"
+
+    async with material_env() as db:
+        stored_units = list((await db.execute(select(MaterialUnit).order_by(MaterialUnit.start_line))).scalars())
+        stored_units[1].status = "pending"
+        await db.commit()
+    async with material_env() as db:
+        visible_units = await service.list_material_units(db, library_id="library-1")
+    assert [unit["title"] for unit in visible_units] == ["第一主题"]
+
+
+async def test_boundary_attention_keeps_complete_source_and_records_reason(
+    material_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    item = await _upload_source(material_env, fake_minio, "incomplete.md")
+
+    async def fake_parse_document(*_args, **_kwargs):
+        return "# 未完成主题\n只有开头\n"
+
+    async def fake_get_options(_db):
+        return {"default_model": "provider:model"}
+
+    async def fail_boundary(**_kwargs):
+        raise MaterialBoundaryNeedsAttention("正文在主题结论前中断")
+
+    monkeypatch.setattr(service, "parse_document", fake_parse_document)
+    monkeypatch.setattr(service, "get_minio_client", lambda: fake_minio)
+    monkeypatch.setattr(service, "system_options", SimpleNamespace(get=fake_get_options))
+    monkeypatch.setattr(service.material_boundary_tasks, "confirm_units", fail_boundary)
+
+    await service.process_material_source_file(item["file_id"])
+    result = await service.process_material_source_units(item["file_id"])
+
+    assert result == {
+        "file_id": item["file_id"],
+        "unit_status": "needs_attention",
+        "error": "正文在主题结论前中断",
+    }
+    async with material_env() as db:
+        source_file = await MaterialLibraryRepository(db).get_source_file(item["file_id"])
+        source_text = await service.get_material_source_text(
+            db,
+            library_id="library-1",
+            file_id=item["file_id"],
+        )
+    assert source_file.status == "ready"
+    assert source_file.unit_status == "needs_attention"
+    assert source_text["content"] == "# 未完成主题\n只有开头\n"
+
+
+async def test_retry_units_resets_only_selected_source(material_env) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    selected = await _upload_source(material_env, fake_minio, "selected.md")
+    untouched = await _upload_source(material_env, fake_minio, "untouched.md")
+
+    async with material_env() as db:
+        repo = MaterialLibraryRepository(db)
+        for item in (selected, untouched):
+            await repo.update_source_file(
+                item["file_id"],
+                status="ready",
+                unit_status="ready",
+                markdown_bucket="materials",
+                markdown_object=f"{item['file_id']}.md",
+                line_count=1,
+            )
+            await repo.create_material_units(
+                item["file_id"],
+                [
+                    {
+                        "unit_id": f"unit-{item['file_id']}",
+                        "title": item["relative_path"],
+                        "start_line": 1,
+                        "end_line": 1,
+                        "status": "ready",
+                    }
+                ],
+            )
+        await db.commit()
+
+    async with material_env() as db:
+        result = await service.reset_material_source_units(
+            db,
+            library_id="library-1",
+            file_id=selected["file_id"],
+        )
+
+    assert result["unit_status"] == "pending"
+    async with material_env() as db:
+        remaining_units = list((await db.execute(select(MaterialUnit))).scalars())
+        untouched_source = await MaterialLibraryRepository(db).get_source_file(untouched["file_id"])
+    assert [unit.file_id for unit in remaining_units] == [untouched["file_id"]]
+    assert untouched_source.unit_status == "ready"

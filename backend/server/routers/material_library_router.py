@@ -13,12 +13,16 @@ from yuxi.material_library.service import (
     delete_material_source_file,
     get_material_library_detail,
     get_material_source_text,
+    get_material_unit_text,
     list_material_libraries,
     list_material_source_files,
+    list_material_units,
     mark_material_source_enqueue_failed,
+    mark_material_unit_enqueue_failed,
     reset_material_source_file,
+    reset_material_source_units,
 )
-from yuxi.material_library.worker import enqueue_material_source_file
+from yuxi.material_library.worker import enqueue_material_source_file, enqueue_material_source_units
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, read_upload_with_limit
 
@@ -169,6 +173,38 @@ async def upload_material_source_file_route(
     return {"item": item}
 
 
+@material_libraries.get("/{library_id}/units")
+async def list_material_units_route(
+    library_id: str,
+    file_id: str | None = None,
+    _current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出资料库中已经确认完成的可选材料单元。"""
+
+    try:
+        return {"items": await list_material_units(db, library_id=library_id, file_id=file_id)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@material_libraries.get("/{library_id}/units/{unit_id}/text")
+async def get_material_unit_text_route(
+    library_id: str,
+    unit_id: str,
+    _current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """读取一个已确认材料单元的完整 Markdown 正文。"""
+
+    try:
+        return {"item": await get_material_unit_text(db, library_id=library_id, unit_id=unit_id)}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @material_libraries.get("/{library_id}/files/{file_id}/text")
 async def get_material_source_text_route(
     library_id: str,
@@ -202,6 +238,25 @@ async def retry_material_source_file_route(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await _enqueue_or_mark_attention(db, file_id)
+    return {"item": item}
+
+
+@material_libraries.post("/{library_id}/files/{file_id}/retry-units", status_code=202)
+async def retry_material_source_units_route(
+    library_id: str,
+    file_id: str,
+    _current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """只重跑指定来源文件的自然边界确认。"""
+
+    try:
+        item = await reset_material_source_units(db, library_id=library_id, file_id=file_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await _enqueue_units_or_mark_attention(db, file_id)
     return {"item": item}
 
 
@@ -242,6 +297,15 @@ async def _enqueue_or_mark_attention(db: AsyncSession, file_id: str) -> None:
     except Exception as exc:
         message = f"来源文件任务投递失败: {exc}"
         await mark_material_source_enqueue_failed(db, file_id=file_id, error=message)
+        raise HTTPException(status_code=503, detail=message) from exc
+
+
+async def _enqueue_units_or_mark_attention(db: AsyncSession, file_id: str) -> None:
+    try:
+        await enqueue_material_source_units(file_id)
+    except Exception as exc:
+        message = f"材料单元确认任务投递失败: {exc}"
+        await mark_material_unit_enqueue_failed(db, file_id=file_id, error=message)
         raise HTTPException(status_code=503, detail=message) from exc
 
 

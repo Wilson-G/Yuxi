@@ -9,7 +9,9 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.config.options import system_options
 from yuxi.knowledge.parser.unified import is_supported_file_extension
+from yuxi.material_library.boundary import material_boundary_tasks
 from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.services.ocr_service import parse_document
 from yuxi.storage.minio.client import MinIOClient, get_minio_client
@@ -19,6 +21,10 @@ SOURCE_PENDING_STATUS = "pending"
 SOURCE_PROCESSING_STATUS = "processing"
 SOURCE_READY_STATUS = "ready"
 SOURCE_ATTENTION_STATUS = "needs_attention"
+UNIT_PENDING_STATUS = "pending"
+UNIT_PROCESSING_STATUS = "processing"
+UNIT_READY_STATUS = "ready"
+UNIT_ATTENTION_STATUS = "needs_attention"
 
 
 async def create_material_library(db: AsyncSession, *, name: str, created_by: str) -> dict[str, Any]:
@@ -145,6 +151,7 @@ async def create_material_source_file(
         source_bucket=bucket_name,
         source_object=source_object,
         status=SOURCE_PENDING_STATUS,
+        unit_status=UNIT_PENDING_STATUS,
         progress=0,
         line_count=0,
         error_message=None,
@@ -179,6 +186,58 @@ async def get_material_source_text(db: AsyncSession, *, library_id: str, file_id
     }
 
 
+async def list_material_units(
+    db: AsyncSession,
+    *,
+    library_id: str,
+    file_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """列出来源和边界均已就绪的可选材料单元。"""
+
+    repo = MaterialLibraryRepository(db)
+    await _require_library(repo, library_id)
+    if file_id is not None:
+        await _require_source_file(repo, library_id, file_id)
+    rows = await repo.list_ready_material_units(library_id, file_id=file_id)
+    return [
+        {
+            **unit.to_dict(),
+            "source_filename": source_file.original_filename,
+            "source_path": source_file.relative_path,
+        }
+        for unit, source_file in rows
+    ]
+
+
+async def get_material_unit_text(db: AsyncSession, *, library_id: str, unit_id: str) -> dict[str, Any]:
+    """按来源行范围读取一个已就绪单元的完整 Markdown 正文。"""
+
+    repo = MaterialLibraryRepository(db)
+    unit = await repo.get_material_unit(unit_id)
+    if unit is None:
+        raise LookupError("材料单元不存在")
+    source_file = await _require_source_file(repo, library_id, unit.file_id)
+    if (
+        unit.status != UNIT_READY_STATUS
+        or source_file.status != SOURCE_READY_STATUS
+        or source_file.unit_status != UNIT_READY_STATUS
+        or not source_file.markdown_bucket
+        or not source_file.markdown_object
+    ):
+        raise ValueError("材料单元尚未就绪")
+
+    markdown = await get_minio_client().adownload_file(source_file.markdown_bucket, source_file.markdown_object)
+    lines = markdown.decode("utf-8").splitlines(keepends=True)
+    if unit.end_line > len(lines):
+        raise ValueError("材料单元来源行范围已失效")
+    return {
+        **unit.to_dict(),
+        "source_filename": source_file.original_filename,
+        "source_path": source_file.relative_path,
+        "content": "".join(lines[unit.start_line - 1 : unit.end_line]),
+    }
+
+
 async def reset_material_source_file(db: AsyncSession, *, library_id: str, file_id: str) -> dict[str, Any]:
     """把一份需要处理的来源文件重置为等待处理。"""
 
@@ -189,11 +248,36 @@ async def reset_material_source_file(db: AsyncSession, *, library_id: str, file_
     source_file = await repo.update_source_file(
         file_id,
         status=SOURCE_PENDING_STATUS,
+        unit_status=UNIT_PENDING_STATUS,
         progress=0,
         error_message=None,
         markdown_bucket=None,
         markdown_object=None,
         line_count=0,
+    )
+    await db.commit()
+    return source_file.to_dict()
+
+
+async def reset_material_source_units(db: AsyncSession, *, library_id: str, file_id: str) -> dict[str, Any]:
+    """只清除并重跑一份正文已经就绪的边界确认结果。"""
+
+    repo = MaterialLibraryRepository(db)
+    source_file = await _require_source_file(repo, library_id, file_id)
+    if source_file.status != SOURCE_READY_STATUS or source_file.unit_status not in {
+        UNIT_PENDING_STATUS,
+        UNIT_READY_STATUS,
+        UNIT_ATTENTION_STATUS,
+    }:
+        raise ValueError("只有正文就绪且边界确认未在处理的来源文件可以重跑")
+    if not source_file.markdown_bucket or not source_file.markdown_object:
+        raise ValueError("来源文件规范化 Markdown 不存在")
+
+    await repo.delete_material_units(file_id)
+    source_file = await repo.update_source_file(
+        file_id,
+        unit_status=UNIT_PENDING_STATUS,
+        error_message=None,
     )
     await db.commit()
     return source_file.to_dict()
@@ -210,6 +294,17 @@ async def mark_material_source_enqueue_failed(db: AsyncSession, *, file_id: str,
     await db.commit()
 
 
+async def mark_material_unit_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> None:
+    """记录单元确认投递失败，保留可由启动扫描恢复的等待事实。"""
+
+    await MaterialLibraryRepository(db).update_source_file(
+        file_id,
+        unit_status=UNIT_PENDING_STATUS,
+        error_message=error,
+    )
+    await db.commit()
+
+
 async def delete_material_source_file(
     db: AsyncSession,
     *,
@@ -221,7 +316,7 @@ async def delete_material_source_file(
 
     repo = MaterialLibraryRepository(db)
     source_file = await _require_source_file(repo, library_id, file_id)
-    if source_file.status == SOURCE_PROCESSING_STATUS:
+    if source_file.status == SOURCE_PROCESSING_STATUS or source_file.unit_status == UNIT_PROCESSING_STATUS:
         raise ValueError("来源文件正在处理，不能删除")
 
     prefix = source_file_object_prefix(library_id, file_id)
@@ -241,7 +336,11 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
         if source_file is None:
             return {"file_id": file_id, "ignored": True}
         if source_file.status == SOURCE_READY_STATUS:
-            return {"file_id": file_id, "status": SOURCE_READY_STATUS}
+            return {
+                "file_id": file_id,
+                "status": SOURCE_READY_STATUS,
+                "unit_status": source_file.unit_status,
+            }
         if source_file.status not in {SOURCE_PENDING_STATUS, SOURCE_PROCESSING_STATUS}:
             return {"file_id": file_id, "ignored": True}
         source_file = await repo.update_source_file(
@@ -284,6 +383,7 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
             source_file = await MaterialLibraryRepository(db).update_source_file(
                 file_id,
                 status=SOURCE_READY_STATUS,
+                unit_status=UNIT_PENDING_STATUS,
                 progress=100,
                 markdown_bucket=markdown_bucket,
                 markdown_object=markdown_object,
@@ -291,7 +391,11 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
                 error_message=None,
             )
             await db.commit()
-        return {"file_id": file_id, "status": source_file.status}
+        return {
+            "file_id": file_id,
+            "status": source_file.status,
+            "unit_status": source_file.unit_status,
+        }
     except Exception as exc:
         async with pg_manager.get_async_session_context() as db:
             source_file = await MaterialLibraryRepository(db).update_source_file(
@@ -301,6 +405,101 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
             )
             await db.commit()
         return {"file_id": file_id, "status": source_file.status, "error": source_file.error_message}
+
+
+async def process_material_source_units(file_id: str) -> dict[str, Any]:
+    """确认一份就绪正文的自然主题边界并保存最终材料单元。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        repo = MaterialLibraryRepository(db)
+        source_file = await repo.get_source_file(file_id)
+        if source_file is None:
+            return {"file_id": file_id, "ignored": True}
+        if source_file.status != SOURCE_READY_STATUS:
+            return {"file_id": file_id, "ignored": True}
+        if source_file.unit_status == UNIT_READY_STATUS:
+            return {"file_id": file_id, "unit_status": UNIT_READY_STATUS}
+        if source_file.unit_status not in {UNIT_PENDING_STATUS, UNIT_PROCESSING_STATUS}:
+            return {"file_id": file_id, "ignored": True}
+        if not source_file.markdown_bucket or not source_file.markdown_object:
+            source_file = await repo.update_source_file(
+                file_id,
+                unit_status=UNIT_ATTENTION_STATUS,
+                error_message="来源文件规范化 Markdown 不存在",
+            )
+            await db.commit()
+            return {
+                "file_id": file_id,
+                "unit_status": source_file.unit_status,
+                "error": source_file.error_message,
+            }
+
+        source_file = await repo.update_source_file(
+            file_id,
+            unit_status=UNIT_PROCESSING_STATUS,
+            error_message=None,
+        )
+        model_spec = str((await system_options.get(db))["default_model"]).strip()
+        await db.commit()
+        snapshot = {
+            "source_path": source_file.relative_path,
+            "markdown_bucket": source_file.markdown_bucket,
+            "markdown_object": source_file.markdown_object,
+            "line_count": source_file.line_count,
+            "model_spec": model_spec,
+        }
+
+    try:
+        markdown_bytes = await get_minio_client().adownload_file(
+            snapshot["markdown_bucket"],
+            snapshot["markdown_object"],
+        )
+        markdown = markdown_bytes.decode("utf-8")
+        actual_line_count = len(markdown.splitlines())
+        if actual_line_count != snapshot["line_count"]:
+            raise ValueError("规范化 Markdown 行数与来源文件事实不一致")
+
+        units = await material_boundary_tasks.confirm_units(
+            model_spec=snapshot["model_spec"],
+            source_path=snapshot["source_path"],
+            markdown=markdown,
+        )
+
+        async with pg_manager.get_async_session_context() as db:
+            repo = MaterialLibraryRepository(db)
+            await repo.create_material_units(
+                file_id,
+                [
+                    {
+                        "unit_id": uuid4().hex,
+                        "title": unit.title,
+                        "start_line": unit.start_line,
+                        "end_line": unit.end_line,
+                        "status": UNIT_READY_STATUS,
+                    }
+                    for unit in units
+                ],
+            )
+            source_file = await repo.update_source_file(
+                file_id,
+                unit_status=UNIT_READY_STATUS,
+                error_message=None,
+            )
+            await db.commit()
+        return {"file_id": file_id, "unit_status": source_file.unit_status, "unit_count": len(units)}
+    except Exception as exc:
+        async with pg_manager.get_async_session_context() as db:
+            source_file = await MaterialLibraryRepository(db).update_source_file(
+                file_id,
+                unit_status=UNIT_ATTENTION_STATUS,
+                error_message=str(exc),
+            )
+            await db.commit()
+        return {
+            "file_id": file_id,
+            "unit_status": source_file.unit_status,
+            "error": source_file.error_message,
+        }
 
 
 def source_file_object_prefix(library_id: str, file_id: str) -> str:
@@ -380,6 +579,10 @@ __all__ = [
     "SOURCE_PENDING_STATUS",
     "SOURCE_PROCESSING_STATUS",
     "SOURCE_READY_STATUS",
+    "UNIT_ATTENTION_STATUS",
+    "UNIT_PENDING_STATUS",
+    "UNIT_PROCESSING_STATUS",
+    "UNIT_READY_STATUS",
     "create_material_directory",
     "create_material_library",
     "create_material_source_file",
@@ -387,11 +590,16 @@ __all__ = [
     "delete_material_source_file",
     "get_material_library_detail",
     "get_material_source_text",
+    "get_material_unit_text",
     "list_material_libraries",
     "list_material_source_files",
+    "list_material_units",
     "mark_material_source_enqueue_failed",
+    "mark_material_unit_enqueue_failed",
     "normalize_material_markdown",
     "process_material_source_file",
+    "process_material_source_units",
     "reset_material_source_file",
+    "reset_material_source_units",
     "source_file_object_prefix",
 ]
