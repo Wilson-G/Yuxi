@@ -1,26 +1,30 @@
 # ARCHITECTURE.md
 
-本文档是 Yuxi 的代码地图，只描述相对稳定的系统边界、目录职责、核心运行链路和架构不变量。它用于帮助贡献者判断“一个改动应该落在哪里”，不替代具体模块文档、测试规范或源码注释。
+本文档是知铸 ZhiForge 的代码地图（仓库、Python 包与环境变量等技术标识暂保留 `Yuxi` / `yuxi`）。它只描述相对稳定的系统边界、目录职责、核心运行链路和架构不变量，用于帮助贡献者判断“一个改动应该落在哪里”，不替代具体模块文档、测试规范或源码注释。
 
 修改不熟悉的模块前，先阅读对应章节，再使用符号搜索定位具体类型、函数和路由。开发与运行拓扑始终以 `docker-compose.yml` 为准。
 
 ## 鸟瞰
 
-Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平台。用户通过 Vue 前端管理智能体、知识库、模型、工具、Skills、MCP 与 SubAgents；前端通过 `/api` 调用 FastAPI；后端服务层协调 PostgreSQL、Redis、MinIO、Milvus、Neo4j、LangGraph 和沙盒。
+知铸的默认产品路线是把一批可靠材料学习并编译为可启用、可检索、可核对依据的专家 Skill。用户通过 Vue 前端创建专家项目，经历材料转正文、项目定向、两次确认、并行学习与 Review、项目内串行总编和成品预览，最后手动启用 Skill。前端通过 `/api` 调用 FastAPI，后端协调 PostgreSQL、Redis/ARQ、MinIO、模型运行时、文档解析和沙盒。
 
-普通智能体请求先在 PostgreSQL 中保存为请求和消息，再立即派发或进入线程级 FIFO 队列。派发后的 `AgentRun` 通过 Redis/ARQ 交给独立 worker 执行，运行事件写入 Redis Stream，最终状态和业务记录写回 PostgreSQL，前端通过 SSE 消费排队与运行事件。
+旧知识库、向量检索、评估和知识图谱仍作为兼容能力保留，但不是默认产品路线。新专家项目的材料、笔记、讲义和发布物不进入旧知识库的分块、Milvus 入库或 Neo4j 图谱链路。
+
+专家项目以 PostgreSQL 中的项目、材料和主题记录为事实来源，以项目私有目录保存原始材料、可靠正文和正式产物。ARQ worker 根据项目记录执行阶段任务并在启动时重投未完成工作；任务中心只将项目事实投影为进度摘要，不参与恢复。
+
+普通智能体请求仍先在 PostgreSQL 中保存为请求和消息，再立即派发或进入线程级 FIFO 队列。派发后的 `AgentRun` 通过 Redis/ARQ 交给独立 worker 执行，运行事件写入 Redis Stream，最终状态和业务记录写回 PostgreSQL，前端通过 SSE 消费排队与运行事件。
 
 核心开发服务包括：
 
 - `web-dev`：Vue 3 / Vite 前端，挂载 `web/src` 并热重载。
 - `api-dev`：FastAPI API 服务，挂载 `backend/server`、`backend/package` 和测试目录并热重载。
-- `worker-dev`：ARQ worker，执行已经派发的 AgentRun，并负责异常恢复扫描。
+- `worker-dev`：ARQ worker，执行 AgentRun 和专家项目阶段任务，并负责两条链路的启动恢复扫描。
 - `sandbox-provisioner`：为智能体工具执行提供隔离沙盒。
-- `postgres`：业务数据、知识库元数据、请求队列、AgentRun 与 LangGraph checkpoint。
+- `postgres`：专家项目事实、Skill 元数据、业务数据、请求队列、AgentRun 与 LangGraph checkpoint；兼容模式下也保存旧知识库元数据。
 - `redis`：ARQ 投递、运行事件、取消信号以及跨进程配置和模型缓存。
-- `minio`：附件、知识库原始文件和其他对象数据。
-- `milvus`、`etcd`：向量检索及其元数据协调。
-- `graph`：Neo4j 知识图谱。
+- `minio`：附件、公开图片和其他对象数据；兼容模式下也保存旧知识库原始文件。
+- `milvus`、`etcd`：旧向量知识库的可选服务，通过 `legacy-knowledge` profile 启动。
+- `graph`：旧知识库图谱的 Neo4j 可选服务，通过 `legacy-knowledge` profile 启动。
 - `mineru-api`、`paddlex`：通过 `all` profile 可选启动的文档解析和 OCR 服务。
 
 ## 后端代码地图
@@ -31,31 +35,33 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 
 - `server/main.py` 创建 FastAPI 应用、注册中间件，并将业务路由统一挂载到 `/api`。
 - `server/routers` 是 HTTP 路由边界，所有路由集中在 `server/routers/__init__.py` 注册。
-- `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、知识库、Redis、沙盒、LangGraph checkpoint 和通用 Tasker 的启动与关闭。
+- `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、Redis、沙盒、LangGraph checkpoint 和通用 Tasker 的启动与关闭；只有非 `LITE_MODE` 才初始化旧知识库。
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
-`LITE_MODE` 下保留认证、智能体、聊天、Skills、MCP、模型、工作区和系统管理接口，但不注册 `external_kb`、`knowledge`、`evaluation` 和 `graph` 路由，也不初始化知识库管理器。
+`LITE_MODE` 是默认运行边界：保留专家项目、认证、智能体、聊天、Skills、MCP、模型、工作区和系统管理接口，但不注册 `external_kb`、`knowledge`、`evaluation` 和 `graph` 路由，也不初始化旧知识库管理器。
 
 ### `backend/package/yuxi`
 
-- `agents` 定义 LangGraph 智能体体系。`BaseAgent` 是智能体基类，`BaseContext` 是运行上下文；`buildin/chatbot` 和 `buildin/subagent` 放内置智能体；`middlewares` 组合文件系统、Skills、SubAgent、摘要、审批、模型兼容和用量统计；`toolkits` 管理本地工具；`backends` 对接沙盒、知识库和 Skills 文件系统；`skills` 与 `mcp` 管理扩展能力及其运行时加载。
+- `expert` 是默认产品主体：管理材料转正文、项目定向和 Prompt 包、逐份学习与 Review、主题与讲义组织、总编收口、候选 Skill 组装、ARQ 任务与项目恢复。`expert/prompt_designer/` 是第 0 阶段读取的中央 Prompt 设计规范，包含中央方法、材料类型模板和结构示例；它不是隐藏的辅助资源。
+- `agents` 定义 LangGraph 智能体体系。`BaseAgent` 是智能体基类，`BaseContext` 是运行上下文；`buildin/chatbot` 和 `buildin/subagent` 放内置智能体；`middlewares` 组合文件系统、Skills、SubAgent、摘要、审批、模型兼容和用量统计；`toolkits` 管理本地工具；`backends` 对接沙盒和 Skills 文件系统；`skills` 与 `mcp` 管理扩展能力及其运行时加载。
 - `services` 是用例层。智能体主链路重点分为请求接入与排队、Run 生命周期、运行时配置、worker 执行和 SubAgent 调用；聊天历史、附件、工作区、文件预览、评估、认证和观测等跨模块流程也从这里找入口。
-- `repositories` 是 PostgreSQL 访问边界，封装业务对象、知识库元数据、AgentRun、请求队列、Task 和扩展配置查询。路由不应绕过 repository 直接拼装持久化逻辑。
+- `repositories` 是 PostgreSQL 访问边界，封装专家项目、业务对象、AgentRun、请求队列、Task 和扩展配置查询；兼容知识库元数据也保留在这一边界。路由不应绕过 repository 直接拼装持久化逻辑。
 - `storage/postgres` 管理 SQLAlchemy 模型、业务连接池和 LangGraph checkpoint 连接池。
 - `storage/redis` 管理同步/异步 Redis 客户端和 ARQ 连接参数；业务 key、事件格式和缓存语义留在各自服务中。
 - `storage/minio` 管理对象上传、下载和临时文件访问。
 - `storage/neo4j` 管理共享 Neo4j Driver、生命周期和图查询辅助。
-- `knowledge` 是知识库、文档解析、评估和图谱领域。`runtime.py` 暴露运行时知识库管理器；`implementations` 放 Milvus、Dify、Notion 和只读连接器；`parser` 统一封装 OCR/文档解析；`chunking` 管理分块策略；`graphs` 管理 Milvus 与 Neo4j 图谱能力。
+- `knowledge` 保留两类能力：`parser` 中的 OCR/文档解析作为专家材料转正文的共享底层；`runtime`、`implementations`、`chunking`、`eval` 和 `graphs` 是旧知识库、向量检索、评估与图谱兼容领域。
 - `models` 封装 chat、embedding 和 rerank 模型适配；`models/providers` 使用 PostgreSQL 保存模型供应商，并通过 Redis 缓存向 API 和 worker 提供一致视图。
 - `config` 区分系统级配置和用户级配置。系统配置写入 `base.toml` 并同步 Redis 快照，用户配置保存在 PostgreSQL。
 - `utils` 只放跨领域且足够通用的日志、时间、SSE 和轻量工具。
 
-### 两类后台任务
+### 后台执行边界
 
-项目中存在两套用途不同的后台执行机制，不应混用：
+项目中存在三种用途不同的后台边界，不应混用：
 
+- 专家项目：PostgreSQL 中的 `expert_projects`、`expert_materials`、`expert_research_batches` 和 `expert_topics` 保存事实，Redis/ARQ 投递阶段任务到 `worker-dev`。Worker 启动时从项目记录重投未完成工作，不从 Tasker 恢复。
 - AgentRun：通过 PostgreSQL 保存事实状态，使用 Redis/ARQ 投递到 `worker-dev`，支持运行事件、取消、恢复和线程请求队列。
-- `services/task_service.py` 中的 Tasker：运行在 API 进程内，用于知识库解析、评估和图谱构建等通用后台任务；任务摘要持久化到 PostgreSQL，但可执行 coroutine 和内存队列不具备跨进程重建能力。
+- `services/task_service.py` 中的 Tasker：运行在 API 进程内，用于旧知识库解析、评估和图谱构建等兼容后台任务；任务摘要持久化到 PostgreSQL，但可执行 coroutine 和内存队列不具备跨进程重建能力。专家项目只向任务中心提供读取投影，不把任务中心当作事实来源。
 
 测试代码位于 `backend/test`，按 `unit`、`integration`、`e2e` 分层。新增或修改后端行为时，测试应放在最能覆盖真实风险的层级。
 
@@ -64,14 +70,29 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 前端是 Vue 3 + Vite 应用，业务入口集中在 `web/src`。
 
 - `main.js` 挂载应用，`App.vue` 是根组件。
-- `router` 定义公开首页、登录、智能体、工作区、智能体管理、扩展和仪表盘路由，并负责认证、管理员和超级管理员守卫。
+- `router` 定义公开首页、登录、智能体、工作区、专家项目、Skill 与其他扩展和仪表盘路由，并负责认证、管理员和超级管理员守卫。
 - `apis` 是后端接口封装边界。新增接口应在这里定义，复用 `base.js` 的请求、鉴权和错误处理。
 - `stores` 保存用户、智能体配置、主题和其他跨页面状态。
 - `views` 是页面级入口，`components` 是可复用界面块。智能体对话的主要交互位于 `AgentChatComponent`，由 `AgentView` 负责页面组合。
 - `composables` 封装请求排队、Run SSE、流式消息、审批、线程状态、提及和其他可组合逻辑。
 - `utils` 放轻量转换和展示辅助；全局样式集中在 `assets/css`，颜色和基础规范优先复用 `base.css`。
 
-`/` 是公开首页；登录后的核心工作区是 `/agent`。`/extensions` 对所有登录用户开放，其中 Skills 对普通用户可见，知识库、工具和 MCP 管理能力仅管理员可见；Dashboard 仅超级管理员可访问。后端权限检查始终是最终边界，前端守卫只负责页面体验。
+`/` 是公开首页；登录后的对话工作区是 `/agent`。`/extensions` 对所有登录用户开放，「专家项目」是默认专家学习入口，项目详情路由展示两个确认点、阶段明细、候选 Skill 预览和手动启用。Skills 对普通用户可见，工具和 MCP 管理能力仅管理员可见；Dashboard 仅超级管理员可访问。后端权限检查始终是最终边界，前端守卫只负责页面体验。
+
+## 专家学习与编译链路
+
+一个新专家项目经过以下边界：
+
+1. 前端向 `POST /api/expert-projects` 上传项目基础信息和材料；路由层只处理认证、上传暂存和响应装配。
+2. `yuxi.expert.service` 创建 PostgreSQL 项目与材料记录，`yuxi.expert.storage` 将原始材料保存到项目私有目录，ARQ worker 调用现有文档解析入口转为完整 Markdown 正文。
+3. 用户从材料目录中选定不超过 20 份、覆盖不同方向的代表材料后，总编模型形成项目定向、学习方案、编译底稿、阶段 Prompt 包、笔记小样和 Review。项目停在第一个确认点。
+4. 用户确认项目方法版本后，ARQ worker 按自然材料单元并行执行笔记、Review 和有限定点修订。“需要处理”会继续允许其他材料完成，但阻塞阶段交接。
+5. 材料范围明确后，并行助手准备候选主题、证据和冲突清单，总编模型串行形成主题地图、编辑方案和讲义小样。项目停在第二个确认点。
+6. 用户确认组织版本后，助手并行准备证据包，同一项目的总编模型串行编写和修订正式讲义，再执行全书一致性检查与收口。
+7. `yuxi.expert.publisher` 将正式讲义、导航、精选证据、来源映射和 `SKILL.md` 组装为候选 Skill，候选目录只允许 `SKILL.md`、`nav/`、`references/`、`wiki/`、`search/` 和 `sources.jsonl`。
+8. 前端先预览候选成品；只有用户手动启用后，候选 Skill 才通过现有 Skill 安装边界进入 Agent 可用范围。
+
+第一版总编直接使用系统已配置模型的受控无状态调用。Prime 工作台和 Prime 高级问答属于后续可选增强，不是当前运行依赖。
 
 ## 智能体运行链路
 
@@ -83,7 +104,7 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 4. 服务在同一数据库事务中创建用户消息和 AgentRunRequest，并按用户、智能体和线程检查活跃 Run 与 FIFO 队头。
 5. 请求可以立即派发、进入等待队列或按 `reject` 策略拒绝；只有数据库提交成功后才向 ARQ 投递 Run。
 6. `worker-dev` 中的 `run_worker` 加载 AgentRun、智能体配置和运行上下文，执行对应 LangGraph。
-7. 智能体通过 middleware 组合沙盒文件系统、附件、Skills、MCP、SubAgent、审批、摘要和工具能力。知识库能力主要由内置 `knowledge-base` Skill 及其依赖工具按需开放。
+7. 智能体通过 middleware 组合沙盒文件系统、附件、Skills、MCP、SubAgent、审批、摘要和工具能力。已启用专家 Skill 在线程只读投影中向 Agent 提供讲义、导航和精选证据；兼容知识库能力由内置 `knowledge-base` Skill 及其依赖工具按需开放。
 8. Run 事件写入 Redis Stream，取消通过 Redis key/pubsub 传递；AgentRun、消息投递状态和最终结果写入 PostgreSQL。
 9. 前端在排队阶段消费 Request SSE，派发后切换到 Run SSE，并根据数据库状态处理断线恢复和终态补偿。
 10. 附件和对象数据保存在 MinIO；智能体需要操作的文件映射到线程隔离的沙盒路径，生成物写入用户可见的输出目录。
@@ -93,14 +114,19 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 ## 架构不变量
 
 - Docker Compose 是开发环境的事实来源。开发时先检查容器、日志和热重载，不默认要求本地裸跑服务。
-- HTTP 路由保持薄；用例流程放在 `yuxi.services`，持久化查询放在 `yuxi.repositories`。
+- HTTP 路由保持薄；专家学习用例放在 `yuxi.expert`，通用智能体与跨领域用例放在 `yuxi.services`，持久化查询放在 `yuxi.repositories`。
+- 专家项目记录是学习与编译进度的唯一事实来源；ARQ 负责执行，任务中心只负责展示，API 进程内 Tasker 不恢复专家项目。
+- 项目定向只读用户确认的代表性材料；逐份学习、主题规划和全书收口都不得静默截断或暗中抽样。
+- 第 0 阶段确认“怎么学”，第 2 阶段确认“怎么组织”；两个用户确认点都不得绕过。“需要处理”的材料必须由用户修复、明确排除或暂停。
+- 普通助手可以并行阅读、Review 和准备证据；会改变编辑方案、正式讲义和最终 Skill 的总编写入在同一项目内保持串行。
+- 最终专家 Skill 只包含运行所需的讲义、导航、精选证据、来源映射和 `SKILL.md`；运行时不绕过 Skill 访问项目内部原始材料。
 - 请求接入与 Run 执行是两个阶段：先提交 PostgreSQL 事实，再投递 ARQ，不能让队列消息先于数据库状态可见。
 - 同一用户、智能体和线程的普通请求通过 FIFO 队列串行派发；排队请求与运行中的 Run 使用不同状态模型和 SSE。
 - PostgreSQL 保存业务事实状态；Redis 承担投递、事件、取消和缓存，不作为 AgentRun 最终状态的唯一来源。
 - 前端 API 调用集中在 `web/src/apis`，组件不要散落拼接普通 HTTP 接口。
 - 智能体能力通过 context、middleware、toolkits、Skills、MCP 和 backends 组合；不要把知识库、沙盒或扩展逻辑硬编码进单个页面或路由。
 - Skill 依赖工具只有在对应 Skill 激活后才对模型开放；基础工具与受 Skill 门控的工具要保持边界。
-- LITE 模式必须允许跳过知识库、图谱和评估等重依赖能力，新增导入、路由和启动逻辑时要尊重该边界。
+- LITE 模式是专家主链的默认运行边界，必须允许跳过旧知识库、图谱和评估等重依赖；兼容能力通过显式 profile 和 `LITE_MODE=false` 开启。
 - 沙盒虚拟路径以 `SANDBOX_VIRTUAL_PATH_PREFIX` 为边界，用户可见路径、对象存储 URL 与宿主机真实路径不能混用。
 - 面向用户和外部系统的输入在边界校验；内部服务优先依赖已有类型、事务和仓储约束，避免用静默回退掩盖设计错误。
 
@@ -108,6 +134,6 @@ Yuxi 是一个面向 RAG、知识图谱和多智能体工作流的知识库平�
 
 - **配置**：Compose 和 `.env` 提供部署配置；管理员系统配置写入 `base.toml` 并通过 Redis 快照同步；用户配置与模型供应商以 PostgreSQL 为事实来源。
 - **权限**：前端路由和页面标签提供体验级约束，FastAPI 认证依赖和 repository 可见性查询提供最终授权。
-- **状态与存储**：PostgreSQL 保存请求、Run、消息、业务和知识库元数据；LangGraph checkpoint 使用 PostgreSQL，必要时可回退 SQLite/内存；Redis 保存短期事件、取消信号、ARQ 和跨进程缓存；MinIO、沙盒与本地 `saves` 分别承载不同生命周期的文件。
-- **文档处理**：上传文件先进入对象存储和文件元数据边界，再经过解析、分块和知识库实现；解析器、分块策略和知识库连接器保持可替换。
+- **状态与存储**：PostgreSQL 保存专家项目事实、Skill 元数据、请求、Run、消息和业务数据；LangGraph checkpoint 使用 PostgreSQL，必要时可回退 SQLite/内存；Redis 保存短期事件、取消信号、ARQ 和跨进程缓存；项目私有目录、MinIO、沙盒与共享 Skill 目录分别承载不同生命周期的文件。
+- **文档处理**：专家项目的原始文件保存到项目私有目录，再经现有文档解析入口生成完整 Markdown 正文；代码不将其切成旧知识库 chunk。旧知识库的上传、分块和入库链路只在兼容模式中使用。
 - **观测与调试**：优先查看 `api-dev`、`worker-dev` 和相关依赖日志；Langfuse 集中在服务层和 AgentRun 上下文；SSE 问题同时检查 Redis 事件与 PostgreSQL 终态。

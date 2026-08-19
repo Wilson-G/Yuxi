@@ -5,8 +5,8 @@ import markdownItTaskCheckbox from 'markdown-it-task-checkbox'
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
   lang: 'zh-CN',
-  title: "Yuxi",
-  description: "语析",
+  title: "知铸 ZhiForge",
+  description: "把可靠材料学习并编译为专家 Skill",
   base: '/Yuxi/',
   ignoreDeadLinks: [
     /localhost/,
@@ -24,17 +24,23 @@ export default defineConfig({
     logo: "/favicon.svg",
     nav: [
       { text: '快速开始', link: '/intro/quick-start' },
+      { text: '专家学习流程', link: '/intro/project-overview' },
       { text: '智能体开发', link: '/agents/agents-config' }
     ],
 
     sidebar: [
       {
-        text: '简介',
+        text: '知铸',
         items: [
-          { text: '什么是 Yuxi？', link: '/intro/project-overview' },
+          { text: '什么是知铸？', link: '/intro/project-overview' },
           { text: '快速开始', link: '/intro/quick-start' },
           { text: '命令行工具', link: '/intro/cli' },
-          { text: '模型配置', link: '/intro/model-config' },
+          { text: '模型配置', link: '/intro/model-config' }
+        ]
+      },
+      {
+        text: '兼容知识能力',
+        items: [
           { text: '知识库与知识图谱', link: '/intro/knowledge-base' },
           { text: '知识库评估', link: '/intro/evaluation' }
         ]
@@ -83,7 +89,7 @@ export default defineConfig({
 
     footer: {
       message: '本项目基于 MIT License 开源，欢迎使用和贡献。',
-      copyright: 'Copyright © 2025-present Yuxi'
+      copyright: 'Copyright © 2025-present ZhiForge'
     },
 
     editLink: {

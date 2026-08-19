@@ -1,9 +1,6 @@
 # 快速开始指南
 
-欢迎使用 Yuxi（语析），这是一个智能知识库和知识图谱 Agent 开发平台。
-本指南将帮助你在几分钟内启动并运行系统，使你能够利用 LangGraph、RAG 技术和知识图谱构建 AI 驱动的知识应用。
-
-![系统架构图](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/arch.png)
+欢迎使用知铸 ZhiForge。本指南将帮助你启动默认的专家学习与 Skill 编译环境，把一批可靠材料经过项目定向、两次确认、并行学习与 Review、总编成书，生成可手动启用的专家 Skill。
 
 
 ::: tip 提示
@@ -12,7 +9,7 @@
 
 ## 环境要求
 
-项目采用微服务架构设计，默认服务无需 GPU 支持。如果需要使用 OCR 功能，可以通过环境变量配置外部服务。
+项目通过 Docker Compose 管理。默认主链无需 GPU；如果需要本地 OCR，可以显式启动对应 profile 或配置外部解析服务。
 
 ## 快速安装
 
@@ -20,7 +17,7 @@
 
 ```bash
 # 克隆最新版本
-git clone --branch v0.7.1 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
 ```
 
@@ -28,8 +25,8 @@ cd Yuxi
 
 | 版本 | 适用场景 |
 |------|----------|
-| v0.7.1 | 当前稳定版本，推荐生产使用 |
-| main | 开发版本，包含最新特性（可能不稳定） |
+| v0.7.1 | 旧知识库产品路线的历史稳定版本 |
+| main | 当前开发版本，包含知铸专家学习主线 |
 
 ### 步骤二：配置环境变量
 
@@ -70,20 +67,20 @@ cp .env.template .env
 ### 步骤三：启动服务
 
 ```bash
-# 构建并启动所有服务
+# 构建并启动知铸默认服务
 docker compose up --build -d
 ```
 
 服务首次启动需要等待镜像拉取和编译，请耐心等待 2-3 分钟。
 
-::: tip 轻量模式（Lite Mode）
-如果你不需要知识库和知识图谱功能，可以使用轻量模式启动，跳过 Milvus、Neo4j、etcd 等服务，节省系统资源：
+::: tip 默认专家模式
+开发 Compose 默认使用 `LITE_MODE=true`，启动前端、API、ARQ worker、PostgreSQL、Redis、MinIO 和沙盒服务，不启动 Milvus、Neo4j 和 etcd。这是专家学习与 Skill 运行的默认边界。
+
+如需使用旧知识库、向量检索和知识图谱兼容能力，显式启动：
 
 ```bash
-make up-lite  # macOS or Linux
+LITE_MODE=false docker compose --profile legacy-knowledge up --build -d
 ```
-
-轻量模式仅启动核心服务（前端、后端、PostgreSQL、Redis、MinIO），前端侧边栏会自动隐藏知识库和图谱入口。切换回完整模式只需运行 `make up`。
 :::
 
 ### 步骤四：访问系统
@@ -96,6 +93,15 @@ make up-lite  # macOS or Linux
 | API 文档 | http://localhost:5050/docs |
 
 首次访问时，系统会要求你设置超级管理员账号和密码，请妥善保存。
+
+## 创建第一个专家项目
+
+1. 在设置中配置并启用至少一个对话模型。
+2. 进入左侧导航的「专家 · 技能」，在「专家项目」中导入需要学习的可靠材料。
+3. 材料转换为可读正文后，指定最多 20 份、覆盖不同方向的代表性材料，生成项目学习方案、Prompt 包、笔记小样和 Review。
+4. 确认学习方向后，系统在后台逐份学习材料；有“需要处理”的材料时，根据具体原因修复、排除或暂停。
+5. 查看主题地图和讲义小样，完成第二次确认后，再让总编模型批量定稿讲义和收口全书。
+6. 预览候选 Skill 和未纳入材料清单，确认成品可用后手动启用。
 
 ## 故障排除
 
@@ -161,7 +167,7 @@ $env:HTTPS_PROXY="http://IP:PORT"
 
 ```bash
 # 重启 Milvus 服务
-docker compose up milvus -d
+LITE_MODE=false docker compose --profile legacy-knowledge up -d etcd milvus
 docker restart api-dev
 ```
 </details>
@@ -173,6 +179,7 @@ docker restart api-dev
 ## 下一步
 
 - 了解如何配置模型：阅读 [模型配置](./model-config.md)
-- 探索知识库功能：阅读 [知识库与知识图谱](./knowledge-base.md)
+- 了解专家学习全流程：阅读 [知铸 ZhiForge](./project-overview.md)
 - 学习智能体开发：阅读 [智能体开发](../agents/agents-config.md)
+- 使用旧知识兼容能力：阅读 [知识库与知识图谱](./knowledge-base.md)
 - 深入了解配置系统：阅读 [配置系统详解](../advanced/configuration.md)

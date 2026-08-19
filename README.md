@@ -1,26 +1,41 @@
 <div align="center">
-<h1>语析 Yuxi</h1>
+<h1>知铸 ZhiForge</h1>
 
-<p><strong>多租户 Harness + 企业知识库</strong><br/>让企业知识可被智能体检索、推理与交付</p>
+<p><strong>把可靠材料学习成真正可用的专家 Skill</strong><br/>从确认怎么学，到并行学习、Review、总编成书和手动启用</p>
 
 [![](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=ffffff)](https://github.com/xerrors/Yuxi/blob/main/docker-compose.yml)
 [![](https://img.shields.io/github/issues/xerrors/Yuxi?color=F48D73)](https://github.com/xerrors/Yuxi/issues)
 [![License](https://img.shields.io/github/license/bitcookies/winrar-keygen.svg?logo=github)](https://github.com/xerrors/Yuxi/blob/main/LICENSE)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-blue.svg)](https://deepwiki.com/xerrors/Yuxi)
-[![Bilibili](https://img.shields.io/badge/知识库演示-00A1D6?logo=bilibili&logoColor=fff)](https://www.bilibili.com/video/BV1erE26iEgv/?share_source=copy_web&vd_source=37b0bdbf95b72ea38b2dc959cfadc4d8)
+[![Bilibili](https://img.shields.io/badge/历史知识库演示-00A1D6?logo=bilibili&logoColor=fff)](https://www.bilibili.com/video/BV1erE26iEgv/?share_source=copy_web&vd_source=37b0bdbf95b72ea38b2dc959cfadc4d8)
 
 
 <a href="https://trendshift.io/repositories/24335" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24335" alt="xerrors%2FYuxi | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-[[项目文档]](https://xerrors.github.io/Yuxi) · [[版本特性]](http://xhslink.com/o/5Y6QWnmjF2d) · [[🇬🇧 English README]](README.en.md)
+[[项目文档]](https://xerrors.github.io/Yuxi) · [[版本特性]](http://xhslink.com/o/5Y6QWnmjF2d)
 
 </div>
 
-![arch](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/arch.png)
-
 ## 简介
 
-语析（Yuxi）是一个基于大模型的智能知识库与知识图谱智能体开发平台。它把 **RAG 检索**、**Milvus 知识库内知识图谱** 与 **LangGraph 多智能体编排** 整合进统一的多租户工作台：管理员配置知识库、模型与权限，用户在类 ChatGPT 的界面中与可挂载 Skills、MCP、子智能体和沙盒工具的智能体对话，并获得带引用来源、知识图谱推理与可交付产物的回答。
+知铸（ZhiForge，仓库与技术标识暂保留 `Yuxi`）是一个专家学习与 Skill 编译平台。它先将 PDF、Office、Markdown 和图片等材料转为可靠正文，再让模型学习其中的判断方法、成立条件、例外与边界，最终编成可启用、可检索、可核对依据的独立专家 Skill。
+
+默认用户流程是：
+
+```text
+材料转正文
+-> 项目定向与 Prompt 设计
+-> 用户确认“怎么学”
+-> 逐份学习与 Review
+-> 总编组织主题和讲义小样
+-> 用户确认“怎么组织”
+-> 总编成书
+-> 预览并手动启用专家 Skill
+```
+
+普通模型任务负责并行阅读、笔记、Review 和证据准备；同一项目内的总编模型串行决定学习方案、主题结构、正式讲义和最终回答口径。用户在两个真正需要方向判断的位置确认，系统依据项目记录通过 ARQ 持续执行和恢复。
+
+旧知识库、向量检索和知识图谱能力仍作为可选兼容模式保留，不是新专家项目的默认运行链路。
 
 导航：[项目介绍](https://xerrors.github.io/Yuxi/) ｜ [快速开始](https://xerrors.github.io/Yuxi/intro/quick-start) ｜ [开发路线图](https://xerrors.github.io/Yuxi/develop-guides/roadmap) | [0.7 版本特性](http://xhslink.com/o/5Y6QWnmjF2d)；最新开发动态，详见 [changelog](https://xerrors.github.io/Yuxi/develop-guides/changelog)。
 
@@ -36,7 +51,7 @@
 | --- | --- |
 | 前端 | Vue 3 · Vite · Pinia |
 | 后端 | FastAPI · LangGraph · ARQ (异步 worker) |
-| 存储 | PostgreSQL · Redis · MinIO · Milvus · Neo4j |
+| 存储 | PostgreSQL · Redis · MinIO（Milvus · Neo4j 为兼容模式可选依赖） |
 | 文档解析 | MinerU · PaddleX · RapidOCR |
 | 部署 | Docker Compose |
 ## 快速开始
@@ -46,7 +61,7 @@
 **1. 克隆代码并初始化**
 
 ```bash
-git clone --branch v0.7.1 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi
 
 # Linux/macOS
@@ -66,7 +81,7 @@ docker compose up --build
 
 等待启动完成后，浏览器打开 `http://localhost:5173`，使用初始化时生成的管理员账户登录即可。
 
-> 💡 不需要知识库 / 知识图谱等重依赖时，可使用 `make up-lite` 以 LITE 轻量模式启动，加快冷启动速度。更多部署说明见 [项目文档](https://xerrors.github.io/Yuxi)。
+> 💡 默认 Compose 已使用 `LITE_MODE=true`，不启动 Milvus、etcd 和 Neo4j。如需旧知识库兼容能力，使用 `LITE_MODE=false docker compose --profile legacy-knowledge up --build`。更多部署说明见 [项目文档](https://xerrors.github.io/Yuxi)。
 
 ## 致谢
 

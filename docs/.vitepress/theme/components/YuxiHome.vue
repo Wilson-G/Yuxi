@@ -5,87 +5,86 @@ import { withBase } from 'vitepress'
 const GITHUB = 'https://github.com/xerrors/Yuxi'
 const DEMO = 'https://www.bilibili.com/video/BV1TZEx6NEit/'
 
-// 关键数字（占位，后续替换为真实数据）
+// 专家学习主流程
 const stats = [
-  { value: '15+', label: '模型供应商' },
-  { value: '7', label: 'Harness 能力' },
-  { value: 'MIT', label: '开源协议' },
-  { value: 'v0.7', label: '当前版本' }
+  { value: '2 次', label: '关键用户确认' },
+  { value: '并行', label: '材料学习与 Review' },
+  { value: '串行', label: '项目内总编' },
+  { value: 'Skill', label: '独立专家交付' }
 ]
 
-// Harness 能力中枢（bento）
+// 专家学习与运行底座
 const capabilities = [
   {
     icon: 'box', span: true,
-    title: '沙盒文件系统',
-    desc: '每个会话拥有独立的虚拟文件系统（workspace / uploads / outputs），智能体产物自动落盘，支持文本、图片、PDF、HTML 在线预览与下载。',
-    tags: ['预览', '下载', 'Artifacts 产物'],
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604203704426.png'
+    title: '可靠材料入口',
+    desc: 'PDF、Office、Markdown 和图片先转换为模型可完整阅读的正文，超长材料必须形成有意义的自然单元，不静默截断。',
+    tags: ['文档解析', '自然材料单元', '完整输入']
   },
   {
     icon: 'sparkles',
-    title: 'Skills 技能系统',
-    desc: '内置图像生成、深度报告、数据报表等技能，支持上传与远程安装，「解析草稿 → 确认安装」。',
-    tags: ['内置', '上传', '远程']
+    title: '项目专属 Prompt',
+    desc: '总编模型根据材料目录和代表性样本，生成只属于当前项目的学习方案、编译底稿和阶段 Prompt 包。',
+    tags: ['项目定向', '小样', '第一次确认']
   },
   {
     icon: 'plug',
-    title: 'MCP 集成',
-    desc: '通过 Model Context Protocol 标准协议接入外部工具服务，统一启停与权限管理。',
-    tags: ['标准协议']
+    title: '并行学习与 Review',
+    desc: '不同材料独立学习、复核和定点修订，单份失败不重跑已完成材料，没有迁移价值也是正常结果。',
+    tags: ['独立任务', '有限修订']
   },
   {
     icon: 'wrench',
-    title: '内置工具',
-    desc: 'present_artifacts 交付产物、提问中断等待用户、按需安装技能、联网检索等开箱即用。',
-    tags: ['开箱即用']
+    title: '项目内串行总编',
+    desc: '普通助手并行准备候选主题和证据，同一项目的总编模型统一决定主题结构、讲义正式稿和回答口径。',
+    tags: ['单一写入者', '第二次确认']
   },
   {
     icon: 'fork',
-    title: '子智能体 SubAgents',
-    desc: '主智能体可编排隔离的子智能体，独立 child thread 执行复杂子任务并回传产物。',
-    tags: ['隔离编排']
+    title: '独立专家 Skill',
+    desc: '最终交付仅包含正式讲义、导航、精选证据和 SKILL.md，不携带原始材料、Prompt、Review 和进度记录。',
+    tags: ['讲义', '导航', '精选证据']
   },
   {
     icon: 'layers',
-    title: '中间件编排',
-    desc: '知识库检索注入、附件处理、历史摘要 offload、动态工具注入等中间件可组合编排。',
-    tags: ['可组合']
+    title: '项目事实与恢复',
+    desc: '项目记录保存阶段、材料结果、正式产物和下一步；ARQ 负责执行，任务中心只负责展示。',
+    tags: ['PostgreSQL', 'ARQ', '断点继续']
   },
   {
     icon: 'cpu',
-    title: '异步 Worker',
-    desc: '基于 ARQ 的后台任务，将分钟到小时级长耗时任务异步执行，支持取消与流式输出。',
-    tags: ['长任务', '可取消', '流式']
+    title: '专家回答',
+    desc: 'Agent 从已启用 Skill 中查找判断方法、正式讲义和带来源的精选证据，在资料不足时明确边界。',
+    tags: ['方法', '条件', '边界']
   }
 ]
 
-// 知识引擎：可切换的能力 tab，右侧媒体随选中项切换
+// 共享底层能力与旧知识兼容模式
 const engineTabs = [
   {
-    key: 'parse', icon: 'scan', title: '多格式解析',
-    desc: 'MinerU、PaddleX、RapidOCR 统一解析 PDF、Office、图片等为结构化 Markdown。',
+    key: 'parse', icon: 'scan', title: '材料转可靠正文',
+    desc: 'MinerU、PaddleX、RapidOCR 等解析能力为专家学习提供完整、可读的 Markdown 正文。',
     shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260605205221908.png'
   },
   {
-    key: 'retrieval', icon: 'database', title: 'Agentic RAG',
-    desc: '智能体自主决定检索时机与查询，多轮向量检索 + Rerank，回答带可溯源引用。',
+    key: 'skill', icon: 'sparkles', title: 'Skill 内独立检索',
+    desc: '已启用专家 Skill 在自己的讲义、导航和精选证据中检索，运行时不访问编译项目原始材料。',
     shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604205342546.png'
   },
   {
-    key: 'graph', icon: 'share', title: '知识图谱',
-    desc: '抽取实体与关系构建知识图谱，子图检索参与增强，并支持可视化探索。',
+    key: 'retrieval', icon: 'database', title: '兼容向量知识库',
+    desc: '需要历史 RAG 流程时可显式启用 Milvus 与只读知识源；新专家项目不进入该分块和入库链路。',
+    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604205611168.png'
+  },
+  {
+    key: 'graph', icon: 'share', title: '兼容知识图谱',
+    desc: 'Neo4j 实体关系与子图检索作为旧知识库的可选增强能力保留，默认 Compose 不启动。',
     shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604204056298.png'
   },
   {
-    key: 'eval', icon: 'chart', title: '检索评估',
-    desc: '内置检索质量评估，支持命名运行与指标对比，量化召回与回答效果。',
+    key: 'eval', icon: 'chart', title: '兼容 RAG 评估',
+    desc: '旧知识库的检索指标和评估运行继续可用，不作为专家学习主流程的发布门禁。',
     shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604210111977.png'
-  },
-  {
-    key: 'sources', icon: 'plug', title: '多知识源接入',
-    desc: '支持 Dify、Notion、飞书（规划中）等外部知识源接入，统一检索与引用。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604205611168.png'
   }
 ]
 const activeEngine = ref(0)
@@ -115,39 +114,39 @@ const providersBottom = (() => {
 
 // 工作原理
 const steps = [
-  { n: '01', title: '配置底座', desc: '管理员接入模型供应商、构建知识库与知识图谱、划分用户与部门权限。' },
-  { n: '02', title: '编排智能体', desc: '为 Agent 挂载 Skills、MCP、Tools 与子智能体，组合所需中间件能力。' },
-  { n: '03', title: '检索与推理', desc: '对话中融合向量检索与知识图谱推理，沙盒工具执行真实任务。' },
-  { n: '04', title: '交付产物', desc: '返回带引用来源的回答，并以可预览、可下载的产物卡片交付结果。' }
+  { n: '01', title: '导入可靠材料', desc: '原始文件先转成完整可读正文，再由用户选定代表性材料。' },
+  { n: '02', title: '确认怎么学', desc: '总编形成项目学习方案、Prompt 包和笔记小样，用户确认后才批量学习。' },
+  { n: '03', title: '学习并确认组织', desc: '助手并行学材料与 Review，总编形成主题地图和讲义小样，用户完成第二次确认。' },
+  { n: '04', title: '总编成书并启用', desc: '总编逐篇定稿、全书收口并组装专家 Skill，用户预览成品后手动启用。' }
 ]
 
 // 产品截图一览
 const shots = [
-  { title: '对话工作台', desc: '类 ChatGPT 的智能体对话与产物交付' },
-  { title: '智能体配置', desc: '挂载 Skills / MCP / 子智能体与中间件' },
-  { title: '知识图谱可视化', desc: '实体关系抽取与子图检索展示' },
-  { title: '智能体拓展', desc: '统一管理 Skills 与 MCP 服务' }
+  { title: '专家项目', desc: '导入材料并查看真实阶段与进度' },
+  { title: '学习方案', desc: '查看项目定向、Prompt 和笔记小样' },
+  { title: '主题与讲义', desc: '确认组织方式并跟踪总编定稿' },
+  { title: '专家 Skill', desc: '预览正式讲义、导航与精选证据' }
 ]
 
 // 企业级
 const enterprise = [
-  { icon: 'shield', title: '多租户与权限', desc: '用户 / 部门级隔离，知识库支持全局、部门、指定人三档共享。' },
+  { icon: 'shield', title: '项目与 Skill 权限', desc: '专家项目保持用户边界，发布后的 Skill 按现有权限模型控制读取和管理范围。' },
   { icon: 'key', title: 'API Key 集成', desc: '签发独立密钥，供外部系统以 API 方式安全调用平台能力。' },
-  { icon: 'rocket', title: 'LITE 轻量启动', desc: 'make up-lite 跳过重依赖快速冷启动，Docker Compose 开箱即用。' }
+  { icon: 'rocket', title: '专家主链默认启动', desc: 'Docker Compose 默认跳过 Milvus、etcd 和 Neo4j，旧知识库能力通过兼容 profile 显式开启。' }
 ]
 
 // 应用场景
 const cases = [
-  { title: '企业知识问答助手', desc: '将内部资料沉淀为可检索、可推理的知识资产，回答带来源引用。' },
-  { title: '科研与行业调研报告', desc: '借助 deep-reporter 技能生成结构化的深度分析长报告。' },
-  { title: '内部 AI 能力底座', desc: '为各业务系统提供可管理、可扩展的统一智能体服务。' }
+  { title: '老师与顾问经验传承', desc: '从课程、访谈和案例中学习判断顺序、条件意识和真实停止线。' },
+  { title: '专业操作与决策手册', desc: '把分散的流程、案例和复盘编成能够处理具体条件和例外的专家 Skill。' },
+  { title: '团队专家能力复用', desc: '通过普通 Skill 的权限、安装和 Agent 运行边界，将经过确认的专家方法稳定复用。' }
 ]
 
 // 技术栈分层
 const techStack = [
   { group: '前端', items: ['Vue 3', 'Vite', 'Pinia'] },
   { group: '后端', items: ['FastAPI', 'LangGraph', 'ARQ'] },
-  { group: '存储', items: ['PostgreSQL', 'Redis', 'MinIO', 'Milvus', 'Neo4j'] },
+  { group: '存储', items: ['PostgreSQL', 'Redis', 'MinIO', 'Milvus（兼容）', 'Neo4j（兼容）'] },
   { group: '解析', items: ['MinerU', 'PaddleX', 'RapidOCR'] },
   { group: '部署', items: ['Docker Compose'] }
 ]
@@ -209,13 +208,13 @@ const vReveal = {
         <div class="yx-grid"></div>
       </div>
       <div class="yx-container yx-hero__inner">
-        <span class="yx-badge">v0.7.1 · MIT 开源 · LangGraph 驱动</span>
-        <h1 class="yx-hero__title">语析 <span class="yx-accent">Yuxi</span></h1>
-        <p class="yx-hero__subtitle">融合 RAG 与知识图谱的智能体 Harness 平台</p>
+        <span class="yx-badge">MIT 开源 · LangGraph · 专家 Skill</span>
+        <h1 class="yx-hero__title">知铸 <span class="yx-accent">ZhiForge</span></h1>
+        <p class="yx-hero__subtitle">把可靠材料学习并编译为专家 Skill</p>
         <p class="yx-hero__desc">
-          管理员配置知识库、模型与权限，用户在类 ChatGPT 的界面中，
-          与可挂载 Skills、MCP、子智能体与沙盒工具的智能体对话，
-          获得带引用来源、知识图谱推理与可交付产物的回答。
+          普通助手并行扩大材料覆盖面，项目内串行的总编模型负责学习方案、主题结构、
+          讲义作者性和最终收口；用户在两个关键确认点决定方向，
+          最终得到有判断方法、条件意识和可核对依据的专家 Skill。
         </p>
         <div class="yx-hero__actions">
           <a class="yx-btn yx-btn--primary" :href="withBase('/intro/quick-start')">快速开始</a>
@@ -226,7 +225,7 @@ const vReveal = {
           <img
             class="yx-hero__img"
             src="https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260608002434299.png"
-            alt="语析 Yuxi 产品界面预览"
+            alt="知铸 ZhiForge 产品界面预览"
             loading="lazy"
           />
         </div>
@@ -243,13 +242,13 @@ const vReveal = {
       </div>
     </section>
 
-    <!-- ===== Harness 能力中枢 ===== -->
+    <!-- ===== 专家学习与运行底座 ===== -->
     <section class="yx-section">
       <div class="yx-container">
         <header v-reveal class="yx-head">
-          <span class="yx-head__eyebrow">智能体运行时</span>
-          <h2 class="yx-head__title">不止于对话，更能执行与交付</h2>
-          <p class="yx-head__sub">Yuxi 内置一套完整的 Harness——沙盒、技能、工具、子智能体与中间件，让智能体真正动手完成任务。</p>
+          <span class="yx-head__eyebrow">专家学习主链</span>
+          <h2 class="yx-head__title">从一批材料，到一位有判断边界的专家</h2>
+          <p class="yx-head__sub">知铸把项目定向、并行学习、独立 Review、总编成书和 Skill 运行放在同一条可恢复流程中。</p>
         </header>
         <div class="yx-bento">
           <article
@@ -273,12 +272,12 @@ const vReveal = {
       </div>
     </section>
 
-    <!-- ===== 知识引擎 ===== -->
+    <!-- ===== 共享底层与兼容能力 ===== -->
     <section class="yx-section yx-section--soft">
       <div class="yx-container yx-split">
         <div v-reveal class="yx-split__text">
-          <span class="yx-head__eyebrow">知识引擎</span>
-          <h2 class="yx-head__title">从文档到可推理的知识资产</h2>
+          <span class="yx-head__eyebrow">共享底层与兼容能力</span>
+          <h2 class="yx-head__title">文档解析服务专家主链，旧知识能力按需开启</h2>
           <ul class="yx-tabs">
             <li
               v-for="(t, i) in engineTabs"
@@ -357,7 +356,7 @@ const vReveal = {
       <div class="yx-container">
         <header v-reveal class="yx-head">
           <span class="yx-head__eyebrow">工作原理</span>
-          <h2 class="yx-head__title">四步搭建你的智能体应用</h2>
+          <h2 class="yx-head__title">四步完成专家学习与编译</h2>
         </header>
         <div class="yx-steps">
           <div v-for="(st, i) in steps" :key="st.n" v-reveal class="yx-step">
@@ -375,7 +374,7 @@ const vReveal = {
       <div class="yx-container">
         <header v-reveal class="yx-head">
           <span class="yx-head__eyebrow">产品一览</span>
-          <h2 class="yx-head__title">一个工作台，覆盖全流程</h2>
+          <h2 class="yx-head__title">一个专家项目，串起全部正式产物</h2>
         </header>
         <div class="yx-shots">
           <figure v-for="sh in shots" :key="sh.title" v-reveal class="yx-shot">
@@ -453,15 +452,15 @@ const vReveal = {
         </header>
         <div v-reveal class="yx-quick">
           <pre class="yx-code"><code><span class="yx-c-cmt"># 1. 克隆并初始化</span>
-git clone --branch v0.7.1 --depth 1 https://github.com/xerrors/Yuxi.git
+git clone --depth 1 https://github.com/xerrors/Yuxi.git
 cd Yuxi && ./scripts/init.sh
 
-<span class="yx-c-cmt"># 2. 使用 Docker 启动</span>
+<span class="yx-c-cmt"># 2. 启动默认专家学习环境</span>
 docker compose up --build
 
 <span class="yx-c-cmt"># 3. 浏览器访问</span>
 open http://localhost:5173</code></pre>
-          <p class="yx-quick__tip">无需知识库 / 知识图谱等重依赖时，可用 <code>make up-lite</code> 以 LITE 轻量模式快速启动。</p>
+          <p class="yx-quick__tip">默认不启动 Milvus、etcd 和 Neo4j；旧知识兼容能力使用 <code>legacy-knowledge</code> profile 显式开启。</p>
         </div>
       </div>
     </section>
@@ -488,8 +487,8 @@ open http://localhost:5173</code></pre>
     <!-- ===== 最终 CTA ===== -->
     <section class="yx-cta">
       <div class="yx-container yx-cta__inner" v-reveal>
-        <h2>立即开始构建你的智能体</h2>
-        <p>开源、可自托管、面向真实业务场景。</p>
+        <h2>立即开始你的第一个专家项目</h2>
+        <p>开源、可自托管，从可靠材料中学习真正可复用的判断方法。</p>
         <div class="yx-hero__actions yx-cta__actions">
           <a class="yx-btn yx-btn--primary" :href="withBase('/intro/quick-start')">快速开始</a>
           <a class="yx-btn yx-btn--ghost" :href="GITHUB" target="_blank" rel="noreferrer">前往 GitHub ★</a>

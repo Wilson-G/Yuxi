@@ -77,6 +77,7 @@ graphrag
 docker/volumes
 docs/vibe/*
 !docs/vibe/2026-08-18-expert-learning-pipeline-intent.md
+!docs/vibe/2026-08-19-expert-learning-pipeline-implementation.md
 .cursorrules
 
 /models

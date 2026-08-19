@@ -6,9 +6,16 @@
 
 ## v0.7.2 (current)
 
+- 专家项目首次确认后自动执行一次基于小样独立 Review 的方法校准：项目暂存 V1 小样基线，V2 重跑后由模型比较方法级残余影响；没有共性问题或仅剩逐篇可修问题时批量学习，结构性残余才停止。
+- 调整专家项目第 0 阶段的 Prompt 设计与样本边界：用户可从目录确认最多 20 份多方向样本；项目 Prompt 保留领域身份和材料阅读纪律，但不将样本术语、指标或结论变成单篇学习与 Review 的固定清单。单料笔记新增召回路标与逐判断证据职责。
+- 将专家项目第 0 阶段的中央 Prompt 设计规范提升为 `expert/prompt_designer/` 正式资产，并在专家学习共识与架构文档中明确其职责；师傅口述类 Prompt 改以判断方法和条件化经验为讲义主线，来源说明只在实质影响判断时出现。
+- 新增 `backend/scripts/send_llm_message.py` 单轮 Prompt 调试命令：从 `.env` 直接读取 OpenAI 兼容端点、Key 和模型，将一条完整消息原样发送并打印响应，不经过 Docker、项目状态或模型缓存。
+
 ::: warning 升级提醒
 1. 升级到 v0.7.2 后，管理员此前创建的 stdio MCP 会被禁用，也无法重新启用。请在详情页迁移为 SSE 或 Streamable HTTP，或直接删除；代码内置的系统 stdio MCP 不受影响。
 :::
+
+- 默认产品路线迁移为知铸 ZhiForge：材料转可靠正文后，经项目定向、两次用户确认、并行学习与 Review、项目内串行总编，生成可预览并手动启用的独立专家 Skill。专家项目记录是事实来源，ARQ 负责执行和恢复；开发 Compose 默认跳过 Milvus、etcd 与 Neo4j，旧知识能力通过 `legacy-knowledge` profile 显式开启。
 
 - 清理测试套件冗余：删除 5 个自证式/假绿/重复覆盖的测试文件（`test_hash_utils`、`test_skills_backend_error_handling`、`test_graph_router_list`、`test_agent_sync_e2e`、`test_viewer_filesystem_e2e`），合并约 50 个文件的重复场景与参数转发断言，抽取 eval 与 e2e 共享 helper；净减约 2,900 行测试代码，真实回归覆盖不变。
 
