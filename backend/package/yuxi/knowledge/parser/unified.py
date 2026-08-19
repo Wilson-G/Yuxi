@@ -19,6 +19,7 @@ from docling.document_converter import DocumentConverter
 from langchain_community.document_loaders import PyPDFLoader
 from markdownify import markdownify as md_convert
 
+from yuxi.knowledge.parser.image_urls import ParsedImageStorageError, build_parsed_image_proxy_url
 from yuxi.knowledge.parser.zip_utils import process_zip_file as _process_zip_file
 from yuxi.knowledge.utils.pdf_utils import validate_pdf_page_tree_loadable
 from yuxi.storage.minio import get_minio_client
@@ -105,21 +106,22 @@ def _resolve_ocr_engine_params(params: dict | None) -> tuple[str, dict[str, Any]
 
 def _upload_image_to_minio(image_data: bytes, filename: str, bucket_name: str, object_prefix: str) -> str:
     """上传图片到 MinIO，返回经后端鉴权代理访问的 URL。"""
-    from yuxi.knowledge.utils.kb_utils import build_kb_image_proxy_url
+    try:
+        minio_client = get_minio_client()
+        minio_client.ensure_bucket_exists(bucket_name)
 
-    minio_client = get_minio_client()
-    minio_client.ensure_bucket_exists(bucket_name)
+        normalized_prefix = object_prefix.strip("/") or "unknown/kb-images"
+        timestamp = int(time.time() * 1000000)
+        object_name = f"{normalized_prefix}/{timestamp}_{Path(filename).name}"
 
-    normalized_prefix = object_prefix.strip("/") or "unknown/kb-images"
-    timestamp = int(time.time() * 1000000)
-    object_name = f"{normalized_prefix}/{timestamp}_{Path(filename).name}"
-
-    minio_client.upload_file(
-        bucket_name=bucket_name,
-        object_name=object_name,
-        data=image_data,
-    )
-    return build_kb_image_proxy_url(object_name)
+        minio_client.upload_file(
+            bucket_name=bucket_name,
+            object_name=object_name,
+            data=image_data,
+        )
+        return build_parsed_image_proxy_url(object_name)
+    except Exception as exc:
+        raise ParsedImageStorageError(f"解析图片保存失败: {filename}") from exc
 
 
 def _parse_data_uri(data_uri: str) -> tuple[bytes, str]:
@@ -149,15 +151,10 @@ def _convert_with_docling(file_path: Path, params: dict | None = None) -> str:
         for pic in doc.pictures:
             uri = str(pic.image.uri) if hasattr(pic, "image") and hasattr(pic.image, "uri") else ""
             if uri.startswith("data:"):
-                filename = "image"
-                try:
-                    image_data, mime_type = _parse_data_uri(uri)
-                    filename = f"image_{int(time.time() * 1000000)}.{mime_type.split('/')[-1]}"
-                    url = _upload_image_to_minio(image_data, filename, image_bucket, image_prefix)
-                    replacements.append(f"![{filename}]({url})")
-                except Exception as e:  # noqa: BLE001
-                    logger.error(f"上传图片失败 {filename}: {e}")
-                    replacements.append(f"[图片: {filename}]")
+                image_data, mime_type = _parse_data_uri(uri)
+                filename = f"image_{int(time.time() * 1000000)}.{mime_type.split('/')[-1]}"
+                url = _upload_image_to_minio(image_data, filename, image_bucket, image_prefix)
+                replacements.append(f"![{filename}]({url})")
             else:
                 replacements.append("")
 
@@ -351,6 +348,8 @@ async def parse_resolved_document(source: str, params: dict | None = None) -> Ma
         elif file_ext == ".docx":
             try:
                 result = await asyncio.to_thread(_convert_with_docling, file_path_obj, params=params)
+            except ParsedImageStorageError:
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Docling 解析 DOCX 失败，回退到 python-docx: {file_path_obj.name}, {e}")
                 result = await asyncio.to_thread(_convert_docx_with_python_docx, file_path_obj)

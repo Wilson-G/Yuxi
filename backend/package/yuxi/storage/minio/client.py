@@ -70,6 +70,11 @@ class MinIOClient:
         "images": "kb-images",
     }
 
+    MATERIAL_BUCKETS = {
+        "files": "materials",
+        "images": "kb-images",
+    }
+
     def __init__(self):
         """初始化 MinIO 客户端"""
         self.endpoint = os.getenv("MINIO_URI") or "http://minio:9000"
@@ -295,6 +300,8 @@ class MinIOClient:
                     self.client.remove_object(bucket_name, obj.object_name)
                     deleted_count += 1
             except S3Error as e:
+                if e.code == "NoSuchBucket":
+                    return
                 raise StorageError(f"删除对象前缀失败: {bucket_name}/{prefix}: {e}") from e
 
         await asyncio.to_thread(_delete_objects)
@@ -463,6 +470,17 @@ def get_minio_client() -> MinIOClient:
     if _default_client is None:
         _default_client = MinIOClient()
     return _default_client
+
+
+def build_document_image_proxy_url(object_name: str) -> str:
+    """构建资料库与专家材料共用的私有图片代理 URL。"""
+
+    normalized = object_name.strip("/")
+    if not normalized.startswith(("material-libraries/", "expert-projects/")):
+        raise ValueError("文档图片对象必须属于资料库或专家项目")
+    if ".." in normalized.split("/") or "\\" in normalized:
+        raise ValueError("文档图片对象路径非法")
+    return f"/api/document-images/{quote(normalized, safe='/')}"
 
 
 async def aupload_file_to_minio(bucket_name: str, file_name: str, data: bytes) -> str:

@@ -14,8 +14,9 @@ from docx import Document
 from PIL import Image
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
-
+from yuxi.knowledge.parser.base import DocumentParserException
 from yuxi.knowledge.parser.factory import DocumentProcessorFactory
+from yuxi.knowledge.parser.image_urls import ParsedImageStorageError
 from yuxi.knowledge.parser.mineru import MinerUParser
 from yuxi.knowledge.parser.mineru_official import MinerUOfficialParser
 from yuxi.knowledge.parser.rapid_ocr import RapidOCRParser
@@ -96,6 +97,36 @@ def test_mineru_official_parsing_does_not_reject_configured_health(
     monkeypatch.setattr(parser, "_download_and_extract", lambda *args, **kwargs: "parsed markdown")
 
     assert parser.process_file(str(file_path)) == "parsed markdown"
+
+
+def test_mineru_official_does_not_fallback_when_image_storage_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    file_path = tmp_path / "mineru.pdf"
+    file_path.write_bytes(b"pdf")
+    zip_path = tmp_path / "result.zip"
+    zip_path.write_bytes(b"zip")
+    parser = MinerUOfficialParser(api_key="test-key")
+
+    monkeypatch.setattr(parser, "_upload_file", lambda *args, **kwargs: "batch-id")
+    monkeypatch.setattr(
+        parser,
+        "_poll_batch_result",
+        lambda *args, **kwargs: {"state": "done", "full_zip_url": "https://example.test/result.zip"},
+    )
+    monkeypatch.setattr(parser, "_download_zip", lambda *args, **kwargs: str(zip_path))
+
+    def raise_image_error(*args, **kwargs):
+        raise ParsedImageStorageError("解析图片保存失败: diagram.png")
+
+    monkeypatch.setattr(
+        "yuxi.knowledge.parser.mineru_official.process_zip_file_sync",
+        raise_image_error,
+    )
+
+    with pytest.raises(DocumentParserException, match="解析图片保存失败"):
+        parser.process_file(str(file_path))
 
 
 def test_rapid_ocr_health_check_does_not_load_model(monkeypatch: pytest.MonkeyPatch):
@@ -237,7 +268,7 @@ def test_convert_with_docling_reinserts_image_links_in_document_order(
     )
 
 
-def test_convert_with_docling_keeps_image_placeholder_when_upload_fails(
+def test_convert_with_docling_fails_when_image_cannot_be_stored(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -262,9 +293,8 @@ def test_convert_with_docling_keeps_image_placeholder_when_upload_fails(
     monkeypatch.setattr(parser_unified, "_upload_image_to_minio", _raise_upload_error)
     monkeypatch.setattr(parser_unified.time, "time", lambda: 1.0)
 
-    markdown = parser_unified._convert_with_docling(file_path)
-
-    assert markdown == "before\n[图片: image_1000000.png]\nafter"
+    with pytest.raises(RuntimeError, match="upload failed"):
+        parser_unified._convert_with_docling(file_path)
 
 
 @pytest.mark.asyncio

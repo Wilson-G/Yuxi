@@ -14,13 +14,17 @@ from sqlalchemy.exc import OperationalError
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.agents.skills.service import init_builtin_skills
 from yuxi.expert.worker import (
-    process_expert_method_calibration,
-    process_expert_material_learning,
     process_expert_handout_compilation,
+    process_expert_material_learning,
+    process_expert_method_calibration,
     process_expert_organization,
     process_expert_project_orientation,
     process_expert_project_preparation,
     recover_expert_project_jobs,
+)
+from yuxi.material_library.worker import (
+    process_material_source_file_job,
+    recover_material_source_file_jobs,
 )
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.agent_request_queue_service import (
@@ -751,6 +755,7 @@ async def _worker_startup(ctx):
         await init_builtin_skills(session)
     await recover_pending_dispatches()
     await recover_expert_project_jobs()
+    await recover_material_source_file_jobs()
 
 
 async def _worker_shutdown(ctx):
@@ -789,6 +794,10 @@ class WorkerSettings:
         func(
             process_expert_handout_compilation,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_material_source_file_job,
+            keep_result=0,
         ),
     ]
     max_tries = 2

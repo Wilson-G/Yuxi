@@ -8,13 +8,14 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 from yuxi.config.options import system_options
 from yuxi.knowledge.base import KBNameConflictError, KBNotFoundError
 from yuxi.knowledge.chunking.ragflow_like.presets import get_chunk_preset_options
 from yuxi.knowledge.graphs.milvus_graph_service import GRAPH_TASK_TYPE, MilvusGraphService
-from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.knowledge.parser.unified import SUPPORTED_FILE_EXTENSIONS, is_supported_file_extension
+from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.knowledge.runtime import knowledge_base
 from yuxi.knowledge.utils import calculate_content_hash, is_minio_url, parse_minio_url
 from yuxi.knowledge.utils.mindmap_utils import (
@@ -44,13 +45,15 @@ from yuxi.utils import logger
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, read_upload_with_limit, write_upload_to_path
 
 from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
-from sqlalchemy.ext.asyncio import AsyncSession
-from server.utils.knowledge_response import serialize_knowledge_base, serialize_knowledge_base_list
 from server.utils.knowledge_permissions import (
     ensure_knowledge_base_permission as _ensure_database_permission,
+)
+from server.utils.knowledge_permissions import (
     require_knowledge_base_manage,
     require_knowledge_base_read,
 )
+from server.utils.knowledge_response import serialize_knowledge_base, serialize_knowledge_base_list
+from server.utils.private_image_response import create_private_image_response
 
 knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -1646,35 +1649,7 @@ async def get_kb_image(kb_id: str, object_path: str, current_user: User = Depend
     if ".." in object_path or "\\" in object_path:
         raise HTTPException(status_code=400, detail="非法的知识库图片路径")
 
-    object_name = f"{kb_id}/{object_path}"
-    minio_client = get_minio_client()
-    try:
-        minio_response = await minio_client.adownload_response(
-            bucket_name=MinIOClient.KB_BUCKETS["images"],
-            object_name=object_name,
-        )
-    except StorageError as error:
-        if "不存在" in str(error):
-            raise HTTPException(status_code=404, detail="图片不存在")
-        logger.error(f"读取知识库图片失败 {object_name}: {error}")
-        raise HTTPException(status_code=500, detail="读取图片失败")
-
-    content_type = minio_response.getheader("Content-Type") or "application/octet-stream"
-
-    async def image_stream():
-        try:
-            while True:
-                chunk = await asyncio.to_thread(minio_response.read, 8192)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            minio_response.close()
-            minio_response.release_conn()
-
-    return StreamingResponse(
-        image_stream(), media_type=content_type, headers={"Cache-Control": "private, max-age=3600"}
-    )
+    return await create_private_image_response(f"{kb_id}/{object_path}")
 
 
 # =============================================================================

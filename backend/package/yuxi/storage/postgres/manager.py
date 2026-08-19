@@ -12,6 +12,7 @@ from sqlalchemy.orm import declarative_base
 from yuxi.storage.postgres.models_business import AGENT_RUN_TERMINAL_STATUSES, UNVIEWED_RUN_MARKER
 from yuxi.storage.postgres.models_business import Base as BusinessBase
 from yuxi.storage.postgres.models_knowledge import Base as KnowledgeBase
+from yuxi.storage.postgres.models_material import Base as MaterialBase
 from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
@@ -20,7 +21,7 @@ CombinedBase = declarative_base()
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
 
 # 继承所有表
-for module in [KnowledgeBase, BusinessBase]:
+for module in [KnowledgeBase, BusinessBase, MaterialBase]:
     for table_name in dir(module):
         table = getattr(module, table_name)
         if isinstance(table, type) and hasattr(table, "__tablename__"):

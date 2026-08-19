@@ -14,6 +14,7 @@ from typing import Any
 import requests
 
 from yuxi.knowledge.parser.base import BaseDocumentProcessor, DocumentParserException
+from yuxi.knowledge.parser.image_urls import ParsedImageStorageError
 from yuxi.knowledge.parser.zip_utils import process_zip_file_sync
 from yuxi.utils import hashstr, logger
 
@@ -118,6 +119,8 @@ class MinerUOfficialParser(BaseDocumentProcessor):
                     image_prefix=image_prefix,
                 )
                 text = processed["markdown_content"]
+            except ParsedImageStorageError:
+                raise
             except Exception:
                 import zipfile
 

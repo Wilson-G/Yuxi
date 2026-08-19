@@ -2,11 +2,12 @@ from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.expert.task_view import get_expert_task_summary, list_expert_task_summaries
+from yuxi.material_library.task_view import get_material_file_task_summary, list_material_file_task_summaries
 from yuxi.services.task_service import tasker
 from yuxi.storage.postgres.models_business import User
+
+from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 
 tasks = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -30,16 +31,19 @@ async def list_tasks(
         db,
         created_by=None if is_admin else str(current_user.uid),
     )
-    all_items = [*tasker_result["tasks"], *expert_items]
+    material_items = await list_material_file_task_summaries(db) if is_admin else []
+    all_items = [*tasker_result["tasks"], *expert_items, *material_items]
     items = all_items
     if status:
         items = [item for item in items if item["status"] == status]
     items.sort(key=lambda item: (item.get("created_at") or "", item["id"]), reverse=True)
     status_counts = Counter(tasker_result["summary"]["status_counts"])
     status_counts.update(item["status"] for item in expert_items)
+    status_counts.update(item["status"] for item in material_items)
     type_counts = Counter(tasker_result["summary"]["type_counts"])
     type_counts.update(item["type"] for item in expert_items)
-    total = int(tasker_result["summary"]["total"]) + len(expert_items)
+    type_counts.update(item["type"] for item in material_items)
+    total = int(tasker_result["summary"]["total"]) + len(expert_items) + len(material_items)
     filtered_total = status_counts.get(status, 0) if status else total
     return {
         "tasks": items[:limit],
@@ -64,6 +68,13 @@ async def get_task(
             db,
             task_id.removeprefix("expert-project:"),
             created_by=None if current_user.role in {"admin", "superadmin"} else str(current_user.uid),
+        )
+        if task:
+            return {"task": task}
+    if task_id.startswith("material-source:") and current_user.role in {"admin", "superadmin"}:
+        task = await get_material_file_task_summary(
+            db,
+            task_id.removeprefix("material-source:"),
         )
         if task:
             return {"task": task}

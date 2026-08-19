@@ -241,9 +241,9 @@ class PaddleOCRAPIParser(BaseDocumentProcessor):
             object_name=object_name,
             data=response.content,
         )
-        from yuxi.knowledge.utils.kb_utils import build_kb_image_proxy_url
+        from yuxi.knowledge.parser.image_urls import build_parsed_image_proxy_url
 
-        return build_kb_image_proxy_url(object_name)
+        return build_parsed_image_proxy_url(object_name)
 
 
 class PaddleOCRVLParser(PaddleOCRAPIParser):

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import importlib
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -669,6 +669,9 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
     async def fake_recover_expert_project_jobs():
         calls.append("recover_expert_project_jobs")
 
+    async def fake_recover_material_source_file_jobs():
+        calls.append("recover_material_source_file_jobs")
+
     monkeypatch.setattr(run_worker.pg_manager, "initialize", fake_initialize)
     monkeypatch.setattr(run_worker.pg_manager, "create_business_tables", fake_create_business_tables)
     monkeypatch.setattr(run_worker.pg_manager, "ensure_business_schema", fake_ensure_business_schema)
@@ -681,6 +684,7 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
     monkeypatch.setattr(config_options, "invalidate_option_cache", fake_invalidate_option_cache)
     monkeypatch.setattr(run_worker, "recover_pending_dispatches", fake_recover_pending_dispatches)
     monkeypatch.setattr(run_worker, "recover_expert_project_jobs", fake_recover_expert_project_jobs)
+    monkeypatch.setattr(run_worker, "recover_material_source_file_jobs", fake_recover_material_source_file_jobs)
     options_module = importlib.import_module("yuxi.config.options")
     monkeypatch.setattr(options_module, "ensure_options_in_db", fake_ensure_options_in_db)
 
@@ -698,6 +702,7 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
         "init_builtin_skills",
         "recover_pending_dispatches",
         "recover_expert_project_jobs",
+        "recover_material_source_file_jobs",
     ]
 
 
