@@ -6,11 +6,11 @@
 
 ## 鸟瞰
 
-知铸的默认产品路线是把一批可靠材料学习并编译为可启用、可检索、可核对依据的专家 Skill。用户通过 Vue 前端创建专家项目，经历材料转正文、项目定向、两次确认、并行学习与 Review、项目内串行总编和成品预览，最后手动启用 Skill。前端通过 `/api` 调用 FastAPI，后端协调 PostgreSQL、Redis/ARQ、MinIO、模型运行时、文档解析和沙盒。
+知铸的默认产品路线是把一批可靠材料学习并编译为可启用、可检索、可核对依据的专家 Skill。管理员先在独立资料库上传和整理文件，得到可靠正文与自然材料单元，再选择就绪单元创建专家项目，经历项目定向、两次确认、并行学习与 Review、项目内串行总编和成品预览，最后手动启用 Skill。前端通过 `/api` 调用 FastAPI，后端协调 PostgreSQL、Redis/ARQ、MinIO、模型运行时、文档解析和沙盒。
 
 旧知识库、向量检索、评估和知识图谱仍作为兼容能力保留，但不是默认产品路线。新专家项目的材料、笔记、讲义和发布物不进入旧知识库的分块、Milvus 入库或 Neo4j 图谱链路。
 
-专家项目以 PostgreSQL 中的项目、材料和主题记录为事实来源，以项目私有目录保存原始材料、可靠正文和正式产物。ARQ worker 根据项目记录执行阶段任务并在启动时重投未完成工作；任务中心只将项目事实投影为进度摘要，不参与恢复。
+资料库以 PostgreSQL 保存目录、文件、单元和处理状态，以私有 MinIO 保存原始文件、规范化 Markdown 与解析图片。新专家项目只保存材料单元关联和编译产物，不复制原始文件或正文；既有直接上传项目继续从现有项目记录和私有正文兼容读取。ARQ worker 根据 PostgreSQL 事实执行并在启动时重投未完成工作；任务中心只投影进度摘要，不参与恢复。
 
 普通智能体请求仍先在 PostgreSQL 中保存为请求和消息，再立即派发或进入线程级 FIFO 队列。派发后的 `AgentRun` 通过 Redis/ARQ 交给独立 worker 执行，运行事件写入 Redis Stream，最终状态和业务记录写回 PostgreSQL，前端通过 SSE 消费排队与运行事件。
 
@@ -18,11 +18,11 @@
 
 - `web-dev`：Vue 3 / Vite 前端，挂载 `web/src` 并热重载。
 - `api-dev`：FastAPI API 服务，挂载 `backend/server`、`backend/package` 和测试目录并热重载。
-- `worker-dev`：ARQ worker，执行 AgentRun 和专家项目阶段任务，并负责两条链路的启动恢复扫描。
+- `worker-dev`：ARQ worker，执行 AgentRun、资料库文件/单元处理和专家项目阶段任务，并负责各链路的启动恢复扫描。
 - `sandbox-provisioner`：为智能体工具执行提供隔离沙盒。
 - `postgres`：专家项目事实、Skill 元数据、业务数据、请求队列、AgentRun 与 LangGraph checkpoint；兼容模式下也保存旧知识库元数据。
 - `redis`：ARQ 投递、运行事件、取消信号以及跨进程配置和模型缓存。
-- `minio`：附件、公开图片和其他对象数据；兼容模式下也保存旧知识库原始文件。
+- `minio`：附件、资料库原始文件、规范化 Markdown、私有解析图片和其他对象数据；兼容模式下也保存旧知识库对象。
 - `milvus`、`etcd`：旧向量知识库的可选服务，通过 `legacy-knowledge` profile 启动。
 - `graph`：旧知识库图谱的 Neo4j 可选服务，通过 `legacy-knowledge` profile 启动。
 - `mineru-api`、`paddlex`：通过 `all` profile 可选启动的文档解析和 OCR 服务。
@@ -38,11 +38,12 @@
 - `server/utils/lifespan.py` 管理数据库、内置模型/MCP/Skills、Redis、沙盒、LangGraph checkpoint 和通用 Tasker 的启动与关闭；只有非 `LITE_MODE` 才初始化旧知识库。
 - `server/worker_main.py` 是 ARQ worker 入口，实际执行设置位于 `yuxi.services.run_worker`。
 
-`LITE_MODE` 是默认运行边界：保留专家项目、认证、智能体、聊天、Skills、MCP、模型、工作区和系统管理接口，但不注册 `external_kb`、`knowledge`、`evaluation` 和 `graph` 路由，也不初始化旧知识库管理器。
+`LITE_MODE` 是默认运行边界：保留资料库、专家项目、认证、智能体、聊天、Skills、MCP、模型、工作区和系统管理接口，但不注册 `external_kb`、`knowledge`、`evaluation` 和 `graph` 路由，也不初始化旧知识库管理器。
 
 ### `backend/package/yuxi`
 
-- `expert` 是默认产品主体：管理材料转正文、项目定向和 Prompt 包、逐份学习与 Review、主题与讲义组织、总编收口、候选 Skill 组装、ARQ 任务与项目恢复。`expert/prompt_designer/` 是第 0 阶段读取的中央 Prompt 设计规范，包含中央方法、材料类型模板和结构示例；它不是隐藏的辅助资源。
+- `material_library` 管理独立资料库的文件、目录、解析、规范化正文、自然材料单元、逐文件 ARQ 工作和恢复；只复用 `knowledge.parser` 的通用文档解析能力，不依赖旧知识库文件、分块、向量或图谱事实。
+- `expert` 管理资料库材料单元接入、项目定向和 Prompt 包、逐份学习与 Review、主题与讲义组织、总编收口、候选 Skill 组装、ARQ 任务与项目恢复。`expert/prompt_designer/` 是第 0 阶段读取的中央 Prompt 设计规范，包含中央方法、材料类型模板和结构示例；它不是隐藏的辅助资源。
 - `agents` 定义 LangGraph 智能体体系。`BaseAgent` 是智能体基类，`BaseContext` 是运行上下文；`buildin/chatbot` 和 `buildin/subagent` 放内置智能体；`middlewares` 组合文件系统、Skills、SubAgent、摘要、审批、模型兼容和用量统计；`toolkits` 管理本地工具；`backends` 对接沙盒和 Skills 文件系统；`skills` 与 `mcp` 管理扩展能力及其运行时加载。
 - `services` 是用例层。智能体主链路重点分为请求接入与排队、Run 生命周期、运行时配置、worker 执行和 SubAgent 调用；聊天历史、附件、工作区、文件预览、评估、认证和观测等跨模块流程也从这里找入口。
 - `repositories` 是 PostgreSQL 访问边界，封装专家项目、业务对象、AgentRun、请求队列、Task 和扩展配置查询；兼容知识库元数据也保留在这一边界。路由不应绕过 repository 直接拼装持久化逻辑。
@@ -59,7 +60,8 @@
 
 项目中存在三种用途不同的后台边界，不应混用：
 
-- 专家项目：PostgreSQL 中的 `expert_projects`、`expert_materials`、`expert_research_batches` 和 `expert_topics` 保存事实，Redis/ARQ 投递阶段任务到 `worker-dev`。Worker 启动时从项目记录重投未完成工作，不从 Tasker 恢复。
+- 资料库：PostgreSQL 中的 `material_libraries`、`material_directories`、`material_source_files` 和 `material_units` 保存事实，Redis/ARQ 按来源文件稳定标识投递解析和单元确认工作。Worker 启动时只重投未完成文件或单元。
+- 专家项目：PostgreSQL 中的 `expert_projects`、`expert_materials`、`expert_research_batches` 和 `expert_topics` 保存事实，Redis/ARQ 投递阶段任务到 `worker-dev`。逐份学习按“项目 + 材料 + 方法版本”使用稳定工作标识；Worker 启动时从项目和材料记录重投未完成工作，不从 Tasker 恢复。
 - AgentRun：通过 PostgreSQL 保存事实状态，使用 Redis/ARQ 投递到 `worker-dev`，支持运行事件、取消、恢复和线程请求队列。
 - `services/task_service.py` 中的 Tasker：运行在 API 进程内，用于旧知识库解析、评估和图谱构建等兼容后台任务；任务摘要持久化到 PostgreSQL，但可执行 coroutine 和内存队列不具备跨进程重建能力。专家项目只向任务中心提供读取投影，不把任务中心当作事实来源。
 
@@ -77,16 +79,16 @@
 - `composables` 封装请求排队、Run SSE、流式消息、审批、线程状态、提及和其他可组合逻辑。
 - `utils` 放轻量转换和展示辅助；全局样式集中在 `assets/css`，颜色和基础规范优先复用 `base.css`。
 
-`/` 是公开首页；登录后的对话工作区是 `/agent`。`/extensions` 对所有登录用户开放，「专家项目」是默认专家学习入口，项目详情路由展示两个确认点、阶段明细、候选 Skill 预览和手动启用。Skills 对普通用户可见，工具和 MCP 管理能力仅管理员可见；Dashboard 仅超级管理员可访问。后端权限检查始终是最终边界，前端守卫只负责页面体验。
+`/` 是公开首页；登录后的对话工作区是 `/agent`。`/extensions` 对所有登录用户开放：管理员可见资料库、专家项目、Skills 和其他管理入口，专家项目详情展示两个确认点、阶段明细、候选 Skill 预览和手动启用；普通用户只看和使用已有共享权限允许的 Skills。Dashboard 仅超级管理员可访问。后端权限检查始终是最终边界，前端守卫只负责页面体验。
 
 ## 专家学习与编译链路
 
 一个新专家项目经过以下边界：
 
-1. 前端向 `POST /api/expert-projects` 上传项目基础信息和材料；路由层只处理认证、上传暂存和响应装配。
-2. `yuxi.expert.service` 创建 PostgreSQL 项目与材料记录，`yuxi.expert.storage` 将原始材料保存到项目私有目录，ARQ worker 调用现有文档解析入口转为完整 Markdown 正文。
-3. 用户从材料目录中选定不超过 20 份、覆盖不同方向的代表材料后，总编模型形成项目定向、学习方案、编译底稿、阶段 Prompt 包、笔记小样和 Review。项目停在第一个确认点。
-4. 用户确认项目方法版本后，ARQ worker 按自然材料单元并行执行笔记、Review 和有限定点修订。“需要处理”会继续允许其他材料完成，但阻塞阶段交接。
+1. 管理员在资料库逐文件或按文件夹上传材料；每个文件保留相对路径，经独立 ARQ 工作解析为 MinIO 中的完整规范化 Markdown，再由模型确认带来源行范围的自然材料单元。
+2. 前端向 `POST /api/expert-projects` 提交项目基础信息和就绪 `material_unit_ids`；`yuxi.expert.service` 只创建项目、材料单元关联和编译产物目录，不创建 `raw/`、`text/` 材料副本，也不再次 OCR 或解析。
+3. 用户从项目材料中选定不超过 20 份、覆盖不同方向的代表材料后，总编模型形成项目定向、学习方案、编译底稿、阶段 Prompt 包、笔记小样和 Review。项目停在第一个确认点。
+4. 用户确认项目方法版本后，ARQ worker 按自然材料单元分别执行笔记、Review 和有限定点修订。“需要处理”会继续允许其他材料完成，但阻塞阶段交接。
 5. 材料范围明确后，并行助手准备候选主题、证据和冲突清单，总编模型串行形成主题地图、编辑方案和讲义小样。项目停在第二个确认点。
 6. 用户确认组织版本后，助手并行准备证据包，同一项目的总编模型串行编写和修订正式讲义，再执行全书一致性检查与收口。
 7. `yuxi.expert.publisher` 将正式讲义、导航、精选证据、来源映射和 `SKILL.md` 组装为候选 Skill，候选目录只允许 `SKILL.md`、`nav/`、`references/`、`wiki/`、`search/` 和 `sources.jsonl`。
@@ -116,6 +118,7 @@
 - Docker Compose 是开发环境的事实来源。开发时先检查容器、日志和热重载，不默认要求本地裸跑服务。
 - HTTP 路由保持薄；专家学习用例放在 `yuxi.expert`，通用智能体与跨领域用例放在 `yuxi.services`，持久化查询放在 `yuxi.repositories`。
 - 专家项目记录是学习与编译进度的唯一事实来源；ARQ 负责执行，任务中心只负责展示，API 进程内 Tasker 不恢复专家项目。
+- 资料库是新增专家材料的唯一原文件和规范化正文事实来源；新专家项目只关联就绪材料单元。旧项目只保留现有记录的兼容读取，不恢复新增、替换或再次上传材料的入口。
 - 项目定向只读用户确认的代表性材料；逐份学习、主题规划和全书收口都不得静默截断或暗中抽样。
 - 第 0 阶段确认“怎么学”，第 2 阶段确认“怎么组织”；两个用户确认点都不得绕过。“需要处理”的材料必须由用户修复、明确排除或暂停。
 - 普通助手可以并行阅读、Review 和准备证据；会改变编辑方案、正式讲义和最终 Skill 的总编写入在同一项目内保持串行。
@@ -134,6 +137,6 @@
 
 - **配置**：Compose 和 `.env` 提供部署配置；管理员系统配置写入 `base.toml` 并通过 Redis 快照同步；用户配置与模型供应商以 PostgreSQL 为事实来源。
 - **权限**：前端路由和页面标签提供体验级约束，FastAPI 认证依赖和 repository 可见性查询提供最终授权。
-- **状态与存储**：PostgreSQL 保存专家项目事实、Skill 元数据、请求、Run、消息和业务数据；LangGraph checkpoint 使用 PostgreSQL，必要时可回退 SQLite/内存；Redis 保存短期事件、取消信号、ARQ 和跨进程缓存；项目私有目录、MinIO、沙盒与共享 Skill 目录分别承载不同生命周期的文件。
-- **文档处理**：专家项目的原始文件保存到项目私有目录，再经现有文档解析入口生成完整 Markdown 正文；代码不将其切成旧知识库 chunk。旧知识库的上传、分块和入库链路只在兼容模式中使用。
+- **状态与存储**：PostgreSQL 保存资料库、专家项目、Skill 元数据、请求、Run、消息和业务事实；LangGraph checkpoint 使用 PostgreSQL，必要时可回退 SQLite/内存；Redis 保存短期事件、取消信号、ARQ 和跨进程缓存；MinIO、项目编译目录、沙盒与共享 Skill 目录分别承载不同生命周期的文件。
+- **文档处理**：资料库原始文件进入私有 MinIO，经现有文档解析入口生成完整规范化 Markdown 和私有图片，再形成自然材料单元；新专家项目按关联读取单元完整正文，不写旧知识库 chunk。旧知识库的上传、分块和入库链路只在兼容模式中使用。
 - **观测与调试**：优先查看 `api-dev`、`worker-dev` 和相关依赖日志；Langfuse 集中在服务层和 AgentRun 上下文；SSE 问题同时检查 Redis 事件与 PostgreSQL 终态。
