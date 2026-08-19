@@ -51,7 +51,7 @@ async def _build_task(repo: ExpertRepository, project: Any) -> dict[str, Any]:
         "created_at": project.to_dict()["created_at"],
         "updated_at": project.to_dict()["updated_at"],
         "started_at": project.to_dict()["created_at"],
-        "completed_at": project.to_dict()["updated_at"] if project.status in {"ready", "enabled"} else None,
+        "completed_at": project.to_dict()["updated_at"] if project.status == "enabled" else None,
         "payload": {
             "project_id": project.project_id,
             "stage": project.stage,
@@ -66,8 +66,10 @@ async def _build_task(repo: ExpertRepository, project: Any) -> dict[str, Any]:
 def _task_status(project_status: str) -> str:
     if project_status == "needs_attention":
         return "failed"
-    if project_status in {"ready", "enabled", "awaiting_confirmation"}:
+    if project_status == "enabled":
         return "success"
+    if project_status in {"ready", "awaiting_confirmation", "paused"}:
+        return "pending"
     return "running"
 
 

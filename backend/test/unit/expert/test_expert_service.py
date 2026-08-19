@@ -640,9 +640,7 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
         )
 
     tasks = ParallelOrientationSampleTasks()
-    runner = asyncio.create_task(
-        service.run_project_orientation(project_id, method_version, model_tasks=tasks)
-    )
+    runner = asyncio.create_task(service.run_project_orientation(project_id, method_version, model_tasks=tasks))
     await asyncio.wait_for(tasks.both_started.wait(), timeout=1)
     assert tasks.started_titles == {"01-material", "02-material"}
 
@@ -1116,6 +1114,7 @@ async def test_method_calibration_compares_samples_and_starts_learning(expert_en
                 representative_material_ids=material_ids,
             )
 
+
 @pytest.mark.asyncio
 async def test_method_confirmation_without_review_issue_starts_learning_directly(expert_env) -> None:
     """没有可泛化 Review 问题时，确认方向后直接进入批量学习。"""
@@ -1177,6 +1176,83 @@ async def test_method_calibration_stops_when_residual_problem_is_method_level(ex
     assert project.status == "needs_attention"
     assert project.error_message == "V2 仍会系统性遗漏判断条件"
     assert project.method_calibration_baseline == []
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_derive_material_learning_from_existing_facts(expert_env) -> None:
+    """暂停只写项目状态，恢复根据阶段和材料事实继续。"""
+
+    project_id, _ = await _create_project(
+        expert_env,
+        count=1,
+        stage=service.MATERIAL_LEARNING_STAGE,
+        status="running",
+    )
+    async with expert_env.factory() as db:
+        paused = await service.pause_expert_project(db, project_id=project_id, created_by="user-1")
+        assert paused.status == "paused"
+
+    async with expert_env.factory() as db:
+        resumed = await service.resume_expert_project(db, project_id=project_id, created_by="user-1")
+        assert resumed.stage == service.MATERIAL_LEARNING_STAGE
+        assert resumed.status == "running"
+        assert resumed.message == "正在继续学习材料"
+
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            status="needs_attention",
+            message="方法校准存在问题",
+            error_message="校准后仍遗漏关键条件",
+        )
+        await db.commit()
+        await service.pause_expert_project(db, project_id=project_id, created_by="user-1")
+        resumed = await service.resume_expert_project(db, project_id=project_id, created_by="user-1")
+
+    assert resumed.status == "needs_attention"
+    assert resumed.error_message == "校准后仍遗漏关键条件"
+
+
+@pytest.mark.asyncio
+async def test_resume_keeps_running_when_only_part_of_method_samples_finished(expert_env) -> None:
+    """部分小样完成不能被误判为已经到达第一次确认点。"""
+
+    project_id, _ = await _create_project(expert_env, count=2, status="running")
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            method_version=1,
+            method_sample_material_ids=material_ids,
+            method_samples=[{"material_id": material_ids[0], "status": "passed"}],
+        )
+        await db.commit()
+        await service.pause_expert_project(db, project_id=project_id, created_by="user-1")
+        resumed = await service.resume_expert_project(db, project_id=project_id, created_by="user-1")
+
+    assert resumed.status == "running"
+    assert resumed.message == "正在继续生成项目学习方法"
+
+
+@pytest.mark.asyncio
+async def test_delete_project_rejects_running_and_enabled_then_removes_paused_workspace(expert_env) -> None:
+    running_id, [material_id] = await _create_project(expert_env, count=1, status="running")
+    running_root = storage.get_project_root(running_id)
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="必须先暂停"):
+            await service.delete_expert_project(db, project_id=running_id, created_by="user-1")
+        await service.pause_expert_project(db, project_id=running_id, created_by="user-1")
+        await service.delete_expert_project(db, project_id=running_id, created_by="user-1")
+        assert await ExpertRepository(db).get_project(running_id) is None
+        assert await ExpertRepository(db).get_material(material_id) is None
+    assert not running_root.exists()
+
+    enabled_id, _ = await _create_project(expert_env, count=1, stage="release", status="enabled")
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="必须先卸载"):
+            await service.delete_expert_project(db, project_id=enabled_id, created_by="user-1")
 
 
 @pytest.mark.asyncio

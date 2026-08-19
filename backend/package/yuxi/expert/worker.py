@@ -11,8 +11,8 @@ from yuxi.expert.organization_service import initialize_organization_stage, run_
 from yuxi.expert.service import (
     mark_project_attention,
     prepare_expert_project,
-    run_method_calibration,
     run_material_learning_stage,
+    run_method_calibration,
     run_project_orientation,
 )
 from yuxi.repositories.expert_repository import ExpertRepository
@@ -97,6 +97,37 @@ async def enqueue_handout_compilation(
         organization_version,
         _job_id=f"expert:handouts:{project_id}:v{organization_version}:{token}",
     )
+
+
+async def enqueue_resumed_expert_project(project_id: str) -> None:
+    """按显式恢复后的项目事实投递当前阶段工作。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        if project is None:
+            raise ValueError("专家项目不存在")
+        stage = project.stage
+        status = project.status
+        method_version = project.method_version
+        organization_version = project.organization_version
+        method_confirmed = project.method_confirmed_at is not None
+        calibration_pending = bool(project.method_calibration_baseline)
+
+    if stage == "orientation" and status == "preparing":
+        await enqueue_project_preparation(project_id, token="resume")
+    elif stage == "orientation" and status == "running" and method_confirmed and calibration_pending:
+        await enqueue_method_calibration(project_id, method_version)
+    elif stage == "orientation" and status == "running":
+        await enqueue_project_orientation(project_id, method_version)
+    elif stage == "material_learning" and status == "running":
+        await enqueue_material_learning(project_id, method_version, token="resume")
+    elif stage == "organization" and status == "preparing":
+        organization_version = await initialize_organization_stage(project_id)
+        await enqueue_organization(project_id, organization_version)
+    elif stage == "organization" and status == "running":
+        await enqueue_organization(project_id, organization_version)
+    elif stage == "handout_compilation" and status == "running":
+        await enqueue_handout_compilation(project_id, organization_version, token="resume")
 
 
 async def process_expert_project_preparation(ctx, project_id: str) -> dict:
@@ -286,6 +317,9 @@ async def _mark_handout_compilation_attention(
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        if project is None or project.status == "paused":
+            return
         topics = await repo.list_topics(project_id, organization_version)
         actionable_statuses = {"pending", "preparing_evidence", "evidence_ready", "writing"}
         actionable_topic = next((topic for topic in topics if topic.status in actionable_statuses), None)
@@ -317,6 +351,7 @@ __all__ = [
     "enqueue_organization",
     "enqueue_project_orientation",
     "enqueue_project_preparation",
+    "enqueue_resumed_expert_project",
     "process_expert_material_learning",
     "process_expert_method_calibration",
     "process_expert_handout_compilation",

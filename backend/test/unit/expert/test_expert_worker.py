@@ -113,6 +113,8 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         ("awaiting", "orientation", "awaiting_confirmation", 1),
         ("learning", "material_learning", "running", 3),
         ("learning-attention", "material_learning", "needs_attention", 3),
+        ("paused-orientation", "orientation", "paused", 2),
+        ("paused-learning", "material_learning", "paused", 3),
     ]
     for project_spec in specs:
         project_id, stage, status, method_version, *flags = project_spec
@@ -159,6 +161,38 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
             ("process_expert_material_learning", "learning", 3),
             {"_job_id": "expert:materials:learning:v3:recovery"},
         ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_resume_enqueues_current_stage(worker_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """只有显式恢复动作会把暂停后的当前阶段重新投递。"""
+
+    await _add_project(
+        worker_env,
+        "resumed-learning",
+        stage="material_learning",
+        status="running",
+        method_version=4,
+    )
+    jobs: list[tuple[tuple, dict]] = []
+
+    class FakePool:
+        async def enqueue_job(self, *args, **kwargs) -> None:
+            jobs.append((args, kwargs))
+
+    async def fake_get_arq_pool():
+        return FakePool()
+
+    monkeypatch.setattr(worker, "get_arq_pool", fake_get_arq_pool)
+
+    await worker.enqueue_resumed_expert_project("resumed-learning")
+
+    assert jobs == [
+        (
+            ("process_expert_material_learning", "resumed-learning", 4),
+            {"_job_id": "expert:materials:resumed-learning:v4:resume"},
+        )
     ]
 
 

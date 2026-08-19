@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi.agents.skills.repository import SkillRepository
@@ -24,7 +25,7 @@ from yuxi.expert.contracts import (
 )
 from yuxi.expert.model_tasks import ExpertContextLimitError
 from yuxi.repositories.expert_repository import ExpertRepository
-from yuxi.storage.postgres.models_business import Base
+from yuxi.storage.postgres.models_business import Base, ExpertProject, Skill
 
 pytestmark = pytest.mark.unit
 
@@ -410,3 +411,151 @@ async def test_book_revision_and_context_grouping_finish_candidate_without_activ
     assert "topic-a" in tasks.navigation_inputs[2] and "topic-b" not in tasks.navigation_inputs[2]
     assert "topic-b" in tasks.navigation_inputs[3] and "topic-a" not in tasks.navigation_inputs[3]
     assert "topic-c" in tasks.navigation_inputs[4]
+
+
+@pytest.mark.asyncio
+async def test_uninstall_uses_shared_delete_and_keeps_candidate(
+    compilation_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """卸载只删除安装后的 Skill，项目候选成品仍可再次启用。"""
+
+    candidate, installed_dir = await _seed_enabled_project_and_skill(compilation_env)
+    monkeypatch.setattr(compilation_service, "user_can_manage_skill", lambda _user, _skill: True)
+
+    async with compilation_env.factory() as db:
+        await compilation_service.uninstall_expert_skill(
+            db,
+            project_id=PROJECT_ID,
+            current_user=SimpleNamespace(uid="user-1"),
+        )
+
+    async with compilation_env.factory() as db:
+        project = await ExpertRepository(db).get_project(PROJECT_ID)
+        installed = await SkillRepository(db).get_by_slug("expert-candidate")
+
+    assert project is not None
+    assert project.status == "ready"
+    assert project.skill_dir == "release/v1"
+    assert installed is None
+    assert not installed_dir.exists()
+    assert (candidate / "SKILL.md").read_text(encoding="utf-8") == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_uninstall_commit_failure_keeps_project_skill_and_directories(
+    compilation_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """项目状态提交失败时，Skill 数据和安装目录必须保持原状。"""
+
+    candidate, installed_dir = await _seed_enabled_project_and_skill(compilation_env)
+    monkeypatch.setattr(compilation_service, "user_can_manage_skill", lambda _user, _skill: True)
+
+    async with compilation_env.factory() as db:
+
+        def fail_ready_project_flush(session, _flush_context, _instances) -> None:
+            """在项目状态与 Skill 删除共同提交时触发数据库失败。"""
+
+            project_is_ready = any(
+                isinstance(item, ExpertProject) and item.project_id == PROJECT_ID and item.status == "ready"
+                for item in session.identity_map.values()
+            )
+            deletes_installed_skill = any(isinstance(item, Skill) for item in session.deleted)
+            if project_is_ready and deletes_installed_skill:
+                raise RuntimeError("项目状态提交失败")
+
+        event.listen(db.sync_session, "before_flush", fail_ready_project_flush)
+        try:
+            with pytest.raises(RuntimeError, match="项目状态提交失败"):
+                await compilation_service.uninstall_expert_skill(
+                    db,
+                    project_id=PROJECT_ID,
+                    current_user=SimpleNamespace(uid="user-1"),
+                )
+            await db.rollback()
+        finally:
+            event.remove(db.sync_session, "before_flush", fail_ready_project_flush)
+
+    async with compilation_env.factory() as db:
+        project = await ExpertRepository(db).get_project(PROJECT_ID)
+        installed = await SkillRepository(db).get_by_slug("expert-candidate")
+
+    assert project is not None
+    assert project.status == "enabled"
+    assert installed is not None
+    assert installed_dir.is_dir()
+    assert (installed_dir / "SKILL.md").read_text(encoding="utf-8") == "installed"
+    assert (candidate / "SKILL.md").read_text(encoding="utf-8") == "candidate"
+
+
+async def _seed_enabled_project_and_skill(compilation_env) -> tuple[Path, Path]:
+    """创建已启用项目、安装后的 Skill 目录和独立候选目录。"""
+
+    storage.create_project_workspace(PROJECT_ID)
+    candidate = storage.get_project_root(PROJECT_ID) / "release" / "v1"
+    candidate.mkdir(parents=True)
+    (candidate / "SKILL.md").write_text("candidate", encoding="utf-8")
+
+    installed_dir = compilation_env.save_dir / "skills" / "expert-candidate"
+    installed_dir.mkdir(parents=True)
+    (installed_dir / "SKILL.md").write_text("installed", encoding="utf-8")
+
+    async with compilation_env.factory() as db:
+        project = await ExpertRepository(db).create_project(
+            project_id=PROJECT_ID,
+            name="待卸载专家",
+            description="保留候选成品",
+            model_spec="provider:model",
+            created_by="user-1",
+            stage="release",
+            status="enabled",
+        )
+        project.skill_slug = "expert-candidate"
+        project.skill_dir = "release/v1"
+        await SkillRepository(db).create(
+            slug="expert-candidate",
+            name="已安装专家 Skill",
+            description="卸载事务测试",
+            source_type="upload",
+            tool_dependencies=[],
+            mcp_dependencies=[],
+            skill_dependencies=[],
+            dir_path="skills/expert-candidate",
+            share_config={},
+            created_by="user-1",
+        )
+    return candidate, installed_dir
+
+
+@pytest.mark.asyncio
+async def test_paused_project_ignores_topic_attention_write(compilation_env) -> None:
+    """暂停期间的讲义调用失败不能修改项目或主题事实。"""
+
+    await _seed_compilation_project(compilation_env)
+    topic_id = "id-topic-a"
+    async with compilation_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            PROJECT_ID,
+            status="paused",
+            message="项目已暂停，等待显式恢复",
+            error_message=None,
+        )
+        await repo.update_topic(topic_id, status="writing", error_message=None)
+        await db.commit()
+
+    await compilation_service._mark_topic_attention(topic_id, "讲义修订调用失败")
+
+    async with compilation_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        topic = await repo.lock_topic(topic_id)
+
+    assert project is not None
+    assert project.status == "paused"
+    assert project.message == "项目已暂停，等待显式恢复"
+    assert project.error_message is None
+    assert topic is not None
+    assert topic.status == "writing"
+    assert topic.error_message is None

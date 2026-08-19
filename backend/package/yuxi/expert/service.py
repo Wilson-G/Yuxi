@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.agents.skills.repository import SkillRepository
 from yuxi.expert.contracts import MaterialNoteResult, MaterialReviewResult, ProjectPromptPack
 from yuxi.expert.model_tasks import ExpertModelTasks
 from yuxi.expert.storage import (
@@ -167,6 +168,166 @@ async def get_expert_material_text(
     }
 
 
+async def pause_expert_project(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+) -> Any:
+    """把项目标记为暂停，恢复扫描不会重新投递它。"""
+
+    project = await ExpertRepository(db).lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise ValueError("专家项目不存在")
+    if project.status == "enabled":
+        raise ValueError("已启用的专家项目不能暂停")
+    if project.status == "paused":
+        raise ValueError("专家项目已经暂停")
+    project.status = "paused"
+    project.message = "项目已暂停，等待显式恢复"
+    project.updated_at = utc_now_naive()
+    await db.commit()
+    return project
+
+
+async def resume_expert_project(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+) -> Any:
+    """依据项目阶段和子项事实恢复暂停项目。"""
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise ValueError("专家项目不存在")
+    if project.status != "paused":
+        raise ValueError("只有暂停项目可以恢复")
+
+    materials = await repo.list_project_materials(project_id)
+    next_status, message = await _derive_resumed_project_status(repo, project, materials)
+    project.status = next_status
+    project.message = message
+    if next_status != "needs_attention":
+        project.error_message = None
+    project.updated_at = utc_now_naive()
+    await db.commit()
+    return project
+
+
+async def delete_expert_project(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+) -> None:
+    """删除项目事实和私有 workspace，不触碰资料库材料。"""
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise ValueError("专家项目不存在")
+    if project.status in {"running", "preparing"}:
+        raise ValueError("运行中的专家项目必须先暂停")
+    if project.status == "enabled":
+        raise ValueError("已启用的专家 Skill 必须先卸载")
+    if project.skill_slug and await SkillRepository(db).get_by_slug(project.skill_slug) is not None:
+        raise ValueError("已启用的专家 Skill 必须先卸载")
+
+    await repo.delete_project(project_id)
+    try:
+        await asyncio.to_thread(delete_project_workspace, project_id)
+    except Exception:
+        await db.rollback()
+        raise
+    await db.commit()
+
+
+async def _derive_resumed_project_status(
+    repo: ExpertRepository,
+    project: Any,
+    materials: list[Any],
+) -> tuple[str, str]:
+    """从现有项目子项事实推导恢复状态和用户可见说明。"""
+
+    if project.error_message:
+        return "needs_attention", "项目仍有问题需要处理"
+
+    if project.stage == ORIENTATION_STAGE:
+        if any(item.status in {"pending", "converting"} for item in materials):
+            return "preparing", "正在继续转换材料"
+        attention = next((item for item in materials if item.status == "needs_attention"), None)
+        if attention is not None:
+            project.error_message = attention.error_message
+            return "needs_attention", "有材料需要处理后才能继续"
+        if project.method_calibration_baseline and project.method_calibration_completed_at is None:
+            return "running", "正在继续校准项目学习方法"
+        if project.method_samples:
+            sample_statuses = {item.get("status") for item in project.method_samples if isinstance(item, dict)}
+            completed_sample_ids = {
+                item.get("material_id")
+                for item in project.method_samples
+                if isinstance(item, dict) and item.get("material_id")
+            }
+            expected_sample_ids = set(project.method_sample_material_ids or [])
+            if (
+                expected_sample_ids
+                and completed_sample_ids == expected_sample_ids
+                and sample_statuses <= {"passed", "review_revise"}
+            ):
+                return "awaiting_confirmation", "学习方案和真实小样已就绪，等待确认怎么学"
+            if sample_statuses and sample_statuses <= {"passed", "review_revise"}:
+                return "running", "正在继续生成项目学习方法"
+            return "needs_attention", "项目方法小样仍需要处理"
+        if project.method_version > 0:
+            return "running", "正在继续生成项目学习方法"
+        if any(item.status == "ready" for item in materials):
+            return "ready", "材料正文已准备好，请选择代表样本"
+        return "needs_attention", "项目没有可用于学习的材料"
+
+    if project.stage == MATERIAL_LEARNING_STAGE:
+        if any(item.status in {"pending", "learning", "review_revise"} for item in materials):
+            return "running", "正在继续学习材料"
+        attention = next((item for item in materials if item.status == "needs_attention"), None)
+        if attention is not None:
+            project.error_message = attention.error_message
+            return "needs_attention", "有材料需要处理后才能组织主题"
+        return "running", "正在继续收口材料学习结果"
+
+    if project.stage == "organization":
+        if project.organization_version == 0:
+            return "preparing", "正在继续准备主题方案"
+        batches = await repo.list_research_batches(project.project_id, project.organization_version)
+        if any(batch.status in {"pending", "running"} for batch in batches):
+            return "running", "正在继续准备候选主题"
+        failed_batch = next((batch for batch in batches if batch.status == "needs_attention"), None)
+        if failed_batch is not None:
+            project.error_message = failed_batch.error_message
+            return "needs_attention", "候选主题研究仍需要处理"
+        topics = await repo.list_topics(project.project_id, project.organization_version)
+        samples = [topic for topic in topics if topic.is_sample]
+        attention = next((topic for topic in samples if topic.status == "needs_attention"), None)
+        if attention is not None:
+            project.error_message = attention.error_message
+            return "needs_attention", "讲义小样仍需要处理"
+        if samples and all(topic.status == "passed" for topic in samples):
+            return "awaiting_confirmation", "主题方案和讲义小样已就绪，等待确认怎么组织"
+        return "running", "正在继续准备主题方案和讲义小样"
+
+    if project.stage == "handout_compilation":
+        topics = await repo.list_topics(project.project_id, project.organization_version)
+        attention = next((topic for topic in topics if topic.status == "needs_attention"), None)
+        if attention is not None:
+            project.error_message = attention.error_message
+            return "needs_attention", "讲义仍需要处理后才能完成编译"
+        return "running", "正在继续编译专家讲义"
+
+    if project.stage == "release":
+        return "ready", "专家 Skill 成品已就绪，等待预览后手动启用"
+    raise ValueError("专家项目阶段无法恢复")
+
+
 async def prepare_expert_project(project_id: str) -> dict[str, Any]:
     """转换项目内尚未完成的原始材料，并按项目记录决定下一步。"""
 
@@ -175,6 +336,8 @@ async def prepare_expert_project(project_id: str) -> dict[str, Any]:
         project = await repo.get_project(project_id)
         if project is None:
             raise ValueError("专家项目不存在")
+        if project.status == "paused":
+            return {"project_id": project_id, "status": "paused"}
         if project.stage != ORIENTATION_STAGE:
             return {"project_id": project_id, "status": project.status}
         materials = await repo.list_project_materials(project_id)
@@ -381,6 +544,7 @@ async def run_project_orientation(
         for item in project_snapshot["method_samples"]
         if isinstance(item, dict) and item.get("material_id") in sample_material_ids
     }
+
     async def run_sample(material: Any, sample: dict[str, str]) -> dict[str, Any]:
         result = completed_samples.get(material.material_id)
         if result is not None:
@@ -643,6 +807,8 @@ async def run_material_learning_stage(
             raise ValueError("专家项目不存在")
         if project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
             return {"project_id": project_id, "ignored": True}
+        if project.status == "paused":
+            return {"project_id": project_id, "status": "paused"}
         materials = await repo.list_project_materials(project_id)
         pending_ids = [
             item.material_id for item in materials if item.status in {"pending", "learning", "review_revise"}
@@ -759,6 +925,8 @@ async def mark_project_attention(project_id: str, error: str) -> None:
         project = await repo.get_project(project_id)
         if project is None:
             return
+        if project.status == "paused":
+            return
         await repo.update_project(
             project_id,
             status="needs_attention",
@@ -770,8 +938,15 @@ async def mark_project_attention(project_id: str, error: str) -> None:
 async def _prepare_one_material(project_id: str, material_id: str) -> None:
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
         material = await repo.lock_material(material_id)
-        if material is None or material.project_id != project_id or material.status not in {"pending", "converting"}:
+        if (
+            project is None
+            or project.status != "preparing"
+            or material is None
+            or material.project_id != project_id
+            or material.status not in {"pending", "converting"}
+        ):
             return
         material.status = "converting"
         material.error_message = None
@@ -821,6 +996,7 @@ async def _learn_one_material(
             or material is None
             or material.project_id != project_id
             or project.stage != MATERIAL_LEARNING_STAGE
+            or project.status != "running"
             or project.method_version != method_version
             or material.status not in {"pending", "learning", "review_revise"}
         ):
@@ -892,6 +1068,7 @@ async def _learn_one_material(
         if (
             project is None
             or material is None
+            or project.status != "running"
             or project.method_version != method_version
             or material.status != "learning"
         ):
@@ -916,6 +1093,8 @@ async def _finish_material_learning(db: AsyncSession, project_id: str, method_ve
     project = await repo.get_project(project_id)
     if project is None or project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
         return "ignored"
+    if project.status == "paused":
+        return "paused"
     materials = await repo.list_project_materials(project_id)
     unfinished = [item for item in materials if item.status in {"pending", "learning", "review_revise"}]
     attention = [item for item in materials if item.status == "needs_attention"]
@@ -941,6 +1120,8 @@ async def _finish_material_preparation(db: AsyncSession, project_id: str) -> Non
     repo = ExpertRepository(db)
     project = await repo.get_project(project_id)
     if project is None or project.stage != ORIENTATION_STAGE:
+        return
+    if project.status == "paused":
         return
     materials = await repo.list_project_materials(project_id)
     unresolved = [item for item in materials if item.status == "needs_attention"]
@@ -1177,14 +1358,17 @@ def _serialize_material(material: Any) -> dict[str, Any]:
 __all__ = [
     "confirm_project_method",
     "create_expert_project",
+    "delete_expert_project",
     "exclude_material",
     "get_expert_project_detail",
     "get_expert_material_text",
     "list_expert_projects",
     "mark_project_attention",
+    "pause_expert_project",
     "prepare_expert_project",
     "retry_material_learning",
     "retry_material_preparation",
+    "resume_expert_project",
     "run_material_learning_stage",
     "run_method_calibration",
     "run_project_orientation",

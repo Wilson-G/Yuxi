@@ -147,7 +147,7 @@ async def run_organization_stage(
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
-        if project is None or project.organization_version != organization_version:
+        if project is None or project.status != "running" or project.organization_version != organization_version:
             return {"project_id": project_id, "ignored": True}
         project.organization_samples = sample_results
         project.status = "needs_attention" if needs_attention else "awaiting_confirmation"
@@ -272,7 +272,7 @@ async def _save_planning_groups(
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
-        if project is None or project.organization_version != organization_version:
+        if project is None or project.status != "running" or project.organization_version != organization_version:
             return
         project.planning_groups = grouping.model_dump()["groups"]
         await repo.replace_research_batches(
@@ -306,6 +306,7 @@ async def _research_one_batch(
         if (
             project is None
             or batch is None
+            or project.status != "running"
             or project.organization_version != organization_version
             or batch.status not in {"pending", "running"}
         ):
@@ -346,8 +347,9 @@ async def _research_one_batch(
             error = exc
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
         batch = await repo.lock_research_batch(batch_id)
-        if batch is None or batch.status != "running":
+        if project is None or project.status != "running" or batch is None or batch.status != "running":
             return
         if result is None:
             batch.status = "needs_attention"
@@ -369,7 +371,7 @@ async def _save_topic_map(
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
-        if project is None or project.organization_version != organization_version:
+        if project is None or project.status != "running" or project.organization_version != organization_version:
             return []
         project.topic_map = topic_map.model_dump()
         project.editorial_plan = topic_map.editorial_plan_markdown
@@ -410,7 +412,12 @@ async def prepare_topic_evidence(
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
         topic = await repo.lock_topic(topic_id)
-        if project is None or topic is None or project.organization_version != organization_version:
+        if (
+            project is None
+            or project.status != "running"
+            or topic is None
+            or project.organization_version != organization_version
+        ):
             return {"topic_id": topic_id, "status": "needs_attention", "reason": "组织版本已经变化"}
         if topic.status == "passed":
             return _serialize_sample_topic(topic)
@@ -443,8 +450,10 @@ async def prepare_topic_evidence(
         return await _save_topic_failure(topic_id, str(exc))
 
     async with pg_manager.get_async_session_context() as db:
-        topic = await ExpertRepository(db).lock_topic(topic_id)
-        if topic is None or topic.status != "preparing_evidence":
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        topic = await repo.lock_topic(topic_id)
+        if project is None or project.status != "running" or topic is None or topic.status != "preparing_evidence":
             return {"topic_id": topic_id, "status": "needs_attention", "reason": "主题状态已经变化"}
         topic.status = "evidence_ready"
         topic.evidence_pack = evidence_pack.model_dump()
@@ -486,7 +495,12 @@ async def write_topic_handout(
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
         topic = await repo.lock_topic(topic_id)
-        if project is None or topic is None or project.organization_version != organization_version:
+        if (
+            project is None
+            or project.status != "running"
+            or topic is None
+            or project.organization_version != organization_version
+        ):
             return {"topic_id": topic_id, "status": "needs_attention", "reason": "组织版本已经变化"}
         if topic is None or topic.status != "evidence_ready" or not topic.evidence_pack:
             return {"topic_id": topic_id, "status": "needs_attention", "reason": "主题证据包尚未准备完成"}
@@ -573,6 +587,7 @@ async def write_topic_handout(
         if (
             project is None
             or topic is None
+            or project.status != "running"
             or project.organization_version != organization_version
             or project.stage not in {"organization", "handout_compilation"}
             or topic.status != "writing"

@@ -15,18 +15,50 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 _LITE_MODE = os.getenv("LITE_MODE", "").lower() in {"true", "1"}
 
 
-async def test_task_routes_require_admin(test_client, standard_user):
-    """Non-admin users should be blocked from accessing task APIs."""
+async def test_standard_user_keeps_tasker_read_contract_without_expert_projection(test_client, standard_user):
+    """普通用户保留 Tasker 读取合同，但不能看到专家项目投影。"""
     headers = standard_user["headers"]
 
     list_response = await test_client.get("/api/tasks", headers=headers)
-    assert list_response.status_code == 403
+    assert list_response.status_code == 200
+    assert list_response.json()["tasks"] == []
 
     detail_response = await test_client.get("/api/tasks/some-task", headers=headers)
-    assert detail_response.status_code == 403
+    assert detail_response.status_code == 404
 
     cancel_response = await test_client.post("/api/tasks/some-task/cancel", headers=headers)
     assert cancel_response.status_code == 403
+
+    delete_response = await test_client.delete("/api/tasks/some-task", headers=headers)
+    assert delete_response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("get", "/api/expert-projects", {}),
+        ("get", "/api/expert-projects/not-real", {}),
+        (
+            "post",
+            "/api/expert-projects",
+            {
+                "data": {"name": "普通用户项目"},
+                "files": {"files": ("material.md", b"material", "text/markdown")},
+            },
+        ),
+        (
+            "post",
+            "/api/expert-projects/not-real/orientation",
+            {"json": {"representative_material_ids": ["material-1"]}},
+        ),
+    ],
+)
+async def test_expert_project_routes_require_admin(test_client, standard_user, method, path, kwargs):
+    """普通用户不能创建、读取或推进编译中的专家项目。"""
+
+    response = await getattr(test_client, method)(path, headers=standard_user["headers"], **kwargs)
+
+    assert response.status_code == 403
 
 
 async def test_admin_can_list_tasks(test_client, admin_headers):
@@ -39,6 +71,50 @@ async def test_admin_can_list_tasks(test_client, admin_headers):
     assert isinstance(payload["tasks"], list)
     assert "summary" in payload
     assert isinstance(payload["summary"], dict)
+
+
+async def test_admin_can_read_waiting_expert_projection_without_completion(test_client, admin_headers):
+    """管理员能读取专家项目投影，等待确认不会进入完成筛选。"""
+
+    create_response = await test_client.post(
+        "/api/expert-projects",
+        data={"name": f"pytest_task_project_{uuid.uuid4().hex[:8]}"},
+        files={"files": ("material.md", b"# Material\n\nComplete text.", "text/markdown")},
+        headers=admin_headers,
+    )
+    assert create_response.status_code == 200, create_response.text
+    project_id = create_response.json()["item"]["project_id"]
+
+    try:
+        for _ in range(40):
+            project_response = await test_client.get(f"/api/expert-projects/{project_id}", headers=admin_headers)
+            assert project_response.status_code == 200, project_response.text
+            if project_response.json()["item"]["status"] == "ready":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            pytest.fail("Expert project did not reach ready status within timeout")
+
+        detail_response = await test_client.get(
+            f"/api/tasks/expert-project:{project_id}",
+            headers=admin_headers,
+        )
+        completed_response = await test_client.get(
+            "/api/tasks",
+            params={"status": "success"},
+            headers=admin_headers,
+        )
+
+        assert detail_response.status_code == 200, detail_response.text
+        task = detail_response.json()["task"]
+        assert task["type"] == "expert_project"
+        assert task["status"] == "pending"
+        assert task["completed_at"] is None
+        assert completed_response.status_code == 200, completed_response.text
+        assert all(item["id"] != f"expert-project:{project_id}" for item in completed_response.json()["tasks"])
+    finally:
+        delete_response = await test_client.delete(f"/api/expert-projects/{project_id}", headers=admin_headers)
+        assert delete_response.status_code == 200, delete_response.text
 
 
 async def test_cancel_unknown_task_returns_client_error(test_client, admin_headers):

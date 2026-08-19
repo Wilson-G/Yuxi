@@ -97,6 +97,19 @@ class ExpertRepository:
         await self.db.flush()
         return project
 
+    async def delete_project(self, project_id: str) -> ExpertProject | None:
+        """在当前事务中删除项目及其级联事实。"""
+
+        project = await self.get_project(project_id)
+        if project is None:
+            return None
+        await self.db.execute(delete(ExpertTopic).where(ExpertTopic.project_id == project_id))
+        await self.db.execute(delete(ExpertResearchBatch).where(ExpertResearchBatch.project_id == project_id))
+        await self.db.execute(delete(ExpertMaterial).where(ExpertMaterial.project_id == project_id))
+        await self.db.execute(delete(ExpertProject).where(ExpertProject.project_id == project_id))
+        await self.db.flush()
+        return project
+
     async def create_materials(
         self,
         project_id: str,

@@ -27,10 +27,7 @@ async def list_tasks(
         if is_admin
         else {"tasks": [], "summary": {"total": 0, "status_counts": {}, "type_counts": {}}}
     )
-    expert_items = await list_expert_task_summaries(
-        db,
-        created_by=None if is_admin else str(current_user.uid),
-    )
+    expert_items = await list_expert_task_summaries(db, created_by=None) if is_admin else []
     material_items = await list_material_file_task_summaries(db) if is_admin else []
     all_items = [*tasker_result["tasks"], *expert_items, *material_items]
     items = all_items
@@ -63,22 +60,23 @@ async def get_task(
     db: AsyncSession = Depends(get_db),
 ):
     """Retrieve a single task by id."""
-    if task_id.startswith("expert-project:"):
+    is_admin = current_user.role in {"admin", "superadmin"}
+    if is_admin and task_id.startswith("expert-project:"):
         task = await get_expert_task_summary(
             db,
             task_id.removeprefix("expert-project:"),
-            created_by=None if current_user.role in {"admin", "superadmin"} else str(current_user.uid),
+            created_by=None,
         )
         if task:
             return {"task": task}
-    if task_id.startswith("material-source:") and current_user.role in {"admin", "superadmin"}:
+    if is_admin and task_id.startswith("material-source:"):
         task = await get_material_file_task_summary(
             db,
             task_id.removeprefix("material-source:"),
         )
         if task:
             return {"task": task}
-    if current_user.role not in {"admin", "superadmin"}:
+    if not is_admin:
         raise HTTPException(status_code=404, detail="Task not found")
     task = await tasker.get_task(task_id)
     if not task:

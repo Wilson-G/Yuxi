@@ -10,18 +10,21 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.utils.auth_middleware import get_db, get_required_user
+from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.agents.models import resolve_chat_model_spec
 from yuxi.config.options import system_options
 from yuxi.expert.service import (
     confirm_project_method,
     create_expert_project,
+    delete_expert_project,
     exclude_material,
     get_expert_material_text,
     get_expert_project_detail,
     list_expert_projects,
+    pause_expert_project,
     retry_material_learning,
     retry_material_preparation,
+    resume_expert_project,
     start_project_orientation,
 )
 from yuxi.expert.compilation_service import (
@@ -29,6 +32,7 @@ from yuxi.expert.compilation_service import (
     get_candidate_preview,
     retry_book_compilation,
     retry_topic_compilation,
+    uninstall_expert_skill,
 )
 from yuxi.expert.organization_service import (
     confirm_organization_stage,
@@ -42,13 +46,18 @@ from yuxi.expert.worker import (
     enqueue_organization,
     enqueue_project_orientation,
     enqueue_project_preparation,
+    enqueue_resumed_expert_project,
 )
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.logging_config import logger
 from yuxi.utils.upload_utils import write_upload_to_path
 
-expert_projects = APIRouter(prefix="/expert-projects", tags=["expert-projects"])
+expert_projects = APIRouter(
+    prefix="/expert-projects",
+    tags=["expert-projects"],
+    dependencies=[Depends(get_admin_user)],
+)
 MAX_PROJECT_UPLOAD_BYTES = int(os.getenv("EXPERT_PROJECT_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
 
 
@@ -387,6 +396,87 @@ async def activate_expert_skill_route(
             current_user=current_user,
         )
         return {"project_id": project_id, "status": "enabled", "skill": skill}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@expert_projects.post("/{project_id}/pause")
+async def pause_expert_project_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """暂停项目并让恢复扫描跳过它。"""
+
+    try:
+        project = await pause_expert_project(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        return {"project_id": project.project_id, "status": project.status}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@expert_projects.post("/{project_id}/resume")
+async def resume_expert_project_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """显式恢复暂停项目，并按项目事实重新投递必要工作。"""
+
+    try:
+        project = await resume_expert_project(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        await enqueue_resumed_expert_project(project_id)
+        return {
+            "project_id": project.project_id,
+            "stage": project.stage,
+            "status": project.status,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@expert_projects.post("/{project_id}/uninstall")
+async def uninstall_expert_skill_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """卸载已启用专家 Skill，保留项目候选成品以便再次启用。"""
+
+    try:
+        project = await uninstall_expert_skill(
+            db,
+            project_id=project_id,
+            current_user=current_user,
+        )
+        return {"project_id": project.project_id, "status": project.status}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@expert_projects.delete("/{project_id}")
+async def delete_expert_project_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除暂停或未运行且未启用 Skill 的专家项目。"""
+
+    try:
+        await delete_expert_project(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        return {"project_id": project_id, "status": "deleted"}
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

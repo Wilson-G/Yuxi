@@ -14,7 +14,13 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.agents.skills.repository import SkillRepository
-from yuxi.agents.skills.service import import_skill_dir, replace_skill_dir, update_skill_enabled, user_can_manage_skill
+from yuxi.agents.skills.service import (
+    delete_skill,
+    import_skill_dir,
+    replace_skill_dir,
+    update_skill_enabled,
+    user_can_manage_skill,
+)
 from yuxi.expert.contracts import (
     BookReviewResult,
     HandoutDraftResult,
@@ -98,6 +104,34 @@ async def activate_expert_skill(
     project.updated_at = utc_now_naive()
     await db.commit()
     return installed.to_dict()
+
+
+async def uninstall_expert_skill(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    current_user: User,
+) -> Any:
+    """复用通用 Skill 删除后，把项目恢复为可再次启用的候选成品。"""
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != str(current_user.uid):
+        raise ValueError("专家项目不存在")
+    if project.status != "enabled" or not project.skill_slug:
+        raise ValueError("当前项目没有已启用的专家 Skill")
+    installed = await SkillRepository(db).get_by_slug(project.skill_slug)
+    if installed is None:
+        raise ValueError("已启用的专家 Skill 不存在")
+    if not user_can_manage_skill(current_user, installed):
+        raise ValueError("当前用户无权卸载专家 Skill")
+
+    project.status = "ready"
+    project.message = "专家 Skill 已卸载，可再次启用候选成品"
+    project.error_message = None
+    project.updated_at = utc_now_naive()
+    await delete_skill(db, slug=project.skill_slug)
+    return project
 
 
 async def get_candidate_preview(
@@ -367,7 +401,11 @@ async def _stop_for_topic_attention(project_id: str, topics: list[Any]) -> bool:
 
 async def _mark_compilation_attention(project_id: str, reason: str) -> None:
     async with pg_manager.get_async_session_context() as db:
-        await ExpertRepository(db).update_project(
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        if project is None or project.status == "paused":
+            return
+        await repo.update_project(
             project_id,
             status="needs_attention",
             message="讲义或全书收口存在需要处理的问题",
@@ -510,7 +548,12 @@ async def _revise_topic_from_book_review(
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
         topic = await repo.lock_topic(topic_id)
-        if project is None or topic is None or project.organization_version != organization_version:
+        if (
+            project is None
+            or project.status != "running"
+            or topic is None
+            or project.organization_version != organization_version
+        ):
             return False
         materials = await repo.list_project_materials(project_id)
         selected = [item for item in materials if item.material_id in set(topic.material_ids or [])]
@@ -580,7 +623,12 @@ async def _revise_topic_from_book_review(
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
         topic = await repo.lock_topic(topic_id)
-        if project is None or topic is None or project.organization_version != organization_version:
+        if (
+            project is None
+            or project.status != "running"
+            or topic is None
+            or project.organization_version != organization_version
+        ):
             return False
         topic.handout = revised.handout_markdown
         topic.handout_contract = revised.model_dump()
@@ -595,16 +643,22 @@ async def _revise_topic_from_book_review(
 
 async def _mark_topic_attention(topic_id: str, reason: str) -> None:
     async with pg_manager.get_async_session_context() as db:
-        topic = await ExpertRepository(db).lock_topic(topic_id)
-        if topic is not None:
-            topic.status = "needs_attention"
-            topic.error_message = reason
-            await ExpertRepository(db).update_project(
-                topic.project_id,
-                status="needs_attention",
-                message="全书收口修订存在需要处理的讲义",
-                error_message=reason,
-            )
+        repo = ExpertRepository(db)
+        topic = await repo.lock_topic(topic_id)
+        if topic is None:
+            return
+        project = await repo.get_project(topic.project_id)
+        if project is None or project.status == "paused":
+            return
+
+        topic.status = "needs_attention"
+        topic.error_message = reason
+        await repo.update_project(
+            topic.project_id,
+            status="needs_attention",
+            message="全书收口修订存在需要处理的讲义",
+            error_message=reason,
+        )
 
 
 def _validate_book_review(review: BookReviewResult, topic_keys: set[str]) -> None:
@@ -635,4 +689,5 @@ __all__ = [
     "retry_book_compilation",
     "retry_topic_compilation",
     "run_handout_compilation",
+    "uninstall_expert_skill",
 ]
