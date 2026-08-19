@@ -126,7 +126,7 @@
                 <div class="flow-row">
                   <div class="flow-node">
                     <span class="flow-icon"><Workflow :size="22" /></span>
-                    <span class="flow-name">智能体 Harness</span>
+                    <span class="flow-name">可靠材料</span>
                   </div>
 
                   <div class="flow-link" aria-hidden="true">
@@ -150,7 +150,7 @@
                       <span class="hub-ring"></span>
                       <Sparkles :size="24" />
                     </span>
-                    <span class="flow-name">RAG 引擎</span>
+                    <span class="flow-name">学习与 Review</span>
                   </div>
 
                   <div class="flow-link" aria-hidden="true">
@@ -171,11 +171,11 @@
 
                   <div class="flow-node">
                     <span class="flow-icon"><Library :size="22" /></span>
-                    <span class="flow-name">知识库</span>
+                    <span class="flow-name">专家 Skill</span>
                   </div>
                 </div>
 
-                <p class="flow-caption">智能体发起检索 · 引擎融合向量与图谱 · 召回知识增强生成</p>
+                <p class="flow-caption">项目定向 · 逐份学艺 · 总编成书 · 预览启用</p>
               </div>
 
               <div class="stat-row" v-if="realtimeStats.length">

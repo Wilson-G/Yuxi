@@ -32,9 +32,7 @@ class RecordingStructuredModel:
         self.calls.append({"messages": list(messages)})
         response = self.responses.pop(0)
         content = (
-            response
-            if isinstance(response, str)
-            else json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+            response if isinstance(response, str) else json.dumps(response, ensure_ascii=False, separators=(",", ":"))
         )
         return AIMessage(content=content)
 
@@ -462,6 +460,8 @@ async def test_handout_editor_submits_complete_next_editorial_plan() -> None:
     for prompt, system_prompt in ((draft_prompt, draft_system), (revision_prompt, revision_system)):
         assert "完整的下一版有效编辑方案" in system_prompt
         assert "不是修改摘要或增量补丁" in system_prompt
+        assert "humanizer-zh" in system_prompt
+        assert "不得添加第一人称感受" in system_prompt
         assert "完整的下一版有效编辑方案" not in prompt
         assert topic in prompt
         assert notes in prompt
@@ -474,6 +474,68 @@ async def test_handout_editor_submits_complete_next_editorial_plan() -> None:
     assert "保留判断条件" in revision_prompt
     assert review.issues[0].problem in revision_prompt
     assert revised.editorial_plan_markdown == "EDITORIAL-PLAN-AFTER-REVISION"
+    assert model.responses == []
+
+
+@pytest.mark.asyncio
+async def test_single_handout_book_review_does_not_escalate_style_polish_to_attention() -> None:
+    """单篇讲义的全书收口只检查与既有结论的明确冲突。"""
+
+    model = RecordingStructuredModel([{"decision": "pass", "summary": "单篇讲义无需跨篇修订", "issues": []}])
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+
+    review = await tasks.review_book(
+        model_spec="provider:model",
+        learning_plan="CONFIRMED-LEARNING-PLAN",
+        stage_prompt="BOOK-EDITOR-PROMPT",
+        editorial_plan="CURRENT-EDITORIAL-PLAN",
+        handouts="## [topic-a] 单篇讲义\n\n正文",
+    )
+
+    system_prompt = _system_prompt(model.calls[0])
+    assert review.decision == "pass"
+    assert "当前只有一篇正式讲义" in system_prompt
+    assert "标题润色" in system_prompt
+    assert "句式偏好或“还可以更好”要求修订" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_navigation_and_skill_writing_use_humanizer_zh_guidance() -> None:
+    """可发布的导航和 Skill 使用入口沿用同一套成品表达规则。"""
+
+    model = RecordingStructuredModel(
+        [
+            {"navigation_markdown": "# 读者导航\n从当前局面进入对应讲义。"},
+            {"navigation_markdown": "# 统一导航\n按真实问题选择讲义。"},
+            {"skill_markdown": "按判断条件选择讲义，并核对证据范围。"},
+        ]
+    )
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    book_review = model_tasks.BookReviewResult(decision="pass", summary="全书通过", issues=[])
+
+    await tasks.write_navigation(
+        model_spec="provider:model",
+        stage_prompt="NAVIGATION-AUTHOR-PROMPT",
+        editorial_plan="FINAL-EDITORIAL-PLAN",
+        book_review=book_review,
+        handouts="正式讲义",
+    )
+    await tasks.merge_navigation(
+        model_spec="provider:model",
+        stage_prompt="NAVIGATION-AUTHOR-PROMPT",
+        editorial_plan="FINAL-EDITORIAL-PLAN",
+        section_navigations="分区导航",
+    )
+    await tasks.write_skill_body(
+        model_spec="provider:model",
+        stage_prompt="SKILL-AUTHOR-PROMPT",
+        learning_plan="CONFIRMED-LEARNING-PLAN",
+        editorial_plan="FINAL-EDITORIAL-PLAN",
+        book_review=book_review,
+        navigation="统一导航",
+    )
+
+    assert all("humanizer-zh" in _system_prompt(call) for call in model.calls)
     assert model.responses == []
 
 
@@ -524,9 +586,7 @@ async def test_method_calibration_only_receives_current_method_and_sample_notes_
 async def test_method_calibration_assessment_reads_only_v1_and_v2_samples() -> None:
     """残余评估只比较两轮小样，不以问题数量机械决定结果。"""
 
-    model = RecordingStructuredModel(
-        [{"decision": "acceptable_residual", "reason": "局部问题可由逐篇 Repair 关闭"}]
-    )
+    model = RecordingStructuredModel([{"decision": "acceptable_residual", "reason": "局部问题可由逐篇 Repair 关闭"}])
     tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
     assessment = await tasks.assess_method_calibration(
         model_spec="provider:model",

@@ -29,6 +29,7 @@ import TaskCenterDrawer from '@/components/TaskCenterDrawer.vue'
 import SettingsModal from '@/components/SettingsModal.vue'
 import ConversationNavSection from '@/components/ConversationNavSection.vue'
 import ConversationSearchModal from '@/components/ConversationSearchModal.vue'
+import { isMobileLayoutViewport } from '@/utils/responsiveLayout'
 
 const configStore = useConfigStore()
 const agentStore = useAgentStore()
@@ -55,6 +56,16 @@ const settingsInitialTab = ref('')
 
 const { sidebarCollapsed } = storeToRefs(chatUIStore)
 const conversationSearchOpen = ref(false)
+const isMobileViewport = ref(false)
+
+/** 同步当前布局模式，并在首次进入移动端时收起侧栏。 */
+const syncViewportLayout = () => {
+  const nextIsMobile = isMobileLayoutViewport(window.innerWidth)
+  if (nextIsMobile && !isMobileViewport.value) {
+    sidebarCollapsed.value = true
+  }
+  isMobileViewport.value = nextIsMobile
+}
 
 // Provide settings modal methods to child components
 const openSettingsModal = (tab) => {
@@ -99,13 +110,15 @@ const fetchGithubStars = async () => {
 }
 
 onMounted(async () => {
+  syncViewportLayout()
+  window.addEventListener('resize', syncViewportLayout)
+
   // 加载信息配置与知识库数据无依赖，可并行
   await Promise.all([infoStore.loadInfoConfig(), getRemoteDatabase()])
   await initAgentNavigation()
   await getRemoteConfig()
-  // 仅管理员加载任务中心数据
+  taskerStore.loadTasks()
   if (userStore.isAdmin) {
-    taskerStore.loadTasks()
     fetchGithubStars() // Fetch GitHub stars on mount
   }
   startThreadStatusSync()
@@ -129,6 +142,8 @@ const startThreadStatusSync = () => {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('resize', syncViewportLayout)
+
   if (threadStatusSyncTimer) {
     clearInterval(threadStatusSyncTimer)
     threadStatusSyncTimer = null
@@ -143,7 +158,7 @@ const activeConversationThreadId = computed(() => {
   return route.path.startsWith('/agent') ? currentThreadId.value : null
 })
 const organizationName = computed(() => {
-  return infoStore.organization.name || infoStore.branding.name || 'Yuxi'
+  return infoStore.organization.name || infoStore.branding.name || '知铸'
 })
 
 // 下面是导航菜单部分，添加智能体项
@@ -174,7 +189,7 @@ const mainList = computed(() => {
   })
 
   items.push({
-    name: '知识库 · 技能',
+    name: '专家 · 技能',
     path: '/extensions',
     activePaths: ['/extensions'],
     icon: LibraryBig,
@@ -283,8 +298,12 @@ const handleTogglePinChat = async (threadId) => {
 }
 
 watch(
-  () => [route.path, route.params.thread_id],
+  () => route.fullPath,
   () => {
+    if (isMobileViewport.value) {
+      setSidebarCollapsed(true)
+    }
+
     if (!route.path.startsWith('/agent')) return
     const threadId = typeof route.params.thread_id === 'string' ? route.params.thread_id : null
     chatThreadsStore.setCurrentThreadId(threadId)
@@ -300,7 +319,20 @@ provide('settingsModal', {
 
 <template>
   <div class="app-layout" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
-    <div class="header">
+    <button
+      v-if="isMobileViewport && sidebarCollapsed"
+      type="button"
+      class="mobile-sidebar-trigger lucide-icon-btn"
+      aria-label="展开侧边栏"
+      aria-controls="app-sidebar"
+      :aria-expanded="!sidebarCollapsed"
+      title="展开侧边栏"
+      @click="setSidebarCollapsed(false)"
+    >
+      <PanelLeftOpen :size="20" />
+    </button>
+
+    <div id="app-sidebar" class="header">
       <div class="sidebar-brand" @click.stop>
         <router-link v-if="!sidebarCollapsed" to="/" class="brand-link">
           <img :src="infoStore.organization.avatar" class="brand-avatar" />
@@ -320,7 +352,8 @@ provide('settingsModal', {
           v-if="!sidebarCollapsed"
           type="button"
           class="sidebar-toggle"
-          aria-label="折叠侧边栏"
+          :aria-label="isMobileViewport ? '关闭侧边栏' : '折叠侧边栏'"
+          :title="isMobileViewport ? '关闭侧边栏' : '折叠侧边栏'"
           @click="toggleSidebar"
         >
           <PanelLeft size="18" />
@@ -403,7 +436,7 @@ provide('settingsModal', {
             <template #title>欢迎 Star</template>
             <a href="https://github.com/xerrors/Yuxi" target="_blank" class="github-link">
               <GithubOutlined class="icon" />
-              <span class="nav-text">GitHub</span>
+              <span class="nav-text">ZhiForge</span>
               <span v-if="githubStars > 0" class="github-stars">
                 <span class="star-count">{{ (githubStars / 1000).toFixed(1) }}k</span>
               </span>
@@ -413,7 +446,7 @@ provide('settingsModal', {
         <!-- 用户信息组件 -->
         <div class="nav-item user-info" @click.stop>
           <UserInfoComponent :show-role="!sidebarCollapsed">
-            <template v-if="userStore.isAdmin" #actions>
+            <template #actions>
               <a-tooltip placement="top" title="任务中心">
                 <button
                   class="user-task-center"
@@ -437,6 +470,15 @@ provide('settingsModal', {
         </div>
       </div>
     </div>
+
+    <button
+      v-if="isMobileViewport && !sidebarCollapsed"
+      type="button"
+      class="mobile-sidebar-backdrop"
+      aria-label="关闭侧边栏"
+      @click="setSidebarCollapsed(true)"
+    ></button>
+
     <router-view v-slot="{ Component, route }" id="app-router-view">
       <keep-alive v-if="route.meta.keepAlive !== false">
         <component :is="Component" />
@@ -465,7 +507,7 @@ provide('settingsModal', {
     >
       <DebugComponent />
     </a-modal>
-    <TaskCenterDrawer v-if="userStore.isAdmin" />
+    <TaskCenterDrawer />
     <SettingsModal
       v-model:visible="showSettingsModal"
       :initial-tab="settingsInitialTab"
@@ -507,6 +549,11 @@ provide('settingsModal', {
   min-width: var(--min-width);
 }
 
+.mobile-sidebar-trigger,
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
 div.header,
 #app-router-view {
   height: 100%;
@@ -534,7 +581,8 @@ div.header,
   user-select: none;
   transition:
     width 0.18s ease,
-    flex-basis 0.18s ease;
+    flex-basis 0.18s ease,
+    transform 0.18s ease;
 
   .nav {
     display: flex;
@@ -927,6 +975,99 @@ div.header,
         }
       }
     }
+  }
+}
+
+@media (max-width: 768px) {
+  .app-layout {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  #app-router-view {
+    width: 100%;
+    max-width: 100vw;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .header {
+    position: fixed;
+    z-index: 100;
+    inset: 0 auto 0 0;
+    width: min(@sidebar-width, calc(100vw - 48px));
+    max-width: calc(100vw - 48px);
+    height: 100vh;
+    flex-basis: auto;
+    transform: translateX(0);
+
+    .sidebar-brand {
+      min-height: 40px;
+      height: 40px;
+    }
+
+    .brand-link,
+    .nav-item,
+    .sidebar-toggle {
+      min-height: 40px;
+    }
+
+    .nav-item {
+      height: 40px;
+    }
+
+    .sidebar-toggle {
+      width: 40px;
+      height: 40px;
+      flex-basis: 40px;
+    }
+  }
+
+  .app-layout.sidebar-collapsed .header {
+    width: min(@sidebar-width, calc(100vw - 48px));
+    max-width: calc(100vw - 48px);
+    flex-basis: auto;
+    transform: translateX(-100%);
+  }
+
+  .mobile-sidebar-trigger {
+    position: fixed;
+    z-index: 90;
+    top: 12px;
+    left: 12px;
+    display: inline-flex;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--gray-150);
+    border-radius: 8px;
+    background: var(--gray-0);
+    color: var(--gray-700);
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      border-color: var(--main-50);
+      background: var(--main-20);
+      color: var(--main-color);
+      outline: none;
+    }
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    z-index: 80;
+    inset: 0;
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--gray-1000) 28%, transparent);
+    cursor: pointer;
   }
 }
 </style>

@@ -112,6 +112,15 @@ const router = createRouter({
           },
           children: [
             {
+              path: 'expert-project/:projectId',
+              name: 'ExtensionExpertProjectDetail',
+              component: () => import('../views/ExpertProjectView.vue'),
+              meta: {
+                keepAlive: false,
+                requiresAuth: true
+              }
+            },
+            {
               path: 'knowledgebase/:kbId',
               name: 'ExtensionKnowledgeBaseDetail',
               component: () => import('../views/DataBaseInfoView.vue'),

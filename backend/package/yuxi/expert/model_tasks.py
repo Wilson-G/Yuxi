@@ -35,6 +35,16 @@ from yuxi.models.providers.cache import model_cache
 PROMPT_DESIGNER_ROOT = Path(__file__).parent / "prompt_designer"
 ContractT = TypeVar("ContractT", bound=BaseModel)
 
+ARTIFACT_HUMANIZER_ZH_GUIDANCE = """
+成品表达采用 humanizer-zh 的编辑原则：直接说明材料已经支持的判断，不用广告语、空泛拔高、
+模板化过渡、机械三段式、含糊归因或为了显得有力而写的金句。句子长短可以自然变化，
+但不要为了变化而改动判断顺序、适用条件、证据指向或章节结构。
+
+这是一份专家讲义，不是聊天或随笔。不得添加第一人称感受、幽默、主观看法、材料外例子，
+也不得用省略事实的方式换取简短。保留读者完成判断所需的具体信号、动作、条件、边界和引用；
+Markdown 标题、列表和响应合同要求的结构同样必须保留。
+""".strip()
+
 
 class ExpertContextLimitError(ValueError):
     """当前完整任务输入已经超过所选模型的上下文范围。"""
@@ -181,9 +191,7 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             MethodCalibrationResult,
-            system=_stage_system(
-                "你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。"
-            ),
+            system=_stage_system("你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。"),
             prompt=prompt,
         )
 
@@ -500,7 +508,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             HandoutDraftResult,
-            system=_stage_system(stage_prompt, task_instruction),
+            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
             prompt=prompt,
         )
 
@@ -587,7 +595,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             HandoutDraftResult,
-            system=_stage_system(stage_prompt, task_instruction),
+            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
             prompt=prompt,
         )
 
@@ -606,6 +614,10 @@ V2 小样结果：
 你是当前项目唯一的总编模型。现在只做全书一致性检查，不新增材料外判断。
 检查术语、主题边界、多来源观点、重复、缺口、证据边界和回答姿态；
 需要修订时必须指明受影响的 topic_key 和具体方向。
+
+若当前只有一篇正式讲义，不要把全书收口变成第三次单篇审稿，也不要因标题润色、
+句式偏好或“还可以更好”要求修订。只有讲义与当前编辑方案、已通过的单篇 Review
+或证据范围存在明确冲突时，才返回 revise。
 """.strip()
         prompt = f"""
 
@@ -649,7 +661,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             NavigationResult,
-            system=_stage_system(stage_prompt),
+            system=_stage_system(stage_prompt, ARTIFACT_HUMANIZER_ZH_GUIDANCE),
             prompt=prompt,
         )
 
@@ -707,7 +719,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             NavigationResult,
-            system=_stage_system(stage_prompt, task_instruction),
+            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
             prompt=prompt,
         )
 
@@ -743,7 +755,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             SkillBodyResult,
-            system=_stage_system(stage_prompt, task_instruction),
+            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
             prompt=prompt,
         )
 
@@ -776,8 +788,7 @@ V2 小样结果：
                 attempt_messages.append(
                     HumanMessage(
                         content=(
-                            "上一轮输出不符合 JSONL 合同。请重新只输出一行完整 JSON，"
-                            "不要解释、Markdown 或额外字符。"
+                            "上一轮输出不符合 JSONL 合同。请重新只输出一行完整 JSON，不要解释、Markdown 或额外字符。"
                         )
                     )
                 )

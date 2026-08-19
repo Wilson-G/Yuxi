@@ -12,6 +12,7 @@ export * from './tasker' // 任务管理API
 export * from './department_api' // 部门管理API
 export * from './mcp_api' // MCP API
 export * from './skill_api' // Skills API
+export * from './expert_api' // 专家项目 API
 export * from './tool_api' // 工具 API
 export * from './mention_api' // 提及搜索 API
 export * from './user_api' // 用户资源 API

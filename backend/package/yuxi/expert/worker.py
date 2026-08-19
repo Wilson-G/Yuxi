@@ -130,7 +130,10 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
 
     async with _project_job_lock(project_id):
         try:
-            return await run_method_calibration(project_id, method_version)
+            result = await run_method_calibration(project_id, method_version)
+            if result.get("status") == "running":
+                await enqueue_material_learning(project_id, method_version)
+            return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
                 raise Retry(defer=10) from exc

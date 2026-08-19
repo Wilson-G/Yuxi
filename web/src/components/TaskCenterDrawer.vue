@@ -40,15 +40,15 @@
           :class="taskCardClasses(task)"
           @click="handleDetail(task.id)"
         >
-          <!-- 状态指示器 -->
-          <div class="task-card-status-indicator" :class="`status-${task.status}`">
-            <span class="status-dot"></span>
-            <span class="status-text">{{ statusLabel(task.status) }}</span>
-          </div>
-
           <div class="task-card-header">
             <div class="task-card-info">
-              <div class="task-card-title">{{ task.name }}</div>
+              <div class="task-card-title-row">
+                <div class="task-card-title">{{ task.name }}</div>
+                <div class="task-card-status-indicator" :class="`status-${task.status}`">
+                  <span class="status-dot"></span>
+                  <span class="status-text">{{ statusLabel(task.status) }}</span>
+                </div>
+              </div>
               <div class="task-card-meta">
                 <span class="task-card-type">{{ taskTypeLabel(task.type) }}</span>
                 <span class="task-card-id">#{{ formatTaskId(task.id) }}</span>
@@ -99,7 +99,7 @@
                 type="text"
                 size="small"
                 danger
-                v-if="isTaskCompleted(task)"
+                v-if="canDelete(task)"
                 @click.stop="handleDelete(task.id, task.name)"
               >
                 删除
@@ -195,7 +195,8 @@ const TASK_TYPE_LABELS = {
   knowledge_index: '文档入库',
   knowledge_graph_index: '图谱构建',
   dataset_generation: '评估集生成',
-  rag_evaluation: 'RAG 评估'
+  rag_evaluation: 'RAG 评估',
+  expert_project: '专家项目'
 }
 
 const isActiveStatus = (status) => Boolean(STATUS_CONFIG[status]) && !STATUS_CONFIG[status].terminal
@@ -228,7 +229,7 @@ const emptyHint = computed(() => {
     default:
       return {
         title: '暂无任务',
-        subtitle: '提交知识库导入等后台任务后，将在这里展示实时进度（仅展示最近的 100 个任务）。'
+        subtitle: '提交专家学习或其他后台任务后，将在这里展示实时进度（仅展示最近的 100 个任务）。'
       }
   }
 })
@@ -394,7 +395,15 @@ function progressStatus(status) {
 }
 
 function canCancel(task) {
-  return Boolean(STATUS_CONFIG[task.status]?.cancelable) && !task.cancel_requested
+  return (
+    task.type !== 'expert_project' &&
+    Boolean(STATUS_CONFIG[task.status]?.cancelable) &&
+    !task.cancel_requested
+  )
+}
+
+function canDelete(task) {
+  return task.type !== 'expert_project' && isTaskCompleted(task)
 }
 </script>
 <style scoped lang="less">
@@ -477,14 +486,13 @@ function canCancel(task) {
 
 /* 状态指示器 */
 .task-card-status-indicator {
-  position: absolute;
-  top: 14px;
-  right: 14px;
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 5px;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -550,16 +558,28 @@ function canCancel(task) {
 }
 
 .task-card-header {
-  padding-right: 80px; /* 为状态指示器留出空间 */
+  min-width: 0;
 }
 
 .task-card-info {
   display: flex;
+  min-width: 0;
+  width: 100%;
   flex-direction: column;
   gap: 5px;
 }
 
+.task-card-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .task-card-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--gray-900);
@@ -572,9 +592,15 @@ function canCancel(task) {
 .task-card-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   font-size: 12px;
   color: var(--gray-500);
+
+  > span {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
 }
 
 .task-card-id {
@@ -630,19 +656,27 @@ function canCancel(task) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding-top: 4px;
   border-top: 1px solid var(--gray-100);
 }
 
 .task-card-times {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 12px;
   color: var(--gray-400);
+
+  > span {
+    white-space: nowrap;
+  }
 }
 
 .task-card-actions {
   display: flex;
+  flex: 0 0 auto;
   gap: 2px;
 }
 
@@ -686,5 +720,100 @@ function canCancel(task) {
   max-width: 320px;
   line-height: 1.5;
   color: var(--gray-400);
+}
+
+@media (max-width: 576px) {
+  :global(.task-center-modal) {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px);
+    margin: 12px auto;
+    top: 0;
+    padding-bottom: 0;
+  }
+
+  :global(.task-center-modal .ant-modal-content) {
+    padding: 16px;
+  }
+
+  .task-center {
+    max-height: calc(100dvh - 170px);
+    gap: 12px;
+  }
+
+  .task-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .task-filter-group {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+
+    :deep(.ant-segmented) {
+      min-width: max-content;
+    }
+  }
+
+  .task-toolbar-actions {
+    align-self: flex-end;
+
+    :deep(.ant-btn) {
+      min-height: 40px;
+    }
+  }
+
+  .task-list {
+    gap: 10px;
+    padding-right: 2px;
+  }
+
+  .task-card {
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .task-card-title-row {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .task-card-title {
+    flex-basis: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .task-card-meta {
+    gap: 4px 8px;
+  }
+
+  .task-card-message,
+  .task-card-error {
+    padding: 9px 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .task-card-footer {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .task-card-times {
+    flex: 1 1 180px;
+    row-gap: 4px;
+  }
+
+  .task-card-actions {
+    margin-left: auto;
+
+    :deep(.ant-btn) {
+      min-height: 40px;
+      padding: 0 12px;
+    }
+  }
 }
 </style>

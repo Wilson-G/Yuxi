@@ -163,6 +163,29 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
 
 
 @pytest.mark.asyncio
+async def test_method_calibration_queues_material_learning_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """方法校准进入批量学习后，Worker 必须投递材料学习任务。"""
+
+    async def finish_calibration(project_id: str, method_version: int) -> dict:
+        return {"project_id": project_id, "method_version": method_version, "status": "running"}
+
+    queued: list[tuple[str, int]] = []
+
+    async def queue_material_learning(project_id: str, method_version: int) -> None:
+        queued.append((project_id, method_version))
+
+    monkeypatch.setattr(worker, "run_method_calibration", finish_calibration)
+    monkeypatch.setattr(worker, "enqueue_material_learning", queue_material_learning)
+
+    result = await worker.process_expert_method_calibration({"job_try": 1}, "calibrated-project", 2)
+
+    assert result == {"project_id": "calibrated-project", "method_version": 2, "status": "running"}
+    assert queued == [("calibrated-project", 2)]
+
+
+@pytest.mark.asyncio
 async def test_duplicate_project_runners_wait_for_the_active_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     first_started = asyncio.Event()
     release_first = asyncio.Event()
