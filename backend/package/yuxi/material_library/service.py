@@ -534,15 +534,13 @@ async def _ensure_directory_path(
     for name in path.parts:
         parts.append(name)
         relative_path = "/".join(parts)
-        directory = await repo.get_directory_by_path(library_id, relative_path)
-        if directory is None:
-            directory = await repo.create_directory(
-                directory_id=uuid4().hex,
-                library_id=library_id,
-                parent_id=parent.directory_id if parent is not None else None,
-                name=name,
-                relative_path=relative_path,
-            )
+        directory = await repo.ensure_directory(
+            directory_id=uuid4().hex,
+            library_id=library_id,
+            parent_id=parent.directory_id if parent is not None else None,
+            name=name,
+            relative_path=relative_path,
+        )
         parent = directory
     return parent
 

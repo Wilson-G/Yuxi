@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.models_business import ExpertMaterial
@@ -60,6 +61,38 @@ class MaterialLibraryRepository:
         )
         self.db.add(directory)
         await self.db.flush()
+        return directory
+
+    async def ensure_directory(
+        self,
+        *,
+        directory_id: str,
+        library_id: str,
+        parent_id: str | None,
+        name: str,
+        relative_path: str,
+    ) -> MaterialDirectory:
+        """原子创建目录，路径已存在时返回同一条目录事实。"""
+
+        statement = (
+            insert(MaterialDirectory)
+            .values(
+                directory_id=directory_id,
+                library_id=library_id,
+                parent_id=parent_id,
+                name=name,
+                relative_path=relative_path,
+            )
+            .on_conflict_do_nothing(index_elements=["library_id", "relative_path"])
+            .returning(MaterialDirectory)
+        )
+        directory = (await self.db.execute(statement)).scalar_one_or_none()
+        if directory is not None:
+            return directory
+
+        directory = await self.get_directory_by_path(library_id, relative_path)
+        if directory is None:
+            raise RuntimeError(f"目录创建后无法读取: {relative_path}")
         return directory
 
     async def get_directory(self, directory_id: str) -> MaterialDirectory | None:
