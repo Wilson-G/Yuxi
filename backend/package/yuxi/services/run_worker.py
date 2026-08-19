@@ -8,10 +8,20 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from arq import func
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.agents.skills.service import init_builtin_skills
+from yuxi.expert.worker import (
+    process_expert_method_calibration,
+    process_expert_material_learning,
+    process_expert_handout_compilation,
+    process_expert_organization,
+    process_expert_project_orientation,
+    process_expert_project_preparation,
+    recover_expert_project_jobs,
+)
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.agent_request_queue_service import (
     RUN_STATUS_TO_DELIVERY_STATUS,
@@ -36,6 +46,7 @@ LOADING_FLUSH_INTERVAL_MS = 100
 LOADING_FLUSH_MAX_CHARS = 512
 RUN_CANCEL_POLL_SECONDS = 0.2
 SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
+EXPERT_STAGE_TIMEOUT_SECONDS = int(os.getenv("EXPERT_STAGE_TIMEOUT_SECONDS", "21600"))
 
 
 class RetryableRunError(Exception):
@@ -739,6 +750,7 @@ async def _worker_startup(ctx):
     async with pg_manager.get_async_session_context() as session:
         await init_builtin_skills(session)
     await recover_pending_dispatches()
+    await recover_expert_project_jobs()
 
 
 async def _worker_shutdown(ctx):
@@ -752,7 +764,33 @@ async def _worker_shutdown(ctx):
 
 
 class WorkerSettings:
-    functions = [process_agent_run]
+    functions = [
+        process_agent_run,
+        func(
+            process_expert_project_preparation,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_project_orientation,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_method_calibration,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_material_learning,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_organization,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_handout_compilation,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+    ]
     max_tries = 2
     retry_jobs = True
     # 单任务最长执行时间（秒），可配置：超长图谱构建/深度检索场景需调大，

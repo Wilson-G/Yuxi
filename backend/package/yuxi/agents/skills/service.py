@@ -27,6 +27,7 @@ from yuxi.config import get_save_dir
 from yuxi.permissions import ResourcePermission, normalize_permission_config, resolve_skill_permission
 from yuxi.storage.postgres.models_business import Skill, User
 from yuxi.storage.redis import get_async_redis_client
+from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import ensure_within_root
 
@@ -772,7 +773,8 @@ async def _generate_available_slug(repo: SkillRepository, base_slug: str) -> str
         idx += 1
 
 
-def _parse_skill_dir_metadata(source_skill_dir: Path) -> dict[str, Any]:
+def parse_skill_dir_metadata(source_skill_dir: Path) -> dict[str, Any]:
+    """解析并校验一个 Skill 目录的公开元数据合同。"""
     skill_md_path = source_skill_dir / "SKILL.md"
     if not skill_md_path.exists() or not skill_md_path.is_file():
         raise ValueError("技能目录缺少根级 SKILL.md")
@@ -983,7 +985,7 @@ def _scan_personal_skills(uid: str) -> list[ResolvedSkill]:
             continue
 
         try:
-            metadata = _parse_skill_dir_metadata(entry)
+            metadata = parse_skill_dir_metadata(entry)
             if metadata["slug"] != entry.name:
                 raise ValueError("目录名必须与 SKILL.md slug 一致")
             items.append(_resolved_personal_skill(uid, root, metadata))
@@ -999,14 +1001,14 @@ def _install_personal_skill_dir_sync(uid: str, source_dir: Path) -> ResolvedSkil
     if source_dir.is_symlink() or _dir_contains_symlink(source_dir):
         raise ValueError("个人 Skill 不允许包含符号链接")
 
-    metadata = _parse_skill_dir_metadata(source_dir)
+    metadata = parse_skill_dir_metadata(source_dir)
     slug = metadata["slug"]
     target_dir = root / slug
     if target_dir.exists() or target_dir.is_symlink():
         raise ValueError(f"个人工作区已存在同名 Skill: {slug}")
 
     def _validate_slug_unchanged(copied_dir: Path) -> None:
-        copied_metadata = _parse_skill_dir_metadata(copied_dir)
+        copied_metadata = parse_skill_dir_metadata(copied_dir)
         if copied_metadata["slug"] != slug:
             raise ValueError("个人 Skill slug 在复制过程中发生变化")
 
@@ -1044,7 +1046,7 @@ async def _stage_skill_draft_item(
     item_id = uuid.uuid4().hex
     item_dir = draft_items_dir / item_id
     shutil.copytree(source_skill_dir, item_dir, symlinks=False)
-    parsed = _parse_skill_dir_metadata(item_dir)
+    parsed = parse_skill_dir_metadata(item_dir)
     final_slug = await _generate_available_slug(repo, parsed["slug"])
     return {
         "draft_item_id": item_id,
@@ -1085,7 +1087,7 @@ async def _import_skill_dir_impl(
 ) -> Skill:
     repo = SkillRepository(db)
     skills_root = get_skills_root_dir()
-    parsed = _parse_skill_dir_metadata(source_skill_dir)
+    parsed = parse_skill_dir_metadata(source_skill_dir)
     final_slug = await _generate_available_slug(repo, parsed["slug"])
     with tempfile.TemporaryDirectory(prefix=".skill-import-", dir=str(skills_root.parent)) as temp_root:
         stage_dir = Path(temp_root) / "stage"
@@ -1341,7 +1343,7 @@ async def confirm_skill_install_draft(
             continue
 
         try:
-            parsed = _parse_skill_dir_metadata(source_dir)
+            parsed = parse_skill_dir_metadata(source_dir)
             with tempfile.TemporaryDirectory(prefix=".skill-confirm-", dir=str(skills_root.parent)) as temp_root:
                 stage_dir = Path(temp_root) / "stage"
                 shutil.copytree(source_dir, stage_dir)
@@ -1426,7 +1428,7 @@ async def confirm_personal_skill_install_draft(
         source_dir = (draft_dir / str(draft_item.get("source_dir", ""))).resolve()
         try:
             source_dir.relative_to(draft_dir.resolve())
-            parsed = _parse_skill_dir_metadata(source_dir)
+            parsed = parse_skill_dir_metadata(source_dir)
             if parsed["slug"] != personal_slug:
                 raise ValueError("安装草稿中的个人 Skill slug 不一致")
             item = await install_personal_skill_dir(
@@ -1490,6 +1492,46 @@ async def import_skill_dir(
             source_type=source_type,
         ),
     )
+
+
+async def replace_skill_dir(
+    db: AsyncSession,
+    *,
+    slug: str,
+    source_dir: Path | str,
+    updated_by: str | None,
+    version: str | None = None,
+) -> Skill:
+    """用一个已校验候选目录替换现有非内置 Skill。"""
+
+    source_skill_dir = Path(source_dir).resolve()
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    if not source_skill_dir.is_relative_to(tmp_root) or not source_skill_dir.is_dir():
+        raise ValueError("技能目录路径不合法")
+
+    repo = SkillRepository(db)
+    item = await repo.get_by_slug(slug, for_update=True)
+    if item is None:
+        raise ValueError(f"技能 '{slug}' 不存在")
+    _ensure_non_builtin(item)
+    parsed = parse_skill_dir_metadata(source_skill_dir)
+    if parsed["slug"] != slug:
+        raise ValueError("替换 Skill 的 slug 必须保持不变")
+
+    target_dir = _resolve_skill_dir(item)
+    await asyncio.to_thread(_replace_skill_target, target_dir, source_skill_dir)
+    item.name = parsed["name"]
+    item.description = parsed["description"]
+    item.tool_dependencies = parsed["tool_dependencies"]
+    item.mcp_dependencies = parsed["mcp_dependencies"]
+    item.skill_dependencies = parsed["skill_dependencies"]
+    item.version = version
+    item.content_hash = None
+    item.updated_by = updated_by
+    item.updated_at = utc_now_naive()
+    await db.commit()
+    await db.refresh(item)
+    return item
 
 
 async def get_skill_or_raise(db: AsyncSession, slug: str) -> Skill:

@@ -666,6 +666,9 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
     async def fake_recover_pending_dispatches():
         calls.append("recover_pending_dispatches")
 
+    async def fake_recover_expert_project_jobs():
+        calls.append("recover_expert_project_jobs")
+
     monkeypatch.setattr(run_worker.pg_manager, "initialize", fake_initialize)
     monkeypatch.setattr(run_worker.pg_manager, "create_business_tables", fake_create_business_tables)
     monkeypatch.setattr(run_worker.pg_manager, "ensure_business_schema", fake_ensure_business_schema)
@@ -677,6 +680,7 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
     monkeypatch.setattr(config_options, "migrate_legacy_system_options", fake_migrate_legacy_system_options)
     monkeypatch.setattr(config_options, "invalidate_option_cache", fake_invalidate_option_cache)
     monkeypatch.setattr(run_worker, "recover_pending_dispatches", fake_recover_pending_dispatches)
+    monkeypatch.setattr(run_worker, "recover_expert_project_jobs", fake_recover_expert_project_jobs)
     options_module = importlib.import_module("yuxi.config.options")
     monkeypatch.setattr(options_module, "ensure_options_in_db", fake_ensure_options_in_db)
 
@@ -693,6 +697,7 @@ async def test_worker_startup_ensures_builtin_mcp_servers(monkeypatch: pytest.Mo
         "ensure_builtin_mcp_servers_in_db",
         "init_builtin_skills",
         "recover_pending_dispatches",
+        "recover_expert_project_jobs",
     ]
 
 

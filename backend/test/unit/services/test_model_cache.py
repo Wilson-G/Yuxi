@@ -53,6 +53,7 @@ def test_model_cache_prefers_model_base_url_override(monkeypatch):
                 "type": "rerank",
                 "display_name": "Qwen3 Rerank",
                 "base_url_override": "https://invalid.example/rerank",
+                "context_length": 262144,
             }
         ]
 
@@ -62,6 +63,7 @@ def test_model_cache_prefers_model_base_url_override(monkeypatch):
     cache.rebuild([Provider()])
 
     assert saved_cache["alibaba-cn:qwen3-rerank"].base_url == "https://invalid.example/rerank"
+    assert saved_cache["alibaba-cn:qwen3-rerank"].context_length == 262144
 
 
 def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.MonkeyPatch):
@@ -90,6 +92,7 @@ def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.Mon
     assert cached_info is info
     assert info.base_url == "https://example.com/v1"
     assert info.request_body_overrides == {"enable_thinking": False}
+    assert info.context_length is None
     assert redis.get_calls == 1
 
 
@@ -106,10 +109,15 @@ def test_model_cache_save_writes_redis_json(monkeypatch: pytest.MonkeyPatch):
         base_url="https://example.com/v1",
         provider_type="openai",
         request_body_overrides={"enable_thinking": True},
+        context_length=262144,
     )
 
     cache._save_cache({info.spec: info})
 
     payload = json.loads(redis.data[REDIS_CACHE_KEY])
+    loaded_info = ModelCache().get_model_info(info.spec)
+
     assert payload[info.spec]["base_url"] == "https://example.com/v1"
     assert payload[info.spec]["request_body_overrides"] == {"enable_thinking": True}
+    assert loaded_info is not None
+    assert loaded_info.context_length == 262144

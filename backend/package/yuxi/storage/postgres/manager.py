@@ -157,6 +157,18 @@ class PostgresManager(metaclass=SingletonMeta):
         """确保知识库 schema 包含所有必要字段"""
         self._check_initialized()
         stmts = [
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "method_sample_material_ids JSONB NOT NULL DEFAULT '[]'::jsonb"
+            ),
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "method_calibration_completed_at TIMESTAMPTZ"
+            ),
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "method_calibration_baseline JSONB NOT NULL DEFAULT '[]'::jsonb"
+            ),
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS embedding_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS llm_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases DROP COLUMN IF EXISTS embed_info",

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
@@ -274,6 +275,328 @@ class Skill(Base):
             "enabled": bool(self.enabled),
             "created_by": self.created_by,
             "updated_by": self.updated_by,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class ExpertProject(Base):
+    """专家学习项目及其当前阶段事实。"""
+
+    __tablename__ = "expert_projects"
+
+    project_id = Column(String(64), primary_key=True, comment="专家项目 ID")
+    name = Column(String(255), nullable=False, comment="项目名称")
+    description = Column(Text, nullable=False, default="", comment="项目说明")
+    model_spec = Column(String(512), nullable=False, comment="项目使用的模型规格")
+    stage = Column(String(32), nullable=False, default="orientation", index=True, comment="当前业务阶段")
+    status = Column(String(32), nullable=False, default="pending", index=True, comment="当前阶段状态")
+    created_by = Column(String(64), nullable=False, index=True, comment="项目创建人 UID")
+
+    method_version = Column(Integer, nullable=False, default=0, comment="当前项目方法版本")
+    method_confirmed_at = Column(DateTime, nullable=True, comment="当前方法版本确认时间")
+    method_calibration_completed_at = Column(DateTime, nullable=True, comment="当前方法校准完成时间")
+    method_calibration_baseline = Column(JSON_VALUE, nullable=False, default=list, comment="校准期间使用的 V1 小样基线")
+    representative_material_ids = Column(
+        JSON_VALUE,
+        nullable=False,
+        default=list,
+        comment="代表性材料 ID",
+    )
+    orientation_report = Column(Text, nullable=True, comment="项目定向报告")
+    compilation_brief = Column(Text, nullable=True, comment="项目专属编译底稿")
+    learning_plan = Column(Text, nullable=True, comment="用户可确认的项目学习方案")
+    prompt_pack = Column(JSON_VALUE, nullable=False, default=dict, comment="当前方法版本的阶段 Prompt 包")
+    method_sample_material_ids = Column(JSON_VALUE, nullable=False, default=list, comment="当前方法版本试跑小样材料 ID")
+    method_samples = Column(JSON_VALUE, nullable=False, default=list, comment="方法小样及其 Review 摘要")
+    method_feedback = Column(Text, nullable=False, default="", comment="当前方法版本吸收的用户反馈")
+
+    organization_version = Column(Integer, nullable=False, default=0, comment="当前知识组织版本")
+    organization_confirmed_at = Column(DateTime, nullable=True, comment="当前组织版本确认时间")
+    organization_feedback = Column(Text, nullable=False, default="", comment="当前组织版本吸收的用户反馈")
+    planning_groups = Column(JSON_VALUE, nullable=False, default=list, comment="主题规划使用的有意义分组")
+    topic_map = Column(JSON_VALUE, nullable=False, default=dict, comment="总编确定的当前主题地图")
+    editorial_plan = Column(Text, nullable=True, comment="总编持续维护的当前编辑方案")
+    organization_samples = Column(JSON_VALUE, nullable=False, default=list, comment="组织方式小样及其 Review 摘要")
+    final_review = Column(Text, nullable=True, comment="全书收口结论")
+    navigation = Column(Text, nullable=True, comment="最终读者导航")
+    skill_body = Column(Text, nullable=True, comment="最终 SKILL.md 正文")
+
+    message = Column(Text, nullable=False, default="", comment="当前进度说明")
+    error_message = Column(Text, nullable=True, comment="当前需要处理的原因")
+    skill_slug = Column(String(128), nullable=True, comment="最终 Skill slug")
+    skill_dir = Column(String(512), nullable=True, comment="最终 Skill 项目内目录")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    materials = relationship(
+        "ExpertMaterial",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    research_batches = relationship(
+        "ExpertResearchBatch",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    topics = relationship(
+        "ExpertTopic",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回专家项目的可序列化事实。"""
+
+        return {
+            "project_id": self.project_id,
+            "name": self.name,
+            "description": self.description,
+            "model_spec": self.model_spec,
+            "stage": self.stage,
+            "status": self.status,
+            "created_by": self.created_by,
+            "method_version": self.method_version,
+            "method_confirmed_at": format_utc_datetime(self.method_confirmed_at),
+            "method_calibration_completed_at": format_utc_datetime(self.method_calibration_completed_at),
+            "method_calibration_baseline": self.method_calibration_baseline or [],
+            "representative_material_ids": self.representative_material_ids or [],
+            "orientation_report": self.orientation_report,
+            "compilation_brief": self.compilation_brief,
+            "learning_plan": self.learning_plan,
+            "prompt_pack": self.prompt_pack or {},
+            "method_sample_material_ids": self.method_sample_material_ids or [],
+            "method_samples": self.method_samples or [],
+            "method_feedback": self.method_feedback,
+            "organization_version": self.organization_version,
+            "organization_confirmed_at": format_utc_datetime(self.organization_confirmed_at),
+            "organization_feedback": self.organization_feedback,
+            "planning_groups": self.planning_groups or [],
+            "topic_map": self.topic_map or {},
+            "editorial_plan": self.editorial_plan,
+            "organization_samples": self.organization_samples or [],
+            "final_review": self.final_review,
+            "navigation": self.navigation,
+            "skill_body": self.skill_body,
+            "message": self.message,
+            "error_message": self.error_message,
+            "skill_slug": self.skill_slug,
+            "skill_dir": self.skill_dir,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class ExpertMaterial(Base):
+    """专家项目中的一份完整自然材料单元。"""
+
+    __tablename__ = "expert_materials"
+
+    material_id = Column(String(64), primary_key=True, comment="材料 ID")
+    project_id = Column(
+        String(64),
+        ForeignKey("expert_projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="所属专家项目 ID",
+    )
+    title = Column(String(512), nullable=False, comment="用户可读材料标题")
+    source_path = Column(String(1024), nullable=False, comment="导入材料包中的相对路径")
+    raw_path = Column(String(1024), nullable=False, comment="项目内原始文件路径")
+    text_path = Column(String(1024), nullable=True, comment="项目内可靠正文路径")
+    file_type = Column(String(64), nullable=False, comment="原始文件类型")
+    status = Column(String(32), nullable=False, default="pending", index=True, comment="材料处理状态")
+    token_count = Column(Integer, nullable=False, default=0, comment="可靠正文 token 数")
+    line_count = Column(Integer, nullable=False, default=0, comment="可靠正文行数")
+    is_representative = Column(Boolean, nullable=False, default=False, comment="是否为代表性样本")
+    method_version = Column(Integer, nullable=False, default=0, comment="产出所使用的项目方法版本")
+    note = Column(Text, nullable=True, comment="当前学艺笔记")
+    note_contract = Column(JSON_VALUE, nullable=True, comment="笔记任务的业务结论")
+    review = Column(JSON_VALUE, nullable=True, comment="当前笔记 Review 结果")
+    revision_count = Column(Integer, nullable=False, default=0, comment="已执行的定点修订次数")
+    error_message = Column(Text, nullable=True, comment="当前需要处理的原因")
+    exclusion_reason = Column(Text, nullable=True, comment="用户明确排除材料的原因")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    project = relationship("ExpertProject", back_populates="materials")
+
+    __table_args__ = (UniqueConstraint("project_id", "source_path", name="uq_expert_materials_project_source_path"),)
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回材料处理事实和当前产物。"""
+
+        return {
+            "material_id": self.material_id,
+            "project_id": self.project_id,
+            "title": self.title,
+            "source_path": self.source_path,
+            "raw_path": self.raw_path,
+            "text_path": self.text_path,
+            "file_type": self.file_type,
+            "status": self.status,
+            "token_count": self.token_count,
+            "line_count": self.line_count,
+            "is_representative": bool(self.is_representative),
+            "method_version": self.method_version,
+            "note": self.note,
+            "note_contract": self.note_contract,
+            "review": self.review,
+            "revision_count": self.revision_count,
+            "error_message": self.error_message,
+            "exclusion_reason": self.exclusion_reason,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class ExpertResearchBatch(Base):
+    """为总编准备候选主题输入的一组完整笔记范围。"""
+
+    __tablename__ = "expert_research_batches"
+
+    batch_id = Column(String(64), primary_key=True, comment="研究批次 ID")
+    project_id = Column(
+        String(64),
+        ForeignKey("expert_projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="所属专家项目 ID",
+    )
+    organization_version = Column(Integer, nullable=False, comment="所属知识组织版本")
+    group_key = Column(String(128), nullable=False, comment="组织版本内的语义分组标识")
+    title = Column(String(512), nullable=False, comment="用户可读批次标题")
+    rationale = Column(Text, nullable=False, comment="形成该有意义范围的理由")
+    material_ids = Column(JSON_VALUE, nullable=False, default=list, comment="本批次完整读取的材料 ID")
+    status = Column(String(32), nullable=False, default="pending", index=True, comment="候选研究状态")
+    result = Column(JSON_VALUE, nullable=True, comment="候选主题、冲突和遗漏研究结果")
+    error_message = Column(Text, nullable=True, comment="当前需要处理的原因")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    project = relationship("ExpertProject", back_populates="research_batches")
+
+    __table_args__ = (
+        Index(
+            "ix_expert_research_batches_project_version",
+            "project_id",
+            "organization_version",
+        ),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回研究批次的范围、状态和当前结果。"""
+
+        return {
+            "batch_id": self.batch_id,
+            "project_id": self.project_id,
+            "organization_version": self.organization_version,
+            "group_key": self.group_key,
+            "title": self.title,
+            "rationale": self.rationale,
+            "material_ids": self.material_ids or [],
+            "status": self.status,
+            "result": self.result,
+            "error_message": self.error_message,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class ExpertTopic(Base):
+    """总编在一个组织版本内确定的主题及正式讲义事实。"""
+
+    __tablename__ = "expert_topics"
+
+    topic_id = Column(String(64), primary_key=True, comment="主题 ID")
+    project_id = Column(
+        String(64),
+        ForeignKey("expert_projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        comment="所属专家项目 ID",
+    )
+    organization_version = Column(Integer, nullable=False, comment="所属知识组织版本")
+    topic_key = Column(String(128), nullable=False, comment="组织版本内稳定的主题标识")
+    title = Column(String(512), nullable=False, comment="主题标题")
+    section = Column(String(255), nullable=False, comment="主题所属讲义分区")
+    reader_question = Column(Text, nullable=False, comment="主题回答的真实读者问题")
+    purpose = Column(Text, nullable=False, comment="主题要帮助读者完成的判断")
+    boundaries = Column(Text, nullable=False, comment="主题边界和必须保留的分歧")
+    position = Column(Integer, nullable=False, default=0, comment="总编确定的阅读顺序")
+    material_ids = Column(JSON_VALUE, nullable=False, default=list, comment="主题获准使用的材料 ID")
+    evidence_requirements = Column(JSON_VALUE, nullable=False, default=list, comment="讲义关键判断的证据要求")
+    is_sample = Column(Boolean, nullable=False, default=False, comment="是否为组织方式确认小样")
+    status = Column(String(32), nullable=False, default="pending", index=True, comment="主题编写状态")
+    evidence_pack = Column(JSON_VALUE, nullable=True, comment="助手准备的当前主题证据包")
+    handout = Column(Text, nullable=True, comment="总编当前正式讲义候选")
+    handout_contract = Column(JSON_VALUE, nullable=True, comment="讲义任务的业务结论")
+    review = Column(JSON_VALUE, nullable=True, comment="当前讲义 Review 结果")
+    revision_count = Column(Integer, nullable=False, default=0, comment="已执行的定点修订次数")
+    error_message = Column(Text, nullable=True, comment="当前需要处理的原因")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="创建时间")
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        comment="更新时间",
+    )
+
+    project = relationship("ExpertProject", back_populates="topics")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "organization_version",
+            "topic_key",
+            name="uq_expert_topics_project_version_key",
+        ),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回主题范围、证据和正式讲义事实。"""
+
+        return {
+            "topic_id": self.topic_id,
+            "project_id": self.project_id,
+            "organization_version": self.organization_version,
+            "topic_key": self.topic_key,
+            "title": self.title,
+            "section": self.section,
+            "reader_question": self.reader_question,
+            "purpose": self.purpose,
+            "boundaries": self.boundaries,
+            "position": self.position,
+            "material_ids": self.material_ids or [],
+            "evidence_requirements": self.evidence_requirements or [],
+            "is_sample": bool(self.is_sample),
+            "status": self.status,
+            "evidence_pack": self.evidence_pack,
+            "handout": self.handout,
+            "handout_contract": self.handout_contract,
+            "review": self.review,
+            "revision_count": self.revision_count,
+            "error_message": self.error_message,
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }

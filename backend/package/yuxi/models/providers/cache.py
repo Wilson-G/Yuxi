@@ -39,6 +39,7 @@ class ModelInfo:
     # provider 级 extra_json，不是 OpenAI chat 的 extra_body。
     extra: dict[str, Any] = field(default_factory=dict)
     request_body_overrides: dict[str, Any] = field(default_factory=dict)
+    context_length: int | None = None
 
     # Embedding 专属
     dimension: int | None = None
@@ -60,6 +61,7 @@ class ModelInfo:
             "headers": self.headers,
             "extra": self.extra,
             "request_body_overrides": self.request_body_overrides,
+            "context_length": self.context_length,
             "dimension": self.dimension,
             "batch_size": self.batch_size,
         }
@@ -77,6 +79,7 @@ class ModelInfo:
             headers=data.get("headers", {}),
             extra=data.get("extra", {}),
             request_body_overrides=data.get("request_body_overrides", {}),
+            context_length=data.get("context_length"),
             dimension=data.get("dimension"),
             batch_size=data.get("batch_size", 40),
         )
@@ -161,6 +164,7 @@ class ModelCache:
                     headers=dict(provider.headers_json or {}),
                     extra=dict(provider.extra_json or {}),
                     request_body_overrides=dict(model.get("request_body_overrides") or {}),
+                    context_length=model.get("context_length"),
                     dimension=model.get("dimension"),
                     batch_size=model.get("batch_size", 40),
                 )
