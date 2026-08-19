@@ -178,6 +178,9 @@ async def test_source_job_enqueues_boundary_confirmation_after_text_is_ready(
 
 async def test_task_projection_uses_source_file_fact(worker_env) -> None:
     await _add_source(worker_env, "ready-file", "ready", 100, unit_status="ready")
+    await _add_source(worker_env, "unit-pending-file", "ready", 100, unit_status="pending")
+    await _add_source(worker_env, "unit-processing-file", "ready", 100, unit_status="processing")
+    await _add_source(worker_env, "unit-attention-file", "ready", 100, unit_status="needs_attention")
     await _add_source(worker_env, "attention-file", "needs_attention", 10)
 
     async with worker_env() as db:
@@ -186,5 +189,10 @@ async def test_task_projection_uses_source_file_fact(worker_env) -> None:
     by_id = {task["id"]: task for task in tasks}
     assert by_id["material-source:ready-file"]["status"] == "success"
     assert by_id["material-source:ready-file"]["result"] == {"line_count": 3}
+    assert by_id["material-source:unit-pending-file"]["status"] == "running"
+    assert by_id["material-source:unit-processing-file"]["status"] == "running"
+    assert by_id["material-source:unit-attention-file"]["status"] == "failed"
+    assert by_id["material-source:unit-attention-file"]["completed_at"] is not None
+    assert by_id["material-source:unit-attention-file"]["result"] is None
     assert by_id["material-source:attention-file"]["status"] == "failed"
     assert by_id["material-source:attention-file"]["error"] == "解析失败"
