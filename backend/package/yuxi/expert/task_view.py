@@ -69,7 +69,7 @@ def _task_status(project_status: str) -> str:
     if project_status == "enabled":
         return "success"
     if project_status in {"ready", "awaiting_confirmation", "paused"}:
-        return "pending"
+        return "waiting"
     return "running"
 
 

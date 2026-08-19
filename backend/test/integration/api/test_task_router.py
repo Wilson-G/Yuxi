@@ -139,14 +139,21 @@ async def test_admin_can_read_waiting_expert_projection_without_completion(test_
             params={"status": "success"},
             headers=admin_headers,
         )
+        active_response = await test_client.get(
+            "/api/tasks",
+            params={"status": "running"},
+            headers=admin_headers,
+        )
 
         assert detail_response.status_code == 200, detail_response.text
         task = detail_response.json()["task"]
         assert task["type"] == "expert_project"
-        assert task["status"] == "pending"
+        assert task["status"] == "waiting"
         assert task["completed_at"] is None
         assert completed_response.status_code == 200, completed_response.text
         assert all(item["id"] != f"expert-project:{project_id}" for item in completed_response.json()["tasks"])
+        assert active_response.status_code == 200, active_response.text
+        assert all(item["id"] != f"expert-project:{project_id}" for item in active_response.json()["tasks"])
     finally:
         delete_response = await test_client.delete(f"/api/expert-projects/{project_id}", headers=admin_headers)
         assert delete_response.status_code == 200, delete_response.text

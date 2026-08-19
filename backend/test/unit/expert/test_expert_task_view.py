@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+import yuxi.storage.postgres.models_material  # noqa: F401
 
 from yuxi.expert.task_view import get_expert_task_summary
 from yuxi.repositories.expert_repository import ExpertRepository
@@ -49,7 +50,7 @@ async def test_waiting_user_actions_are_not_completed(task_view_factory, project
         task = await get_expert_task_summary(db, f"project-{project_status}")
 
     assert task is not None
-    assert task["status"] == "pending"
+    assert task["status"] == "waiting"
     assert task["completed_at"] is None
 
 
