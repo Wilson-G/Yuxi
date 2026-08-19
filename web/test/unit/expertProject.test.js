@@ -109,6 +109,16 @@ test('项目定向运行时进入学习方案与小样生成视图', () => {
   )
 })
 
+test('批量学习状态可筛选，并说明修订由后台继续处理', async () => {
+  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
+  const projectUtils = await readFile(new URL('../../src/utils/expertProject.js', import.meta.url), 'utf8')
+
+  assert.match(view, /const materialFilter = ref\('all'\)/)
+  assert.match(view, /v-for="option in materialFilterOptions"/)
+  assert.match(view, /每份材料在后台完成笔记、Review 和必要的自动修订/)
+  assert.match(projectUtils, /review_revise: '自动修订中'/)
+})
+
 test('项目定向页面允许用户选择至多 20 份代表性材料', async () => {
   const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
 

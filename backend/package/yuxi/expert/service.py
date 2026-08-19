@@ -28,6 +28,7 @@ from yuxi.utils.datetime_utils import utc_now_naive
 
 MATERIAL_PARSE_CONCURRENCY = int(os.getenv("EXPERT_MATERIAL_PARSE_CONCURRENCY", "8"))
 MATERIAL_LEARNING_CONCURRENCY = int(os.getenv("EXPERT_LEARNING_CONCURRENCY", "50"))
+MAX_MATERIAL_REVISIONS = 2
 ORIENTATION_STAGE = "orientation"
 MATERIAL_LEARNING_STAGE = "material_learning"
 
@@ -633,7 +634,7 @@ async def run_material_learning_stage(
     *,
     model_tasks: ExpertModelTasks | None = None,
 ) -> dict[str, Any]:
-    """以持续补位并发逐份完成笔记、Review 和一次定点修订。"""
+    """以持续补位并发逐份完成笔记、Review 和最多两次定点修订。"""
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -643,7 +644,9 @@ async def run_material_learning_stage(
         if project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
             return {"project_id": project_id, "ignored": True}
         materials = await repo.list_project_materials(project_id)
-        pending_ids = [item.material_id for item in materials if item.status in {"pending", "learning"}]
+        pending_ids = [
+            item.material_id for item in materials if item.status in {"pending", "learning", "review_revise"}
+        ]
 
     tasks = model_tasks or ExpertModelTasks()
     semaphore = asyncio.Semaphore(max(1, MATERIAL_LEARNING_CONCURRENCY))
@@ -819,13 +822,16 @@ async def _learn_one_material(
             or material.project_id != project_id
             or project.stage != MATERIAL_LEARNING_STAGE
             or project.method_version != method_version
-            or material.status not in {"pending", "learning"}
+            or material.status not in {"pending", "learning", "review_revise"}
         ):
             return
         if not material.text_path:
             material.status = "needs_attention"
             material.error_message = "材料缺少可靠正文"
             return
+        resume_note_contract = material.note_contract if material.status in {"learning", "review_revise"} else None
+        resume_review = material.review if resume_note_contract else None
+        resume_revision_count = material.revision_count if resume_note_contract else 0
         material.status = "learning"
         material.error_message = None
         snapshot = {
@@ -836,6 +842,9 @@ async def _learn_one_material(
             "source_path": material.source_path,
             "text_path": material.text_path,
             "line_count": material.line_count,
+            "resume_note_contract": resume_note_contract,
+            "resume_review": resume_review,
+            "resume_revision_count": resume_revision_count,
         }
         await db.commit()
 
@@ -858,6 +867,17 @@ async def _learn_one_material(
                 material=material_view,
                 alias="CURRENT_MATERIAL",
                 text=text,
+                starting_note=(
+                    MaterialNoteResult.model_validate(snapshot["resume_note_contract"])
+                    if snapshot["resume_note_contract"]
+                    else None
+                ),
+                starting_review=(
+                    MaterialReviewResult.model_validate(snapshot["resume_review"])
+                    if snapshot["resume_review"]
+                    else None
+                ),
+                starting_revision_count=snapshot["resume_revision_count"],
             )
             break
         except Exception as exc:  # noqa: BLE001
@@ -887,7 +907,7 @@ async def _learn_one_material(
         material.note = final_note.get("note_markdown") or None
         material.note_contract = final_note
         material.review = result["final_review"]
-        material.revision_count = 1 if result["revision"] else 0
+        material.revision_count = result["revision_count"]
         material.error_message = result["reason"] or None
 
 
@@ -897,7 +917,7 @@ async def _finish_material_learning(db: AsyncSession, project_id: str, method_ve
     if project is None or project.stage != MATERIAL_LEARNING_STAGE or project.method_version != method_version:
         return "ignored"
     materials = await repo.list_project_materials(project_id)
-    unfinished = [item for item in materials if item.status in {"pending", "learning"}]
+    unfinished = [item for item in materials if item.status in {"pending", "learning", "review_revise"}]
     attention = [item for item in materials if item.status == "needs_attention"]
     if unfinished:
         project.status = "running"
@@ -950,32 +970,43 @@ async def _run_method_sample(
     material: Any,
     alias: str,
     text: str,
+    starting_note: MaterialNoteResult | None = None,
+    starting_review: MaterialReviewResult | None = None,
+    starting_revision_count: int = 0,
 ) -> dict[str, Any]:
-    note = await tasks.write_material_note(
-        model_spec=model_spec,
-        learning_plan=learning_plan,
-        stage_prompt=prompt_pack.note_author,
-        material_alias=alias,
-        title=material.title,
-        source=material.source_path,
-        text=text,
-    )
-    _validate_note(note, alias=alias, line_count=material.line_count)
-    review = await tasks.review_material_note(
-        model_spec=model_spec,
-        learning_plan=learning_plan,
-        stage_prompt=prompt_pack.note_reviewer,
-        material_alias=alias,
-        title=material.title,
-        source=material.source_path,
-        text=text,
-        note=note,
-    )
-    _validate_review(review)
+    if (starting_note is None) != (starting_review is None):
+        raise ValueError("材料恢复缺少笔记或 Review")
+    if starting_note is None:
+        note = await tasks.write_material_note(
+            model_spec=model_spec,
+            learning_plan=learning_plan,
+            stage_prompt=prompt_pack.note_author,
+            material_alias=alias,
+            title=material.title,
+            source=material.source_path,
+            text=text,
+        )
+        _validate_note(note, alias=alias, line_count=material.line_count)
+        review = await tasks.review_material_note(
+            model_spec=model_spec,
+            learning_plan=learning_plan,
+            stage_prompt=prompt_pack.note_reviewer,
+            material_alias=alias,
+            title=material.title,
+            source=material.source_path,
+            text=text,
+            note=note,
+        )
+        _validate_review(review)
+    else:
+        note = starting_note
+        review = starting_review
 
     revision = None
+    revision_count = starting_revision_count
+    current_note = note
     final_review = review
-    if review.decision == "revise":
+    while final_review.decision == "revise" and revision_count < MAX_MATERIAL_REVISIONS:
         revision = await tasks.revise_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
@@ -984,10 +1015,12 @@ async def _run_method_sample(
             title=material.title,
             source=material.source_path,
             text=text,
-            note=note,
-            review=review,
+            note=current_note,
+            review=final_review,
         )
         _validate_note(revision, alias=alias, line_count=material.line_count)
+        revision_count += 1
+        current_note = revision
         final_review = await tasks.review_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
@@ -996,20 +1029,23 @@ async def _run_method_sample(
             title=material.title,
             source=material.source_path,
             text=text,
-            note=revision,
+            note=current_note,
         )
         _validate_review(final_review)
 
     final_note = revision or note
-    if final_note.decision == "no_value" or final_review.decision == "no_value":
-        status = "no_value"
-    elif final_note.decision == "needs_attention" or final_review.decision == "needs_attention":
+    if final_review.decision == "revise":
         status = "needs_attention"
-    elif final_review.decision == "revise":
-        status = "review_revise"
+        reason = f"已完成 {MAX_MATERIAL_REVISIONS} 次自动修订，Review 仍要求修订：{final_review.summary}"
+    elif final_note.decision in {"no_value", "needs_attention"} or final_review.decision in {
+        "no_value",
+        "needs_attention",
+    }:
+        status = "no_value"
+        reason = final_note.reason or final_review.summary
     else:
         status = "passed"
-    reason = final_note.reason if status == "no_value" else final_review.summary if status == "needs_attention" else ""
+        reason = ""
     return {
         "material_id": material.material_id,
         "material_alias": alias,
@@ -1019,6 +1055,7 @@ async def _run_method_sample(
         "note": note.model_dump(),
         "review": review.model_dump(),
         "revision": revision.model_dump() if revision else None,
+        "revision_count": revision_count,
         "final_review": final_review.model_dump(),
         "reason": reason,
     }

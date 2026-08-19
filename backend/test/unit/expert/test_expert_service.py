@@ -242,10 +242,15 @@ class AttentionCalibrationTasks(CalibrationModelTasks):
 
 
 class RepairableResidualTasks(CalibrationModelTasks):
-    """模拟 V2 留下可由逐篇 Repair 关闭的局部 Review 问题。"""
+    """模拟 V2 留下可由后台继续修订关闭的局部 Review 问题。"""
+
+    def __init__(self):
+        super().__init__()
+        self.v2_repair_requested = False
 
     async def review_material_note(self, *, title: str, **_kwargs) -> MaterialReviewResult:
-        if self.calibration_inputs and title == "01-material":
+        if self.calibration_inputs and title == "01-material" and not self.v2_repair_requested:
+            self.v2_repair_requested = True
             return MaterialReviewResult(
                 decision="revise",
                 summary="当前单篇仍需补回一个条件",
@@ -745,13 +750,14 @@ async def test_material_learning_refills_slots_and_attention_blocks_until_explic
 
 
 @pytest.mark.asyncio
-async def test_no_value_note_cannot_be_promoted_to_passed(expert_env) -> None:
-    """Reviewer 认可不入选结论时，材料仍不能进入主题规划。"""
+@pytest.mark.parametrize("note_decision", ["no_value", "needs_attention"])
+async def test_nontransferable_note_is_not_promoted_to_passed(expert_env, note_decision: str) -> None:
+    """Reviewer 认可材料不具备迁移价值时，项目自动排除该材料。"""
 
-    class NoValueTasks:
+    class NontransferableTasks:
         async def write_material_note(self, **_kwargs) -> MaterialNoteResult:
             return MaterialNoteResult(
-                decision="no_value",
+                decision=note_decision,
                 reason="材料没有可迁移的判断方法",
             )
 
@@ -776,7 +782,7 @@ async def test_no_value_note_cannot_be_promoted_to_passed(expert_env) -> None:
         await repo.update_material(material_ids[0], status="pending")
         await db.commit()
 
-    result = await service.run_material_learning_stage(project_id, 1, model_tasks=NoValueTasks())
+    result = await service.run_material_learning_stage(project_id, 1, model_tasks=NontransferableTasks())
 
     async with expert_env.factory() as db:
         material = await ExpertRepository(db).get_material(material_ids[0])
@@ -785,6 +791,244 @@ async def test_no_value_note_cannot_be_promoted_to_passed(expert_env) -> None:
     assert material is not None
     assert material.status == "no_value"
     assert material.error_message == "材料没有可迁移的判断方法"
+
+
+@pytest.mark.asyncio
+async def test_material_learning_revises_until_reviewer_passes(expert_env) -> None:
+    """同一材料的具体 Review 意见由后台连续修订，不交给用户逐项处理。"""
+
+    class RepeatedRevisionTasks:
+        def __init__(self):
+            self.review_count = 0
+            self.revised_notes: list[str] = []
+
+        async def write_material_note(self, *, material_alias: str, **_kwargs) -> MaterialNoteResult:
+            return MaterialNoteResult(
+                decision="learned",
+                note_markdown="# 学艺笔记",
+                routing_labels=["判断条件"],
+                evidence=[
+                    {
+                        "material_alias": material_alias,
+                        "start_line": 1,
+                        "end_line": 3,
+                        "supports": "材料展示了当前判断条件",
+                    }
+                ],
+            )
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            self.review_count += 1
+            if self.review_count <= 2:
+                return MaterialReviewResult(
+                    decision="revise",
+                    summary="还需补足一个判断条件",
+                    issues=[
+                        {
+                            "problem": "遗漏关键条件",
+                            "affected_part": "判断链",
+                            "source_lines": ["L2"],
+                            "revision_direction": "按原文补回条件",
+                        }
+                    ],
+                )
+            return MaterialReviewResult(decision="pass", summary="通过", issues=[])
+
+        async def revise_material_note(self, *, note: MaterialNoteResult, **kwargs) -> MaterialNoteResult:
+            self.revised_notes.append(note.note_markdown)
+            revised = await self.write_material_note(**kwargs)
+            return revised.model_copy(update={"note_markdown": f"{note.note_markdown} 已修订"})
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(material_ids[0], status="pending")
+        await db.commit()
+
+    tasks = RepeatedRevisionTasks()
+    result = await service.run_material_learning_stage(
+        project_id,
+        1,
+        model_tasks=tasks,
+    )
+
+    async with expert_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_ids[0])
+
+    assert result["status"] == "preparing"
+    assert material is not None
+    assert material.status == "passed"
+    assert material.revision_count == 2
+    assert material.review["decision"] == "pass"
+    assert tasks.revised_notes == ["# 学艺笔记", "# 学艺笔记 已修订"]
+
+
+@pytest.mark.asyncio
+async def test_material_learning_requires_attention_after_two_unsuccessful_revisions(expert_env) -> None:
+    """第二次复核仍要求修订时，保留结果并交给人工处理。"""
+
+    class NeverPassingReviewTasks:
+        async def write_material_note(self, *, material_alias: str, **_kwargs) -> MaterialNoteResult:
+            return MaterialNoteResult(
+                decision="learned",
+                note_markdown="# 学艺笔记",
+                routing_labels=["判断条件"],
+                evidence=[
+                    {
+                        "material_alias": material_alias,
+                        "start_line": 1,
+                        "end_line": 3,
+                        "supports": "材料展示了当前判断条件",
+                    }
+                ],
+            )
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            return MaterialReviewResult(
+                decision="revise",
+                summary="仍需收窄一处判断",
+                issues=[
+                    {
+                        "problem": "仍有未经支持的判断",
+                        "affected_part": "判断链",
+                        "source_lines": ["L2"],
+                        "revision_direction": "按原文收窄",
+                    }
+                ],
+            )
+
+        async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
+            return await self.write_material_note(**kwargs)
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(material_ids[0], status="pending")
+        await db.commit()
+
+    result = await service.run_material_learning_stage(
+        project_id,
+        1,
+        model_tasks=NeverPassingReviewTasks(),
+    )
+
+    async with expert_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_ids[0])
+
+    assert result["status"] == "needs_attention"
+    assert material is not None
+    assert material.status == "needs_attention"
+    assert material.revision_count == 2
+    assert material.review["decision"] == "revise"
+    assert material.error_message == "已完成 2 次自动修订，Review 仍要求修订：仍需收窄一处判断"
+
+
+@pytest.mark.asyncio
+async def test_recovered_material_uses_only_its_remaining_revision(expert_env) -> None:
+    """恢复中的材料沿用已保存的修订次数，不从初稿重新计算。"""
+
+    class RemainingRevisionTasks:
+        def __init__(self):
+            self.revision_calls = 0
+
+        async def write_material_note(self, **_kwargs) -> MaterialNoteResult:
+            raise AssertionError("恢复中的材料不应重新生成初稿")
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            return MaterialReviewResult(
+                decision="revise",
+                summary="仍需收窄一处判断",
+                issues=[
+                    {
+                        "problem": "仍有未经支持的判断",
+                        "affected_part": "判断链",
+                        "source_lines": ["L2"],
+                        "revision_direction": "按原文收窄",
+                    }
+                ],
+            )
+
+        async def revise_material_note(self, *, note: MaterialNoteResult, **_kwargs) -> MaterialNoteResult:
+            self.revision_calls += 1
+            return note.model_copy(update={"note_markdown": "# 第二次修订"})
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    existing_note = MaterialNoteResult(
+        decision="learned",
+        note_markdown="# 第一次修订",
+        routing_labels=["判断条件"],
+        evidence=[
+            {
+                "material_alias": "CURRENT_MATERIAL",
+                "start_line": 1,
+                "end_line": 3,
+                "supports": "材料展示了当前判断条件",
+            }
+        ],
+    )
+    existing_review = MaterialReviewResult(
+        decision="revise",
+        summary="仍需收窄一处判断",
+        issues=[
+            {
+                "problem": "仍有未经支持的判断",
+                "affected_part": "判断链",
+                "source_lines": ["L2"],
+                "revision_direction": "按原文收窄",
+            }
+        ],
+    )
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(
+            material_ids[0],
+            status="learning",
+            note=existing_note.note_markdown,
+            note_contract=existing_note.model_dump(),
+            review=existing_review.model_dump(),
+            revision_count=1,
+        )
+        await db.commit()
+
+    tasks = RemainingRevisionTasks()
+    result = await service.run_material_learning_stage(project_id, 1, model_tasks=tasks)
+
+    async with expert_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_ids[0])
+
+    assert result["status"] == "needs_attention"
+    assert tasks.revision_calls == 1
+    assert material is not None
+    assert material.status == "needs_attention"
+    assert material.revision_count == 2
+    assert material.note == "# 第二次修订"
 
 
 @pytest.mark.asyncio
@@ -936,8 +1180,8 @@ async def test_method_calibration_stops_when_residual_problem_is_method_level(ex
 
 
 @pytest.mark.asyncio
-async def test_method_calibration_allows_v2_review_revise_when_residual_is_repairable(expert_env) -> None:
-    """V2 局部 revise 由评估语义放行，后续逐篇任务继续 Repair。"""
+async def test_method_calibration_automatically_repairs_v2_review_issue(expert_env) -> None:
+    """V2 局部 Review 问题由后台自动修订并复核。"""
 
     project_id, _ = await _create_project(expert_env, count=2)
     material_ids = await _make_materials_ready(expert_env, project_id)
@@ -963,4 +1207,5 @@ async def test_method_calibration_allows_v2_review_revise_when_residual_is_repai
         project = await ExpertRepository(db).get_project(project_id)
     assert project is not None
     assert project.stage == service.MATERIAL_LEARNING_STAGE
-    assert project.method_samples[0]["status"] == "review_revise"
+    assert project.method_samples[0]["status"] == "passed"
+    assert project.method_samples[0]["final_review"]["decision"] == "pass"

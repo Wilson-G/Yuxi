@@ -33,6 +33,9 @@ const normalizeHtmlTagQuotes = (content) => {
   return source.replace(/<[^>]+>/g, (tag) => tag.replaceAll('“', '"').replaceAll('”', '"'))
 }
 
+const normalizeStrongBoundaries = (content) =>
+  String(content || '').replace(/\*\*([^*\n]+)\*\*(?=\S)/g, '<strong>$1</strong>')
+
 export const normalizeLegacyMinioPublicUrls = (content) =>
   String(content || '').replace(LEGACY_MINIO_PUBLIC_URL_RE, '/minio/public/')
 
@@ -211,7 +214,9 @@ const setCachedHtml = (cacheKey, html) => {
 
 export const renderMarkdown = async (content, { theme = 'github-light' } = {}) => {
   try {
-    const normalizedContent = normalizeHtmlTagQuotes(normalizeLegacyMinioPublicUrls(content))
+    const normalizedContent = normalizeStrongBoundaries(
+      normalizeHtmlTagQuotes(normalizeLegacyMinioPublicUrls(content))
+    )
     const htmlPreviewContent = renderHtmlPreviewBlocks(normalizedContent, {
       sanitizeHtml: sanitizeHtmlPreviewSrcdoc
     })

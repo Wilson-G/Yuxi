@@ -14,7 +14,7 @@
         <div class="project-title-copy">
           <h1>{{ project?.name || '专家项目' }}</h1>
           <p v-if="project">
-            {{ project.description || project.message || getExpertStageLabel(project.stage) }}
+            {{ project.description || currentStageMessage }}
           </p>
         </div>
       </div>
@@ -88,12 +88,12 @@
         <div class="summary-progress">
           <div>
             <strong>{{ getExpertStageLabel(project.stage) }}</strong>
-            <span>{{ project.message || getExpertStatusLabel(project.status) }}</span>
+            <span>{{ currentStageMessage }}</span>
           </div>
           <span>{{ overallProgress }}%</span>
         </div>
         <a-progress :percent="overallProgress" :show-info="false" :stroke-width="5" />
-        <div v-if="project.error_message" class="actionable-error" role="alert">
+        <div v-if="showProjectError" class="actionable-error" role="alert">
           <CircleAlert :size="16" />
           <span>{{ project.error_message }}</span>
         </div>
@@ -459,24 +459,42 @@
               <div>
                 <span class="section-kicker">逐份学习与 Review</span>
                 <h2>批量学习材料</h2>
-                <p>每份材料独立完成笔记、Review 和必要的一次定点修订。</p>
+                <p>
+                  每份材料在后台完成笔记、Review
+                  和最多两次自动修订；仍未通过的材料会保留具体意见，等待人工处理。
+                </p>
               </div>
               <span>{{ materialProgress }}%</span>
             </div>
             <a-progress :percent="materialProgress" :show-info="false" :stroke-width="6" />
 
             <div class="count-strip">
-              <span>全部 {{ project.material_summary?.total || project.materials.length }}</span>
-              <span>通过 {{ materialStatusCount('passed') }}</span>
-              <span>不入选 {{ materialStatusCount('no_value') }}</span>
-              <span :class="{ attention: materialStatusCount('needs_attention') > 0 }">
-                需要处理 {{ materialStatusCount('needs_attention') }}
-              </span>
+              <button
+                v-for="option in materialFilterOptions"
+                :key="option.key"
+                type="button"
+                class="material-filter"
+                :class="{
+                  active: materialFilter === option.key,
+                  attention: option.key === 'needs_attention' && materialStatusCount(option.key) > 0
+                }"
+                :aria-pressed="materialFilter === option.key"
+                @click="materialFilter = option.key"
+              >
+                {{ option.label }} {{ materialStatusCount(option.key) }}
+              </button>
             </div>
 
-            <div class="material-list section-list">
+            <div class="stage-next-step">
+              <span>下一步</span>
+              <strong
+                >全部材料通过、不入选或完成必要处理后，系统自动生成主题方案与讲义小样。</strong
+              >
+            </div>
+
+            <div v-if="filteredMaterials.length" class="material-list section-list">
               <article
-                v-for="material in project.materials"
+                v-for="material in filteredMaterials"
                 :key="material.material_id"
                 class="material-row learning-row"
               >
@@ -538,6 +556,7 @@
                 </details>
               </article>
             </div>
+            <a-empty v-else class="filtered-material-empty" description="当前筛选没有材料" />
           </section>
 
           <template v-else-if="project.stage === 'organization'">
@@ -1031,6 +1050,7 @@ const excludeTarget = ref(null)
 const exclusionReason = ref('')
 const reviewStage = ref('')
 const selectedTopicId = ref('')
+const materialFilter = ref('all')
 let pollingTimer = null
 let projectRequestInFlight = false
 
@@ -1044,6 +1064,32 @@ const isReviewingHistory = computed(
 const overallProgress = computed(() => Math.round(getExpertProjectProgress(project.value || {})))
 const materialProgress = computed(() => getExpertMaterialProgress(project.value?.materials || []))
 const topicProgress = computed(() => getExpertTopicProgress(project.value?.topics || []))
+const currentStageMessage = computed(() => {
+  const currentProject = project.value
+  if (!currentProject) return ''
+  if (currentProject.stage === 'material_learning' && currentProject.status === 'running') {
+    const active = (currentProject.materials || []).filter((material) =>
+      ['pending', 'learning', 'review_revise'].includes(material.status)
+    ).length
+    return active ? `正在学习 ${active} 份材料` : currentProject.message
+  }
+  return currentProject.message || getExpertStatusLabel(currentProject.status)
+})
+const showProjectError = computed(
+  () => project.value?.status === 'needs_attention' && Boolean(project.value?.error_message)
+)
+const materialFilterOptions = [
+  { key: 'all', label: '全部' },
+  { key: 'passed', label: '通过' },
+  { key: 'no_value', label: '不入选' },
+  { key: 'review_revise', label: '自动修订' },
+  { key: 'needs_attention', label: '需要处理' }
+]
+const filteredMaterials = computed(() => {
+  const materials = project.value?.materials || []
+  if (materialFilter.value === 'all') return materials
+  return materials.filter((material) => material.status === materialFilter.value)
+})
 const selectedTopic = computed(() =>
   (project.value?.topics || []).find((topic) => topic.topic_id === selectedTopicId.value)
 )
@@ -1162,8 +1208,11 @@ const sampleReview = (sample) => sample?.final_review || sample?.review || null
 const promptLabel = (key) => promptLabels[key] || key
 
 /** 统计某类材料当前有多少份。 */
-const materialStatusCount = (status) =>
-  Number(project.value?.material_summary?.status_counts?.[status] || 0)
+const materialStatusCount = (status) => {
+  const materials = project.value?.materials || []
+  if (status === 'all') return materials.length
+  return materials.filter((material) => material.status === status).length
+}
 
 /** 当前材料被排除后，项目是否仍保留可进入学习的材料。 */
 const canExcludeMaterial = (material) =>
@@ -2307,12 +2356,60 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 8px 18px;
   margin-top: 16px;
-  color: var(--gray-600);
   font-size: 12px;
+}
 
-  .attention {
+.material-filter {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--gray-600);
+  cursor: pointer;
+  font: inherit;
+
+  &:hover,
+  &.active {
+    color: var(--main-700);
+    font-weight: 600;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--main-500);
+    outline-offset: 3px;
+  }
+
+  &.attention {
     color: var(--color-error-700);
     font-weight: 600;
+  }
+}
+
+.filtered-material-empty {
+  margin-top: 36px;
+}
+
+.stage-next-step {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--main-500);
+  background: var(--main-10);
+  color: var(--gray-700);
+  font-size: 13px;
+  line-height: 1.6;
+
+  span {
+    flex: 0 0 auto;
+    color: var(--main-700);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  strong {
+    color: var(--gray-800);
+    font-weight: 500;
   }
 }
 

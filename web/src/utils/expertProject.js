@@ -26,7 +26,7 @@ const MATERIAL_STATUS_LABELS = {
   evidence_ready: '证据就绪',
   writing: '总编撰写中',
   passed: '已通过',
-  review_revise: '有可修问题',
+  review_revise: '自动修订中',
   no_value: '不入选',
   needs_attention: '需要处理',
   excluded: '已排除'
