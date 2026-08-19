@@ -9,11 +9,9 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.repositories.material_library_repository import MaterialLibraryRepository
-from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_material import MaterialLibrary, MaterialSourceFile
+from yuxi.repositories.expert_repository import ExpertRepository
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -78,58 +76,22 @@ async def test_admin_can_list_tasks(test_client, admin_headers):
 async def test_admin_can_read_waiting_expert_projection_without_completion(test_client, admin_headers):
     """管理员能读取专家项目投影，等待确认不会进入完成筛选。"""
 
-    library_id = f"pytest-library-{uuid.uuid4().hex}"
-    file_id = f"pytest-file-{uuid.uuid4().hex}"
-    unit_id = f"pytest-unit-{uuid.uuid4().hex}"
-    async with pg_manager.get_async_session_context() as db:
-        repo = MaterialLibraryRepository(db)
-        await repo.create_library(library_id=library_id, name="任务投影资料库", created_by="pytest")
-        await repo.create_source_file(
-            file_id=file_id,
-            library_id=library_id,
-            directory_id=None,
-            original_filename="material.md",
-            relative_path="material.md",
-            file_type=".md",
-            file_size=20,
-            source_bucket="materials",
-            source_object=f"pytest/{file_id}/original.md",
-            markdown_bucket="materials",
-            markdown_object=f"pytest/{file_id}/content.md",
-            status="ready",
-            unit_status="ready",
-            progress=100,
-            line_count=2,
-            error_message=None,
+    project_id = uuid.uuid4().hex
+    engine = create_async_engine(os.getenv("POSTGRES_URL", "postgresql+asyncpg://postgres:postgres@postgres:5432/yuxi"))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as db:
+        await ExpertRepository(db).create_project(
+            project_id=project_id,
+            name="等待操作项目",
+            description="任务中心等待态集成测试",
+            model_spec="pytest:model",
             created_by="pytest",
-        )
-        await repo.create_material_units(
-            file_id,
-            [{"unit_id": unit_id, "title": "完整材料", "start_line": 1, "end_line": 2}],
+            stage="orientation",
+            status="ready",
         )
         await db.commit()
 
-    create_response = await test_client.post(
-        "/api/expert-projects",
-        json={
-            "name": f"pytest_task_project_{uuid.uuid4().hex[:8]}",
-            "material_unit_ids": [unit_id],
-        },
-        headers=admin_headers,
-    )
-    assert create_response.status_code == 200, create_response.text
-    project_id = create_response.json()["item"]["project_id"]
-
     try:
-        for _ in range(40):
-            project_response = await test_client.get(f"/api/expert-projects/{project_id}", headers=admin_headers)
-            assert project_response.status_code == 200, project_response.text
-            if project_response.json()["item"]["status"] == "ready":
-                break
-            await asyncio.sleep(0.25)
-        else:
-            pytest.fail("Expert project did not reach ready status within timeout")
-
         detail_response = await test_client.get(
             f"/api/tasks/expert-project:{project_id}",
             headers=admin_headers,
@@ -155,11 +117,10 @@ async def test_admin_can_read_waiting_expert_projection_without_completion(test_
         assert active_response.status_code == 200, active_response.text
         assert all(item["id"] != f"expert-project:{project_id}" for item in active_response.json()["tasks"])
     finally:
-        delete_response = await test_client.delete(f"/api/expert-projects/{project_id}", headers=admin_headers)
-        assert delete_response.status_code == 200, delete_response.text
-        async with pg_manager.get_async_session_context() as db:
-            await db.execute(delete(MaterialSourceFile).where(MaterialSourceFile.file_id == file_id))
-            await db.execute(delete(MaterialLibrary).where(MaterialLibrary.library_id == library_id))
+        async with factory() as db:
+            await ExpertRepository(db).delete_project(project_id)
+            await db.commit()
+        await engine.dispose()
 
 
 async def test_admin_cannot_create_new_project_with_legacy_multipart_upload(test_client, admin_headers):
