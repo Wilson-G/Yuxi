@@ -10,15 +10,18 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import yaml
 
 from yuxi.agents.skills.service import parse_skill_dir_metadata
+from yuxi.expert import storage
 from yuxi.expert.index import build_search_row
 from yuxi.expert.materials import format_expert_material_excerpt, map_expert_material_source_lines
-from yuxi.expert.storage import get_project_root, read_material_text as read_legacy_material_text
+from yuxi.storage.minio.client import MinIOClient, get_minio_client
 
 FINAL_SKILL_ENTRIES = {"SKILL.md", "nav", "references", "wiki", "search", "sources.jsonl"}
+DOCUMENT_IMAGE_PATTERN = re.compile(r"(!\[[^\]]*\]\()(/api/document-images/[^)\s]+)(\))")
 
 
 def get_project_skill_slug(project: Any) -> str:
@@ -38,7 +41,7 @@ def build_candidate_skill(
 ) -> str:
     """生成通过结构和引用检查的版本化候选 Skill，并原子晋升。"""
 
-    project_root = get_project_root(project.project_id)
+    project_root = storage.get_project_root(project.project_id)
     release_root = project_root / "release"
     release_root.mkdir(exist_ok=True)
     target = release_root / f"v{project.organization_version}"
@@ -141,11 +144,12 @@ def _write_candidate_files(
     evidence_ids = {key: f"E{index:04d}" for index, key in enumerate(evidence_uses, start=1)}
     if material_source_texts is None:
         material_source_texts = {
-            material.material_id: read_legacy_material_text(project.project_id, material.text_path)
+            material.material_id: storage.read_material_text(project.project_id, material.text_path)
             for material in passed_materials
         }
     source_rows = []
     search_rows = []
+    published_images: dict[str, str] = {}
     for key, details in evidence_uses.items():
         material_id, start_line, end_line = key
         material = details["material"]
@@ -161,6 +165,13 @@ def _write_candidate_files(
             start_line=start_line,
             end_line=end_line,
             source_line_numbers=True,
+        )
+        excerpt = _publish_reference_images(
+            root,
+            excerpt=excerpt,
+            material=material,
+            project_id=project.project_id,
+            published_images=published_images,
         )
         reference_path = f"references/{evidence_id.lower()}.md"
         reference = (
@@ -239,6 +250,64 @@ def _write_candidate_files(
 def _safe_slug(value: str, *, fallback: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")
     return slug or fallback
+
+
+def _publish_reference_images(
+    root: Path,
+    *,
+    excerpt: str,
+    material: Any,
+    project_id: str,
+    published_images: dict[str, str],
+) -> str:
+    """把精选证据引用的私有解析图片写入 Skill 并改成相对链接。"""
+
+    def replace_image(match: re.Match[str]) -> str:
+        object_name = unquote(match.group(2).removeprefix("/api/document-images/"))
+        _validate_reference_image_owner(material, project_id=project_id, object_name=object_name)
+
+        image_path = published_images.get(object_name)
+        if image_path is None:
+            suffix = Path(object_name).suffix.lower()
+            if not suffix:
+                raise ValueError("精选证据图片缺少文件扩展名")
+            image_path = f"references/images/image-{len(published_images) + 1:04d}{suffix}"
+            image_target = root / image_path
+            image_target.parent.mkdir(exist_ok=True)
+            image_target.write_bytes(
+                get_minio_client().download_file(
+                    MinIOClient.MATERIAL_BUCKETS["images"],
+                    object_name,
+                )
+            )
+            published_images[object_name] = image_path
+
+        local_path = Path(image_path).relative_to("references").as_posix()
+        return f"{match.group(1)}{local_path}{match.group(3)}"
+
+    return DOCUMENT_IMAGE_PATTERN.sub(replace_image, excerpt)
+
+
+def _validate_reference_image_owner(material: Any, *, project_id: str, object_name: str) -> None:
+    """确认私有图片属于当前资料库来源或旧项目材料。"""
+
+    if ".." in object_name.split("/") or "\\" in object_name:
+        raise ValueError("精选证据图片路径非法")
+    if material.material_unit_id:
+        parts = object_name.split("/")
+        if (
+            len(parts) < 6
+            or parts[0] != "material-libraries"
+            or parts[2] != "source-files"
+            or parts[3] != material.source_file_id
+            or parts[4] != "images"
+        ):
+            raise ValueError("精选证据引用了当前资料库来源范围外的私有图片")
+        return
+
+    expected_prefix = f"expert-projects/{project_id}/{material.material_id}/"
+    if not object_name.startswith(expected_prefix):
+        raise ValueError("精选证据引用了当前旧项目材料范围外的私有图片")
 
 
 __all__ = ["build_candidate_skill", "get_project_skill_slug", "validate_candidate_skill"]

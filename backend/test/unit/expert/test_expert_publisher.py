@@ -7,9 +7,9 @@ import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
-
 from yuxi.agents.skills.service import parse_skill_dir_metadata
 from yuxi.expert import publisher, storage
 
@@ -105,6 +105,7 @@ async def test_candidate_skill_contains_only_runtime_outputs_selected_evidence_a
 
     references = list((skill_root / "references").glob("*.md"))
     assert len(references) == 1
+    assert not (skill_root / "references" / "images").exists()
     reference_text = references[0].read_text(encoding="utf-8")
     assert "L2: 条件反转信号出现时应重新判断" in reference_text
     assert "L3: 证据不足时必须停止" in reference_text
@@ -195,6 +196,120 @@ async def test_candidate_skill_contains_only_runtime_outputs_selected_evidence_a
     )
     with pytest.raises(ValueError, match="指向无效证据"):
         publisher.validate_candidate_skill(skill_root)
+
+
+@pytest.mark.parametrize(
+    ("material_fields", "image_object"),
+    [
+        (
+            {
+                "material_unit_id": "unit-1",
+                "source_file_id": "source-1",
+                "source_start_line": 1,
+                "source_end_line": 3,
+            },
+            "material-libraries/library-1/source-files/source-1/images/diagram 1.png",
+        ),
+        (
+            {
+                "material_unit_id": None,
+                "source_file_id": None,
+                "source_start_line": None,
+                "source_end_line": None,
+            },
+            f"expert-projects/{PROJECT_ID}/material-1/diagram 1.png",
+        ),
+    ],
+    ids=["material-library", "legacy-project"],
+)
+def test_candidate_skill_packages_only_selected_private_evidence_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    material_fields: dict,
+    image_object: str,
+) -> None:
+    monkeypatch.setenv("SAVE_DIR", str(tmp_path))
+    project_root = storage.create_project_output_workspace(PROJECT_ID)
+    project = SimpleNamespace(
+        project_id=PROJECT_ID,
+        organization_version=1,
+        skill_slug="image-evidence-expert",
+        name="含图证据专家",
+        description="依据含图精选证据回答",
+    )
+    material = SimpleNamespace(
+        material_id="material-1",
+        title="含图材料",
+        source_path="books/illustrated.md",
+        text_path=None,
+        line_count=3,
+        status="passed",
+        **material_fields,
+    )
+    topic = SimpleNamespace(
+        topic_key="illustrated-evidence",
+        title="含图判断",
+        reader_question="图片如何支撑判断？",
+        position=1,
+        handout="# 含图判断",
+        handout_contract={
+            "citations": [
+                {
+                    "note_alias": "N001",
+                    "start_line": 2,
+                    "end_line": 3,
+                    "supports": "图片中的关键判断",
+                }
+            ]
+        },
+    )
+    uncited_object = image_object.replace("diagram 1.png", "uncited.png")
+    source_text = "\n".join(
+        [
+            f"![未选中图片](/api/document-images/{quote(uncited_object, safe='/')})",
+            "图示中的条件发生变化",
+            f"![证据图](/api/document-images/{quote(image_object, safe='/')})",
+        ]
+    )
+
+    class FakeMinio:
+        """记录候选 Skill 实际读取的私有图片对象。"""
+
+        def __init__(self) -> None:
+            self.downloaded: list[tuple[str, str]] = []
+
+        def download_file(self, bucket_name: str, object_name: str) -> bytes:
+            self.downloaded.append((bucket_name, object_name))
+            return b"selected-image-bytes"
+
+    minio = FakeMinio()
+    monkeypatch.setattr(publisher, "get_minio_client", lambda: minio)
+
+    relative = publisher.build_candidate_skill(
+        project=project,
+        materials=[material],
+        material_source_texts={"material-1": source_text},
+        topics=[topic],
+        navigation="进入含图判断讲义。",
+        skill_body="按精选证据中的文字和图片回答。",
+    )
+    skill_root = project_root / relative
+
+    assert {path.name for path in skill_root.iterdir()} == publisher.FINAL_SKILL_ENTRIES
+    [reference] = list((skill_root / "references").glob("*.md"))
+    [image] = list((skill_root / "references" / "images").iterdir())
+    assert image.read_bytes() == b"selected-image-bytes"
+    assert f"![证据图](images/{image.name})" in reference.read_text(encoding="utf-8")
+    assert minio.downloaded == [("kb-images", image_object)]
+
+    published_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in skill_root.rglob("*")
+        if path.is_file() and path.suffix in {".md", ".jsonl"}
+    )
+    assert "/api/document-images/" not in published_text
+    assert "uncited.png" not in published_text
+    publisher.validate_candidate_skill(skill_root)
 
 
 def test_candidate_skill_rebuilds_existing_version_from_current_outputs(
