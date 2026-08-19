@@ -7,9 +7,10 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from yuxi.repositories.expert_repository import ExpertRepository
+from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.models_business import Base
+from yuxi.storage.postgres.models_material import MaterialUnit  # noqa: F401
 
 pytestmark = pytest.mark.unit
 
@@ -41,8 +42,15 @@ async def _create_project(
     )
 
 
-def _material_payload(material_id: str, source_path: str, *, status: str = "ready") -> dict:
-    return {
+def _material_payload(
+    material_id: str,
+    source_path: str,
+    *,
+    status: str = "ready",
+    material_unit_id: str | None = None,
+    source_file_id: str | None = None,
+) -> dict:
+    payload = {
         "material_id": material_id,
         "title": source_path,
         "source_path": source_path,
@@ -53,6 +61,49 @@ def _material_payload(material_id: str, source_path: str, *, status: str = "read
         "token_count": 120,
         "line_count": 12,
     }
+    if material_unit_id is not None:
+        payload.update(
+            material_unit_id=material_unit_id,
+            source_file_id=source_file_id,
+            source_start_line=1,
+            source_end_line=12,
+            raw_path=None,
+            text_path=None,
+        )
+    return payload
+
+
+async def _create_material_units(db: AsyncSession) -> None:
+    """创建仓储唯一性测试使用的两个同源材料单元。"""
+
+    repository = MaterialLibraryRepository(db)
+    await repository.create_library(library_id="library-1", name="资料库", created_by="user-1")
+    await repository.create_source_file(
+        file_id="source-1",
+        library_id="library-1",
+        directory_id=None,
+        original_filename="same.md",
+        relative_path="same.md",
+        file_type=".md",
+        file_size=20,
+        source_bucket="materials",
+        source_object="sources/same.md",
+        markdown_bucket="materials",
+        markdown_object="normalized/same.md",
+        status="ready",
+        unit_status="ready",
+        progress=100,
+        line_count=24,
+        error_message=None,
+        created_by="user-1",
+    )
+    await repository.create_material_units(
+        "source-1",
+        [
+            {"unit_id": "unit-1", "title": "第一单元", "start_line": 1, "end_line": 12},
+            {"unit_id": "unit-2", "title": "第二单元", "start_line": 13, "end_line": 24},
+        ],
+    )
 
 
 def _research_batch_payload(batch_id: str, title: str, material_ids: list[str]) -> dict:
@@ -185,26 +236,54 @@ async def test_material_queries_lock_and_update_single_material(session: AsyncSe
 
 
 @pytest.mark.asyncio
-async def test_material_source_path_is_unique_inside_project(session: AsyncSession):
+async def test_material_unit_is_unique_inside_project(session: AsyncSession):
     repository = ExpertRepository(session)
     await _create_project(session, project_id="project-1")
     await _create_project(session, project_id="project-2")
+    await _create_material_units(session)
     await repository.create_materials(
         "project-1",
-        [_material_payload("material-1", "same.md")],
+        [
+            _material_payload(
+                "material-1",
+                "same.md",
+                material_unit_id="unit-1",
+                source_file_id="source-1",
+            ),
+            _material_payload(
+                "material-2",
+                "same.md",
+                material_unit_id="unit-2",
+                source_file_id="source-1",
+            ),
+        ],
     )
     await session.commit()
 
     with pytest.raises(IntegrityError):
         await repository.create_materials(
             "project-1",
-            [_material_payload("material-duplicate", "same.md")],
+            [
+                _material_payload(
+                    "material-duplicate",
+                    "same.md",
+                    material_unit_id="unit-1",
+                    source_file_id="source-1",
+                )
+            ],
         )
     await session.rollback()
 
     created = await repository.create_materials(
         "project-2",
-        [_material_payload("material-other-project", "same.md")],
+        [
+            _material_payload(
+                "material-other-project",
+                "same.md",
+                material_unit_id="unit-1",
+                source_file_id="source-1",
+            )
+        ],
     )
     assert created[0].project_id == "project-2"
 
