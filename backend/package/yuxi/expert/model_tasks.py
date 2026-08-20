@@ -19,6 +19,7 @@ from yuxi.expert.contracts import (
     HandoutReviewResult,
     MethodCalibrationAssessment,
     MethodCalibrationResult,
+    MaterialAutoResolutionResult,
     MaterialNoteResult,
     MaterialReviewResult,
     NavigationResult,
@@ -345,6 +346,60 @@ V2 小样结果：
             model_spec,
             MaterialNoteResult,
             system=_project_stage_system(stage_prompt, learning_plan),
+            prompt=prompt,
+            cacheable=True,
+        )
+
+    async def resolve_material_automatically(
+        self,
+        *,
+        model_spec: str,
+        learning_plan: str,
+        stage_prompt: str,
+        material_alias: str,
+        title: str,
+        source: str,
+        text: str,
+        candidate_note: MaterialNoteResult | None,
+        latest_result: MaterialNoteResult,
+        review: MaterialReviewResult | None,
+    ) -> MaterialAutoResolutionResult:
+        """自动模式完整复核材料并交付可采用笔记或不入选结论。"""
+
+        task_instruction = """
+用户已经明确授权当前项目自动推进。这是当前材料在有限修订后的最终内容取舍，
+不能再把普通内容质量问题交给用户，也不能要求继续修订。
+
+请完整阅读原材料、当前可用笔记、最新 Author 或 Repair 响应及最后一次 Review。
+如果材料能够形成忠实、可迁移且有原文依据的判断方法，直接交付一份完整的 `learned` 笔记；
+必要时可以依据完整原文重写当前笔记。该结果必须包含自然 Markdown 笔记、忠实的 routing_labels、
+候选读者问题和可定位证据，能够直接进入后续主题组织。
+
+如果材料本身没有足够迁移价值，返回 `no_value` 并说明不采用原因。
+不要返回 `needs_attention`、修订建议或过程说明。模型调用、正文读取、上下文、响应合同和存储故障
+由系统单独处理，不属于本次内容判断。
+""".strip()
+        prompt = f"""
+当前材料别名：{material_alias}
+标题：{title}
+来源：{source}
+
+完整原材料：
+{number_material_lines(text)}
+
+当前可用的 learned 笔记：
+{json.dumps(candidate_note.model_dump(), ensure_ascii=False, indent=2) if candidate_note else "无"}
+
+最新 Author 或 Repair 响应：
+{json.dumps(latest_result.model_dump(), ensure_ascii=False, indent=2)}
+
+最后一次独立 Review：
+{json.dumps(review.model_dump(), ensure_ascii=False, indent=2) if review else "无"}
+""".strip()
+        return await self._invoke_structured(
+            model_spec,
+            MaterialAutoResolutionResult,
+            system=_project_stage_system(stage_prompt, learning_plan, task_instruction),
             prompt=prompt,
             cacheable=True,
         )

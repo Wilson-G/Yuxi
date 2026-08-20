@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi.expert import service, storage
 from yuxi.expert.contracts import (
+    MaterialAutoResolutionResult,
     MaterialNoteResult,
     MaterialReviewResult,
     ProjectMethodResult,
@@ -801,14 +802,13 @@ async def test_material_learning_runs_one_independent_job_per_material(expert_en
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("note_decision", ["no_value", "needs_attention"])
-async def test_nontransferable_note_is_not_promoted_to_passed(expert_env, note_decision: str) -> None:
+async def test_nontransferable_note_is_not_promoted_to_passed(expert_env) -> None:
     """Reviewer 认可材料不具备迁移价值时，项目自动排除该材料。"""
 
     class NontransferableTasks:
         async def write_material_note(self, **_kwargs) -> MaterialNoteResult:
             return MaterialNoteResult(
-                decision=note_decision,
+                decision="no_value",
                 reason="材料没有可迁移的判断方法",
             )
 
@@ -847,6 +847,241 @@ async def test_nontransferable_note_is_not_promoted_to_passed(expert_env, note_d
     assert material is not None
     assert material.status == "no_value"
     assert material.error_message == "材料没有可迁移的判断方法"
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_keeps_author_attention_for_user_action(expert_env) -> None:
+    """人工模式保留内容问题，不调用自动终局模型。"""
+
+    class AuthorAttentionTasks:
+        async def write_material_note(self, **_kwargs) -> MaterialNoteResult:
+            return MaterialNoteResult(decision="needs_attention", reason="材料观点需要人工判断")
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            raise AssertionError("没有合法 learned 笔记时不应进入普通 Review")
+
+        async def revise_material_note(self, **_kwargs) -> MaterialNoteResult:
+            raise AssertionError("没有合法 learned 笔记时不应进入修订")
+
+        async def resolve_material_automatically(self, **_kwargs) -> MaterialAutoResolutionResult:
+            raise AssertionError("人工模式不能调用自动终局模型")
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(material_ids[0], status="pending")
+        await db.commit()
+
+    result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=AuthorAttentionTasks(),
+    )
+
+    async with expert_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_ids[0])
+    assert result["status"] == "needs_attention"
+    assert material is not None
+    assert material.status == "needs_attention"
+    assert material.error_message == "材料观点需要人工判断"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_issue",
+    ["revision_exhausted", "revision_attention", "review_attention", "author_attention"],
+)
+async def test_auto_mode_resolves_content_issues_to_complete_learned_note(
+    expert_env,
+    content_issue: str,
+) -> None:
+    """自动模式把三类内容卡点收敛为一份可供主题组织的完整笔记。"""
+
+    class AutoResolutionTasks:
+        def __init__(self):
+            self.revision_calls = 0
+            self.resolution_inputs: list[dict] = []
+
+        async def write_material_note(self, *, material_alias: str, **_kwargs) -> MaterialNoteResult:
+            if content_issue == "author_attention":
+                return MaterialNoteResult(decision="needs_attention", reason="Author 无法决定内容取舍")
+            return MaterialNoteResult(
+                decision="learned",
+                note_markdown="# 当前笔记",
+                routing_labels=["判断条件"],
+                evidence=[
+                    {
+                        "material_alias": material_alias,
+                        "start_line": 1,
+                        "end_line": 2,
+                        "supports": "原文支持当前判断",
+                    }
+                ],
+            )
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            if content_issue == "review_attention":
+                return MaterialReviewResult(
+                    decision="needs_attention",
+                    summary="Reviewer 无法完成普通内容取舍",
+                    issues=[],
+                )
+            return MaterialReviewResult(
+                decision="revise",
+                summary="仍需修订一处内容",
+                issues=[
+                    {
+                        "problem": "判断边界仍不清楚",
+                        "affected_part": "判断链",
+                        "source_lines": ["L2"],
+                        "revision_direction": "按原文收窄",
+                    }
+                ],
+            )
+
+        async def revise_material_note(self, *, note: MaterialNoteResult, **_kwargs) -> MaterialNoteResult:
+            self.revision_calls += 1
+            if content_issue == "revision_attention":
+                return MaterialNoteResult(decision="needs_attention", reason="Repair 无法完成内容取舍")
+            return note.model_copy(update={"note_markdown": f"# 第 {self.revision_calls} 次修订"})
+
+        async def resolve_material_automatically(self, **kwargs) -> MaterialAutoResolutionResult:
+            self.resolution_inputs.append(kwargs)
+            return MaterialAutoResolutionResult(
+                decision="learned",
+                note_markdown="# 自动终局笔记\n保留完整判断条件。",
+                reason="完整材料能够形成可采用的判断方法",
+                routing_labels=["条件变化时调整"],
+                candidate_questions=["什么条件会改变处理？"],
+                evidence=[
+                    {
+                        "material_alias": kwargs["material_alias"],
+                        "start_line": 1,
+                        "end_line": 3,
+                        "supports": "完整材料支持终局笔记",
+                    }
+                ],
+            )
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        project.auto_advance = True
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(material_ids[0], status="pending")
+        await db.commit()
+
+    tasks = AutoResolutionTasks()
+    result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=tasks,
+    )
+
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        material = await repo.get_material(material_ids[0])
+    assert result["status"] == "preparing"
+    assert project is not None and project.stage == "organization"
+    assert material is not None
+    assert material.status == "passed"
+    assert material.note == "# 自动终局笔记\n保留完整判断条件。"
+    assert material.note_contract["decision"] == "learned"
+    assert material.review == {
+        "decision": "pass",
+        "summary": "完整材料能够形成可采用的判断方法",
+        "issues": [],
+    }
+    assert material.error_message is None
+    assert len(tasks.resolution_inputs) == 1
+    resolution_input = tasks.resolution_inputs[0]
+    assert resolution_input["latest_result"].decision == (
+        "needs_attention" if content_issue in {"author_attention", "revision_attention"} else "learned"
+    )
+    assert (resolution_input["candidate_note"] is None) is (content_issue == "author_attention")
+    expected_revisions = {"revision_exhausted": 2, "revision_attention": 1}.get(content_issue, 0)
+    assert tasks.revision_calls == expected_revisions
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_stops_when_all_materials_are_no_value(expert_env) -> None:
+    """自动模式零份材料通过时明确停止，不把空输入交给主题组织。"""
+
+    class AutoNoValueTasks:
+        async def write_material_note(self, **_kwargs) -> MaterialNoteResult:
+            return MaterialNoteResult(decision="needs_attention", reason="需要完成最终内容取舍")
+
+        async def review_material_note(self, **_kwargs) -> MaterialReviewResult:
+            raise AssertionError("没有合法 learned 笔记时不应进入普通 Review")
+
+        async def revise_material_note(self, **_kwargs) -> MaterialNoteResult:
+            raise AssertionError("没有合法 learned 笔记时不应进入修订")
+
+        async def resolve_material_automatically(self, **_kwargs) -> MaterialAutoResolutionResult:
+            return MaterialAutoResolutionResult(
+                decision="no_value",
+                reason="完整阅读后确认这份材料没有可迁移判断",
+            )
+
+    project_id, material_ids = await _create_project(expert_env, count=1)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        project.auto_advance = True
+        await repo.update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        await repo.update_material(material_ids[0], status="pending")
+        await db.commit()
+
+    result = await service.run_material_learning_stage(
+        project_id,
+        material_ids[0],
+        1,
+        model_tasks=AutoNoValueTasks(),
+    )
+
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        material = await repo.get_material(material_ids[0])
+    assert result["status"] == "needs_attention"
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "needs_attention"
+    assert project.error_message == "全部材料均被模型判定不采用，无法形成可信专家 Skill"
+    assert material is not None
+    assert material.status == "no_value"
+    assert material.error_message == "完整阅读后确认这份材料没有可迁移判断"
 
 
 @pytest.mark.asyncio
@@ -1189,6 +1424,54 @@ async def test_method_calibration_compares_samples_and_waits_for_second_confirma
                 created_by="user-1",
                 representative_material_ids=material_ids,
             )
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_starts_material_learning_after_acceptable_calibration(expert_env) -> None:
+    """自动推进已获授权时，校准通过后直接进入逐份学习。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    model_tasks = CalibrationModelTasks()
+
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    async with expert_env.factory() as db:
+        calibrated_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            auto_advance=True,
+        )
+
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
+    assert result == {
+        "project_id": project_id,
+        "method_version": calibrated_version,
+        "status": "running",
+    }
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
+    assert project.auto_advance is True
+    assert project.method_confirmed_at is not None
+    assert project.method_calibration_baseline == []
+    assert all(material.status == "pending" for material in materials)
+
+    repeated = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert repeated["status"] == "running"
+    assert len(model_tasks.assessment_inputs) == 1
 
 
 @pytest.mark.asyncio

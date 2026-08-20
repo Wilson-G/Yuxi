@@ -88,6 +88,13 @@ class MaterialNoteResult(ExpertContract):
     evidence: list[EvidenceAnchor] = Field(default_factory=list)
 
 
+class MaterialAutoResolutionResult(MaterialNoteResult):
+    """自动模式对材料内容问题给出的最终可消费结果。"""
+
+    decision: Literal["learned", "no_value"]
+    reason: str = Field(min_length=1)
+
+
 class ReviewIssue(ExpertContract):
     """Reviewer 提交的一条可执行问题。"""
 

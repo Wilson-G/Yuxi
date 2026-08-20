@@ -438,6 +438,108 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
 
 
 @pytest.mark.asyncio
+async def test_auto_resolution_returns_a_complete_note_from_full_material_context() -> None:
+    """自动终局读取完整材料和最后结果，并交付可供主题组织的完整笔记。"""
+
+    model = RecordingStructuredModel(
+        [
+            {
+                "decision": "learned",
+                "note_markdown": "# 最终笔记\n保留条件和停止线。",
+                "reason": "当前材料能够形成有依据的判断方法",
+                "routing_labels": ["条件变化时停止"],
+                "candidate_questions": ["什么条件会改变处理？"],
+                "evidence": [
+                    {
+                        "material_alias": "M009",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "supports": "原文给出判断条件和停止线",
+                    }
+                ],
+            }
+        ]
+    )
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    candidate = MaterialNoteResult(
+        decision="learned",
+        note_markdown="# 当前笔记",
+        routing_labels=["条件判断"],
+        evidence=[
+            {
+                "material_alias": "M009",
+                "start_line": 1,
+                "end_line": 2,
+                "supports": "当前判断",
+            }
+        ],
+    )
+    review = model_tasks.MaterialReviewResult(
+        decision="needs_attention",
+        summary="当前内容仍遗漏停止线",
+        issues=[],
+    )
+
+    result = await tasks.resolve_material_automatically(
+        model_spec="provider:model",
+        learning_plan="CONFIRMED-LEARNING-PLAN",
+        stage_prompt="FINAL-MATERIAL-PROMPT",
+        material_alias="M009",
+        title="完整材料",
+        source="source.md",
+        text="SOURCE-FIRST\nSOURCE-MIDDLE\nSOURCE-LAST",
+        candidate_note=candidate,
+        latest_result=candidate,
+        review=review,
+    )
+
+    prompt = _prompt(model.calls[0])
+    system_prompt = _system_prompt(model.calls[0])
+    assert "L1: SOURCE-FIRST\nL2: SOURCE-MIDDLE\nL3: SOURCE-LAST" in prompt
+    assert candidate.note_markdown in prompt
+    assert review.summary in prompt
+    assert "FINAL-MATERIAL-PROMPT" in system_prompt
+    assert "不能再把普通内容质量问题交给用户" in system_prompt
+    assert "不要返回 `needs_attention`" in system_prompt
+    assert result.decision == "learned"
+    assert result.note_markdown.startswith("# 最终笔记")
+    assert result.reason == "当前材料能够形成有依据的判断方法"
+
+
+@pytest.mark.asyncio
+async def test_auto_resolution_rejects_another_needs_attention_decision() -> None:
+    """终局模型再次等待属于响应合同失败，由现有运行失败边界处理。"""
+
+    invalid = {
+        "decision": "needs_attention",
+        "reason": "希望用户继续判断",
+        "note_markdown": "",
+        "routing_labels": [],
+        "candidate_questions": [],
+        "evidence": [],
+    }
+    model = RecordingStructuredModel([invalid, invalid])
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    stopped = MaterialNoteResult(decision="needs_attention", reason="当前内容取舍未收敛")
+
+    with pytest.raises(model_tasks.ExpertJsonlOutputError, match="本次任务未完成"):
+        await tasks.resolve_material_automatically(
+            model_spec="provider:model",
+            learning_plan="学习方案",
+            stage_prompt="材料终局 Prompt",
+            material_alias="M001",
+            title="材料",
+            source="source.md",
+            text="完整正文",
+            candidate_note=None,
+            latest_result=stopped,
+            review=None,
+        )
+
+    assert len(model.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_jsonl_trailing_text_retries_only_the_current_model_task() -> None:
     review = {
         "decision": "pass",
