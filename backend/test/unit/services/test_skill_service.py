@@ -497,6 +497,7 @@ def test_knowledge_base_builtin_skill_spec():
     assert "knowledge-base" in specs
     knowledge_base = specs["knowledge-base"]
     assert knowledge_base["name"] == "knowledge-base"
+    assert "兼容知识库" in knowledge_base["description"]
     assert knowledge_base["tool_dependencies"] == [
         "list_kbs",
         "query_kb",
@@ -506,7 +507,9 @@ def test_knowledge_base_builtin_skill_spec():
         "search_file",
         "download_kb_file",
     ]
-    assert (knowledge_base["source_dir"] / "SKILL.md").exists()
+    skill_path = knowledge_base["source_dir"] / "SKILL.md"
+    assert skill_path.exists()
+    assert "兼容知识库" in skill_path.read_text(encoding="utf-8")
 
 
 def test_mysql_reporter_builtin_skill_spec_replaces_reporter_and_deep_reporter():
@@ -1861,4 +1864,3 @@ async def test_confirm_personal_skill_draft_uses_original_slug_without_database(
     assert results[0]["requested_slug"] == "demo-v2"
     assert (personal_root / "demo" / "SKILL.md").exists()
     assert not draft_dir.exists()
-

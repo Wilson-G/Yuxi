@@ -76,6 +76,11 @@ def _async_tool_middleware(*, model: str | None = None) -> YuxiSubAgentMiddlewar
     )
 
 
+def test_subagent_tool_descriptions_do_not_use_legacy_product_name() -> None:
+    assert "Yuxi" not in subagent_task_middleware.TASK_TOOL_DESCRIPTION
+    assert "Yuxi" not in subagent_task_middleware.SUBAGENT_START_DESCRIPTION
+
+
 def _subagent_run(
     *,
     status: str = "running",
