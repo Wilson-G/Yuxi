@@ -11,7 +11,7 @@ export const useThemeStore = defineStore('theme', () => {
     token: {
       fontFamily:
         "'HarmonyOS Sans SC', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;",
-      colorPrimary: '#24839b',
+      colorPrimary: '#216b58',
       colorLink: 'var(--main-color)',
       colorLinkHover: 'var(--main-600)',
       colorLinkActive: 'var(--main-800)',
@@ -28,6 +28,10 @@ export const useThemeStore = defineStore('theme', () => {
   // 深色主题配置
   const darkTheme = {
     ...commonTheme,
+    token: {
+      ...commonTheme.token,
+      colorPrimary: '#70aa98'
+    },
     algorithm: theme.darkAlgorithm
   }
 

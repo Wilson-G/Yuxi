@@ -5,20 +5,18 @@
 organization:
   name: "知铸"               # 完整组织名称
   logo: "/favicon.svg"       # Logo文件路径（放在 web/public 目录下）
-  avatar: "/avatar.jpg"      # 头像文件路径（放在 web/public 目录下）
+  avatar: "/favicon.svg"     # 侧栏品牌图标（放在 web/public 目录下）
   login_bg: "/login-bg.jpg"  # 登录背景图片路径（放在 web/public 目录下）
 
 # 项目信息
 branding:
   name: "ZhiForge"
-  title: "把材料学成真正可用的专家 Skill"     # 系统标题
-  subtitle: "从项目定向、逐份学习与 Review，到总编成书和手动启用"          # 副标题（subtitles 为空时使用）
+  title: "把文章与经验，铸成专家的大脑"     # 系统标题
+  subtitle: "创建能理解方法、做出判断、解释依据的专家 Agent"          # 副标题（subtitles 为空时使用）
   subtitles:
-    - "先根据真实材料确定怎么学，再固定项目专属 Prompt"
-    - "逐份学习完整材料，让独立 Review 守住来源和边界"
-    - "并行准备研究，由项目总编统一组织讲义和回答口径"
-    - "只发布正式讲义、导航与精选证据，不发布工厂过程"
-    - "预览成品后手动启用，让智能体使用独立专家 Skill"
+    - "不只记住知识，更能继承材料中的判断方法"
+    - "理解条件、例外和边界，回答不再停留在相似片段"
+    - "每个关键判断都有材料依据，既专业也可核验"
 
 # 页脚信息
 footer:

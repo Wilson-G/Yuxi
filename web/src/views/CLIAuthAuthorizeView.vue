@@ -2,7 +2,10 @@
   <main class="cli-auth-view">
     <section class="cli-auth-panel">
       <div class="cli-auth-header">
-        <p class="eyebrow">Yuxi CLI</p>
+        <div class="cli-brand">
+          <img :src="brandLogo" :alt="`${brandName} Logo`" />
+          <span class="cli-brand-name">{{ brandName }} CLI</span>
+        </div>
         <h1>确认命令行登录</h1>
       </div>
 
@@ -29,7 +32,7 @@
           <dl>
             <div>
               <dt>凭据名称</dt>
-              <dd>{{ session?.key_name || 'Yuxi CLI' }}</dd>
+              <dd>{{ session?.key_name || 'ZhiForge CLI' }}</dd>
             </div>
             <div>
               <dt>状态</dt>
@@ -53,13 +56,19 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { authApi } from '@/apis/auth_api'
+import { useInfoStore } from '@/stores/info'
 
 const route = useRoute()
+const infoStore = useInfoStore()
 const loading = ref(true)
 const approving = ref(false)
 const approved = ref(false)
 const errorMessage = ref('')
 const session = ref(null)
+const brandName = computed(
+  () => infoStore.organization?.name?.trim() || infoStore.branding?.name?.trim() || '知铸'
+)
+const brandLogo = computed(() => infoStore.organization?.logo || '/favicon.svg')
 
 const userCode = computed(() =>
   String(route.query.user_code || '')
@@ -95,7 +104,9 @@ async function approveSession() {
   }
 }
 
-onMounted(loadSession)
+onMounted(async () => {
+  await Promise.all([loadSession(), infoStore.loadInfoConfig()])
+})
 </script>
 
 <style scoped lang="less">
@@ -118,10 +129,22 @@ onMounted(loadSession)
 .cli-auth-header {
   margin-bottom: 24px;
 
-  .eyebrow {
-    margin: 0 0 8px;
-    color: var(--color-text-secondary);
+  .cli-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 14px;
+
+    img {
+      width: 26px;
+      height: 26px;
+    }
+  }
+
+  .cli-brand-name {
+    color: var(--main-700);
     font-size: 13px;
+    font-weight: 650;
   }
 
   h1 {

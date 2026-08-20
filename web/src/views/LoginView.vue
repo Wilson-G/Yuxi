@@ -18,7 +18,7 @@
     <nav class="login-navbar">
       <div class="navbar-content">
         <div class="brand-container" @click="goHome" style="cursor: pointer">
-          <img v-if="brandLogo" :src="brandLogo" alt="logo" class="brand-logo" />
+          <img v-if="brandLogo" :src="brandLogo" :alt="`${brandName} Logo`" class="brand-logo" />
           <h1 class="brand-text">
             <span v-if="brandOrgName" class="brand-org">{{ brandOrgName }}</span>
             <span v-if="brandOrgName && brandName !== brandOrgName" class="brand-separator"></span>
@@ -34,6 +34,16 @@
         <!-- 左侧图片 -->
         <div class="card-side is-image">
           <img :src="loginBgImage" alt="登录背景" class="login-bg-image" />
+          <div class="image-shade" aria-hidden="true"></div>
+          <div class="image-message">
+            <p>Expert Agent Foundry</p>
+            <h2>把材料里的知识与经验，铸成专家的大脑</h2>
+            <div class="image-flow" aria-label="专家 Agent 能力">
+              <span>理解方法</span>
+              <span>形成判断</span>
+              <span>解释依据</span>
+            </div>
+          </div>
         </div>
 
         <!-- 右侧表单 -->
@@ -42,7 +52,7 @@
             <header class="form-header">
               <!-- 如果是在初始化，显示特定标题 -->
               <h2 v-if="isFirstRun" class="init-title">系统初始化，请创建超级管理员</h2>
-              <p v-else class="welcome-text">欢迎登录</p>
+              <p v-else class="welcome-text">欢迎登录 {{ brandOrgName || brandName }}</p>
             </header>
 
             <div class="login-content" :class="{ 'is-initializing': isFirstRun }">
@@ -266,13 +276,8 @@
 
     <!-- 页面底部：版权信息等 -->
     <footer class="page-footer">
-      <div class="footer-links">
-        <a href="https://github.com/xerrors" target="_blank">联系我们</a>
-        <span class="divider">|</span>
-        <a href="https://github.com/xerrors/Yuxi" target="_blank">使用帮助</a>
-      </div>
       <div class="copyright">
-        &copy; {{ new Date().getFullYear() }} {{ brandName }}. All Rights Reserved.
+        &copy; {{ new Date().getFullYear() }} {{ copyrightName }}. All Rights Reserved.
       </div>
     </footer>
   </div>
@@ -322,6 +327,9 @@ const brandName = computed(() => {
 
   return orgName || brandNameRaw
 })
+const copyrightName = computed(() =>
+  [...new Set([brandOrgName.value, brandName.value].filter(Boolean))].join(' ')
+)
 const userAgreementUrl = computed(() => {
   return infoStore.footer?.user_agreement_url?.trim() || ''
 })
@@ -672,9 +680,7 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  background-color: var(--gray-10);
-  background-image: radial-gradient(var(--gray-200) 1px, transparent 1px);
-  background-size: 24px 24px;
+  background-color: var(--main-20);
 
   &.has-alert {
     padding-top: 60px;
@@ -769,8 +775,9 @@ onUnmounted(() => {
   max-width: 95vw;
   height: 560px;
   background: var(--gray-0);
-  border-radius: 16px;
-  box-shadow: 0 0px 40px var(--shadow-1);
+  border: 1px solid var(--gray-150);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px var(--shadow-1);
   display: flex;
   overflow: hidden;
 }
@@ -790,6 +797,62 @@ onUnmounted(() => {
     height: 100%;
     object-fit: cover;
     object-position: center;
+  }
+
+  .image-shade {
+    position: absolute;
+    inset: 0;
+    background: rgba(7, 26, 21, 0.7);
+  }
+
+  .image-message {
+    position: absolute;
+    inset: auto 42px 42px;
+    color: #ffffff;
+
+    > p {
+      margin: 0 0 14px;
+      color: var(--main-200);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      max-width: 410px;
+      margin: 0;
+      font-size: 26px;
+      font-weight: 680;
+      line-height: 1.45;
+    }
+  }
+
+  .image-flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid rgba(255, 255, 255, 0.3);
+
+    span {
+      position: relative;
+      padding-right: 28px;
+      color: rgba(255, 255, 255, 0.74);
+      font-size: 12px;
+    }
+
+    span + span::before {
+      content: '';
+      position: absolute;
+      left: -16px;
+      top: 50%;
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--brand-accent);
+      transform: translateY(-50%);
+    }
   }
 }
 
@@ -818,7 +881,7 @@ onUnmounted(() => {
     color: var(--gray-500);
     margin-bottom: 4px;
     text-transform: uppercase;
-    letter-spacing: 1px;
+    letter-spacing: 0;
   }
   .init-title {
     font-size: 18px;
@@ -953,27 +1016,6 @@ onUnmounted(() => {
 .page-footer {
   padding: 24px;
   text-align: center;
-}
-
-.footer-links {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 8px;
-
-  a {
-    color: var(--gray-500);
-    font-size: 13px;
-    &:hover {
-      color: var(--main-color);
-    }
-  }
-
-  .divider {
-    color: var(--gray-300);
-    font-size: 12px;
-  }
 }
 
 .copyright {

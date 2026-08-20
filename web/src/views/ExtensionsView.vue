@@ -3,11 +3,11 @@
     <PageHeader
       v-if="!isDetailPage"
       v-model:active-key="activeTab"
-      title="智能体扩展"
+      title="专家 Agent"
       :tabs="extensionTabs"
       :loading="activeChildLoading"
       :show-border="true"
-      aria-label="智能体扩展视图切换"
+      aria-label="专家 Agent 与扩展能力视图切换"
     />
 
     <div v-if="!isDetailPage" class="extensions-content">

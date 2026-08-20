@@ -1,27 +1,30 @@
 /* 深色模式 */
 :root.dark {
-  --main-1000: #e1f6fb;
-  --main-900: #c4eaf5;
-  --main-800: #a3d8e8;
-  --main-700: #82c3d6;
-  --main-600: #5faec2;
-  --main-500: #4a9fb8;
-  --main-400: #3996ae;
-  --main-300: #24839a;
-  --main-200: #046a82;
-  --main-100: #035065;
-  --main-50: #023944;
-  --main-40: #01151f;
-  --main-30: #010d14;
-  --main-20: #010a0f;
-  --main-10: #00070a;
-  --main-5: #000405;
-  --main-1: #000102;
+  --main-1000: #e9f3ef;
+  --main-900: #d8e9e3;
+  --main-800: #bad7cf;
+  --main-700: #97c1b4;
+  --main-600: #70aa98;
+  --main-500: #59a58d;
+  --main-400: #49947e;
+  --main-300: #2f8069;
+  --main-200: #216b58;
+  --main-100: #1a5244;
+  --main-50: #123b31;
+  --main-40: #071a15;
+  --main-30: #05110d;
+  --main-20: #030d0a;
+  --main-10: #020906;
+  --main-5: #010503;
+  --main-1: #000201;
   --main-0: #000000;
 
   /* 保留原有的 main 变量 */
-  --main-color: #4a9fb8;
-  --main-bright: #5faec2;
+  --main-color: #70aa98;
+  --main-bright: #97c1b4;
+  --brand-accent: #e27b66;
+  --brand-accent-soft: #321a16;
+  --brand-on-dark: #b9d8cc;
 
   --gray-10000: #fafafa;
   --gray-2000: #f8fafa;
