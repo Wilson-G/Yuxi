@@ -544,7 +544,12 @@
               <div>
                 <span class="section-kicker">逐份学习与 Review</span>
                 <h2>批量学习材料</h2>
-                <p>
+                <p v-if="project.auto_advance">
+                  每份材料会在后台完成笔记、Review
+                  和有限自动修订；系统会判断采用或不入选。只有材料无法继续读取或执行，或没有材料通过
+                  Review 时，项目才会停下并说明原因。
+                </p>
+                <p v-else>
                   每份材料在后台完成笔记、Review
                   和最多两次自动修订；仍未通过的材料会保留具体意见，等待人工处理。
                 </p>
