@@ -121,14 +121,23 @@ async def test_stable_job_id_and_recovery_only_requeue_unfinished_files(
     )
 
 
-async def test_enqueue_failure_stays_pending_for_startup_recovery(worker_env, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enqueue_failures_require_explicit_single_file_retry(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     await _add_source(worker_env, "enqueue-failed-file", "pending", 0)
+    await _add_source(worker_env, "unit-enqueue-failed-file", "ready", 100)
 
     async with worker_env() as db:
         await service.mark_material_source_enqueue_failed(
             db,
             file_id="enqueue-failed-file",
             error="来源文件任务投递失败: redis unavailable",
+        )
+        await service.mark_material_unit_enqueue_failed(
+            db,
+            file_id="unit-enqueue-failed-file",
+            error="材料单元确认任务投递失败: redis unavailable",
         )
 
     jobs: list[tuple[tuple, dict]] = []
@@ -146,14 +155,12 @@ async def test_enqueue_failure_stays_pending_for_startup_recovery(worker_env, mo
 
     async with worker_env() as db:
         source_file = await MaterialLibraryRepository(db).get_source_file("enqueue-failed-file")
-    assert source_file.status == "pending"
+        unit_source = await MaterialLibraryRepository(db).get_source_file("unit-enqueue-failed-file")
+    assert source_file.status == "needs_attention"
     assert source_file.error_message == "来源文件任务投递失败: redis unavailable"
-    assert jobs == [
-        (
-            ("process_material_source_file_job", "enqueue-failed-file"),
-            {"_job_id": "material-source:enqueue-failed-file"},
-        )
-    ]
+    assert unit_source.unit_status == "needs_attention"
+    assert unit_source.error_message == "材料单元确认任务投递失败: redis unavailable"
+    assert jobs == []
 
 
 async def test_source_job_enqueues_boundary_confirmation_after_text_is_ready(

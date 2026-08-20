@@ -288,22 +288,22 @@ async def reset_material_source_units(db: AsyncSession, *, library_id: str, file
 
 
 async def mark_material_source_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> None:
-    """记录 ARQ 投递失败并保留来源文件的等待状态。"""
+    """记录来源文件投递失败，让用户可以显式重试这一份文件。"""
 
     await MaterialLibraryRepository(db).update_source_file(
         file_id,
-        status=SOURCE_PENDING_STATUS,
+        status=SOURCE_ATTENTION_STATUS,
         error_message=error,
     )
     await db.commit()
 
 
 async def mark_material_unit_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> None:
-    """记录单元确认投递失败，保留可由启动扫描恢复的等待事实。"""
+    """记录单元确认投递失败，让用户可以显式重试边界确认。"""
 
     await MaterialLibraryRepository(db).update_source_file(
         file_id,
-        unit_status=UNIT_PENDING_STATUS,
+        unit_status=UNIT_ATTENTION_STATUS,
         error_message=error,
     )
     await db.commit()
