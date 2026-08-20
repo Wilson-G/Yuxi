@@ -544,6 +544,10 @@ class PostgresManager(metaclass=SingletonMeta):
         self._check_initialized()
         stmts = [
             (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "auto_advance BOOLEAN NOT NULL DEFAULT FALSE"
+            ),
+            (
                 "ALTER TABLE IF EXISTS material_source_files ADD COLUMN IF NOT EXISTS "
                 "unit_status VARCHAR(32) NOT NULL DEFAULT 'pending'"
             ),

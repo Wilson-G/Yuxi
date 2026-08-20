@@ -147,6 +147,15 @@ async def test_ensure_business_schema_adds_run_origin_snapshot_columns():
 
 
 @pytest.mark.asyncio
+async def test_ensure_business_schema_adds_auto_advance_with_false_default():
+    async with _recording_manager() as (manager, connection):
+        await manager.ensure_business_schema()
+
+    statements = "\n".join(connection.statements)
+    assert "expert_projects ADD COLUMN IF NOT EXISTS auto_advance BOOLEAN NOT NULL DEFAULT FALSE" in statements
+
+
+@pytest.mark.asyncio
 async def test_ensure_business_schema_removes_unbound_api_keys_before_requiring_user_id():
     async with _recording_manager() as (manager, connection):
         await manager.ensure_business_schema()

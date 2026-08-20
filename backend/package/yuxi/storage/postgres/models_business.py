@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
@@ -294,6 +295,13 @@ class ExpertProject(Base):
     created_by = Column(String(64), nullable=False, index=True, comment="项目创建人 UID")
 
     method_version = Column(Integer, nullable=False, default=0, comment="当前项目方法版本")
+    auto_advance = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+        comment="首次方法确认后是否自动推进到候选 Skill",
+    )
     method_confirmed_at = Column(DateTime, nullable=True, comment="当前方法版本确认时间")
     method_calibration_completed_at = Column(DateTime, nullable=True, comment="当前方法校准完成时间")
     method_calibration_baseline = Column(JSON_VALUE, nullable=False, default=list, comment="校准期间使用的 V1 小样基线")
@@ -366,6 +374,7 @@ class ExpertProject(Base):
             "status": self.status,
             "created_by": self.created_by,
             "method_version": self.method_version,
+            "auto_advance": bool(self.auto_advance),
             "method_confirmed_at": format_utc_datetime(self.method_confirmed_at),
             "method_calibration_completed_at": format_utc_datetime(self.method_calibration_completed_at),
             "method_calibration_baseline": self.method_calibration_baseline or [],

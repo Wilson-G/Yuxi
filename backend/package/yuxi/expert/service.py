@@ -626,7 +626,13 @@ async def run_project_orientation(
     }
 
 
-async def confirm_project_method(db: AsyncSession, *, project_id: str, created_by: str) -> int:
+async def confirm_project_method(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+    auto_advance: bool = False,
+) -> int:
     """确认当前方法：首次确认触发校准，校准版本再次确认后进入批量学习。"""
 
     repo = ExpertRepository(db)
@@ -649,6 +655,7 @@ async def confirm_project_method(db: AsyncSession, *, project_id: str, created_b
         return project.method_version
     if project.method_confirmed_at is not None:
         raise ValueError("方法校准正在完成，不能再次确认")
+    project.auto_advance = auto_advance
     sample_ids = list(project.method_sample_material_ids or [])
     if not _method_calibration_issues(project.method_samples):
         project.method_confirmed_at = utc_now_naive()

@@ -1173,6 +1173,7 @@ async def test_method_calibration_compares_samples_and_waits_for_second_confirma
             db,
             project_id=project_id,
             created_by="user-1",
+            auto_advance=True,
         )
         assert confirmed_version == calibrated_version
         project = await ExpertRepository(db).get_project(project_id)
@@ -1180,6 +1181,7 @@ async def test_method_calibration_compares_samples_and_waits_for_second_confirma
         assert project.stage == service.MATERIAL_LEARNING_STAGE
         assert project.status == "running"
         assert project.method_confirmed_at is not None
+        assert project.auto_advance is False
         with pytest.raises(ValueError, match="当前项目状态不能开始项目定向"):
             await service.start_project_orientation(
                 db,
@@ -1210,13 +1212,17 @@ async def test_method_confirmation_without_review_issue_starts_learning_directly
             db,
             project_id=project_id,
             created_by="user-1",
+            auto_advance=True,
         )
         project = await ExpertRepository(db).get_project(project_id)
+        detail = await service.get_expert_project_detail(db, project_id=project_id, created_by="user-1")
     assert project is not None
     assert project.method_version == 1
     assert method_version == 1
     assert project.stage == service.MATERIAL_LEARNING_STAGE
     assert project.status == "running"
+    assert project.auto_advance is True
+    assert detail["auto_advance"] is True
 
 
 @pytest.mark.asyncio
@@ -1250,6 +1256,63 @@ async def test_method_calibration_stops_when_residual_problem_is_method_level(ex
     assert project.status == "needs_attention"
     assert project.error_message == "V2 仍会系统性遗漏判断条件"
     assert project.method_calibration_baseline == []
+
+
+@pytest.mark.asyncio
+async def test_reorientation_can_replace_auto_advance_selection(expert_env) -> None:
+    """重新定向生成的新 V1 可以重新选择自动推进模式。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    calibration_tasks = AttentionCalibrationTasks()
+
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=calibration_tasks)
+    async with expert_env.factory() as db:
+        calibrated_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            auto_advance=True,
+        )
+    await service.run_method_calibration(project_id, calibrated_version, model_tasks=calibration_tasks)
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert project.auto_advance is True
+        reoriented_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+            feedback="重新调整学习方法",
+        )
+
+    await service.run_project_orientation(
+        project_id,
+        reoriented_version,
+        model_tasks=OrientationModelTasks(),
+    )
+    async with expert_env.factory() as db:
+        confirmed_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            auto_advance=False,
+        )
+        project = await ExpertRepository(db).get_project(project_id)
+
+    assert project is not None
+    assert reoriented_version > calibrated_version
+    assert confirmed_version == reoriented_version
+    assert project.auto_advance is False
 
 
 @pytest.mark.asyncio

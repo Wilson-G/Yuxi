@@ -153,6 +153,8 @@ async def test_project_reads_and_lists_are_scoped_by_creator(session: AsyncSessi
     assert fetched is own_project
     assert hidden is None
     assert [project.project_id for project in listed] == ["project-own"]
+    assert own_project.auto_advance is False
+    assert own_project.to_dict()["auto_advance"] is False
     assert own_project.to_dict()["representative_material_ids"] == []
     assert own_project.to_dict()["prompt_pack"] == {}
     assert own_project.to_dict()["organization_version"] == 0

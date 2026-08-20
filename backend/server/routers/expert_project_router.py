@@ -72,6 +72,12 @@ class OrientationRequest(BaseModel):
     feedback: str = ""
 
 
+class ConfirmMethodRequest(BaseModel):
+    """第一次确认时选择后续是否自动推进。"""
+
+    auto_advance: bool = False
+
+
 class ExcludeMaterialRequest(BaseModel):
     """用户明确排除需要处理的材料。"""
 
@@ -217,6 +223,7 @@ async def start_project_orientation_route(
 @expert_projects.post("/{project_id}/method/confirm")
 async def confirm_project_method_route(
     project_id: str,
+    payload: ConfirmMethodRequest | None = None,
     current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -227,13 +234,19 @@ async def confirm_project_method_route(
             db,
             project_id=project_id,
             created_by=str(current_user.uid),
+            auto_advance=payload.auto_advance if payload is not None else False,
         )
         project = await ExpertRepository(db).get_project(project_id)
         if project is not None and project.stage == "orientation":
             await enqueue_method_calibration(project_id, method_version)
         else:
             await enqueue_pending_material_learning(project_id, method_version)
-        return {"project_id": project_id, "method_version": method_version, "status": "running"}
+        return {
+            "project_id": project_id,
+            "method_version": method_version,
+            "status": "running",
+            "auto_advance": bool(project.auto_advance) if project is not None else False,
+        }
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
