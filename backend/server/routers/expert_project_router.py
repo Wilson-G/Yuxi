@@ -418,6 +418,17 @@ async def resume_expert_project_route(
         }
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to enqueue resumed expert project {}", project_id)
+        await pause_expert_project(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="项目仍保持暂停，后台任务恢复后请再次重试",
+        ) from exc
 
 
 @expert_projects.post("/{project_id}/uninstall")
