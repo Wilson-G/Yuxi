@@ -2,9 +2,6 @@
 import { ref, computed } from 'vue'
 import { withBase } from 'vitepress'
 
-const GITHUB = 'https://github.com/xerrors/Yuxi'
-const DEMO = 'https://www.bilibili.com/video/BV1TZEx6NEit/'
-
 // 专家学习主流程
 const stats = [
   { value: '2 次', label: '关键用户确认' },
@@ -63,28 +60,23 @@ const capabilities = [
 const engineTabs = [
   {
     key: 'parse', icon: 'scan', title: '材料转可靠正文',
-    desc: 'MinerU、PaddleX、RapidOCR 等解析能力为专家学习提供完整、可读的 Markdown 正文。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260605205221908.png'
+    desc: 'MinerU、PaddleX、RapidOCR 等解析能力为专家学习提供完整、可读的 Markdown 正文。'
   },
   {
     key: 'skill', icon: 'sparkles', title: 'Skill 内独立检索',
-    desc: '已启用专家 Skill 在自己的讲义、导航和精选证据中检索，运行时不访问编译项目原始材料。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604205342546.png'
+    desc: '已启用专家 Skill 在自己的讲义、导航和精选证据中检索，运行时不访问编译项目原始材料。'
   },
   {
     key: 'retrieval', icon: 'database', title: '兼容向量知识库',
-    desc: '需要历史 RAG 流程时可显式启用 Milvus 与只读知识源；新专家项目不进入该分块和入库链路。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604205611168.png'
+    desc: '需要历史 RAG 流程时可显式启用 Milvus 与只读知识源；新专家项目不进入该分块和入库链路。'
   },
   {
     key: 'graph', icon: 'share', title: '兼容知识图谱',
-    desc: 'Neo4j 实体关系与子图检索作为旧知识库的可选增强能力保留，默认 Compose 不启动。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604204056298.png'
+    desc: 'Neo4j 实体关系与子图检索作为旧知识库的可选增强能力保留，默认 Compose 不启动。'
   },
   {
     key: 'eval', icon: 'chart', title: '兼容 RAG 评估',
-    desc: '旧知识库的检索指标和评估运行继续可用，不作为专家学习主流程的发布门禁。',
-    shot: 'https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260604210111977.png'
+    desc: '旧知识库的检索指标和评估运行继续可用，不作为专家学习主流程的发布门禁。'
   }
 ]
 const activeEngine = ref(0)
@@ -218,16 +210,6 @@ const vReveal = {
         </p>
         <div class="yx-hero__actions">
           <a class="yx-btn yx-btn--primary" :href="withBase('/intro/quick-start')">快速开始</a>
-          <a class="yx-btn yx-btn--ghost" :href="GITHUB" target="_blank" rel="noreferrer">在 GitHub 查看</a>
-          <a class="yx-btn yx-btn--text" :href="DEMO" target="_blank" rel="noreferrer">▷ 演示视频</a>
-        </div>
-        <div class="yx-hero__shot">
-          <img
-            class="yx-hero__img"
-            src="https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260608002434299.png"
-            alt="知铸 ZhiForge 产品界面预览"
-            loading="lazy"
-          />
         </div>
       </div>
     </section>
@@ -452,8 +434,8 @@ const vReveal = {
         </header>
         <div v-reveal class="yx-quick">
           <pre class="yx-code"><code><span class="yx-c-cmt"># 1. 克隆并初始化</span>
-git clone --depth 1 https://github.com/xerrors/Yuxi.git
-cd Yuxi && ./scripts/init.sh
+git clone --depth 1 &lt;repository-url&gt; &lt;repo-directory&gt;
+cd &lt;repo-directory&gt; && ./scripts/init.sh
 
 <span class="yx-c-cmt"># 2. 启动默认专家学习环境</span>
 docker compose up --build
@@ -465,16 +447,13 @@ open http://localhost:5173</code></pre>
       </div>
     </section>
 
-    <!-- ===== 贡献者 & 致谢 ===== -->
+    <!-- ===== 开源致谢 ===== -->
     <section class="yx-section yx-section--soft">
       <div class="yx-container yx-center">
         <header v-reveal class="yx-head">
-          <span class="yx-head__eyebrow">社区</span>
-          <h2 class="yx-head__title">由开源社区共同构建</h2>
+          <span class="yx-head__eyebrow">开源致谢</span>
+          <h2 class="yx-head__title">感谢这些开源项目</h2>
         </header>
-        <a v-reveal :href="GITHUB + '/graphs/contributors'" target="_blank" rel="noreferrer" class="yx-contrib">
-          <img src="https://contrib.rocks/image?repo=xerrors/Yuxi&max=60&columns=12" alt="Yuxi 贡献者头像墙" loading="lazy" />
-        </a>
         <p v-reveal class="yx-credits">
           站在巨人的肩上 ——
           <template v-for="(c, i) in credits" :key="c.name">
@@ -491,7 +470,6 @@ open http://localhost:5173</code></pre>
         <p>开源、可自托管，从可靠材料中学习真正可复用的判断方法。</p>
         <div class="yx-hero__actions yx-cta__actions">
           <a class="yx-btn yx-btn--primary" :href="withBase('/intro/quick-start')">快速开始</a>
-          <a class="yx-btn yx-btn--ghost" :href="GITHUB" target="_blank" rel="noreferrer">前往 GitHub ★</a>
         </div>
       </div>
     </section>
@@ -599,17 +577,6 @@ open http://localhost:5173</code></pre>
 }
 .yx-btn--primary { background: var(--yx-brand); color: #fff; }
 .yx-btn--primary:hover { background: var(--yx-brand-hover); transform: translateY(-1px); }
-.yx-btn--ghost { border-color: var(--vp-c-divider); color: var(--vp-c-text-1); background: var(--vp-c-bg); }
-.yx-btn--ghost:hover { border-color: var(--yx-brand); color: var(--yx-brand); }
-.yx-btn--text { color: var(--vp-c-text-2); }
-.yx-btn--text:hover { color: var(--yx-brand); }
-
-.yx-hero__shot { margin-top: 56px; }
-.yx-hero__img {
-  display: block; width: 100%; border-radius: 14px;
-  border: 1px solid var(--vp-c-divider);
-  box-shadow: 0 24px 60px -28px rgba(0, 0, 0, .25);
-}
 
 /* 占位图 */
 .yx-placeholder {
@@ -798,10 +765,8 @@ img.yx-engine-frame { object-fit: cover; }
 .yx-c-cmt { color: #6a9955; }
 .yx-quick__tip { margin: 18px 0 0; text-align: center; color: var(--vp-c-text-2); font-size: 14px; }
 
-/* ===== 社区 ===== */
-.yx-contrib { display: block; max-width: 720px; margin: 0 auto; }
-.yx-contrib img { width: 100%; border-radius: 12px; }
-.yx-credits { margin: 32px 0 0; color: var(--vp-c-text-2); font-size: 14.5px; }
+/* ===== 开源致谢 ===== */
+.yx-credits { margin: 0; color: var(--vp-c-text-2); font-size: 14.5px; }
 .yx-credits a { color: var(--yx-brand); text-decoration: none; }
 .yx-credits a:hover { text-decoration: underline; }
 

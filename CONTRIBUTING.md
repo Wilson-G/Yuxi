@@ -1,13 +1,13 @@
-# Contributing to Yuxi
+# 参与知铸 ZhiForge
 
-感谢你关注 Yuxi。欢迎提交 Issue、改进文档、修复 Bug 或贡献新功能。
+感谢你关注知铸。欢迎提交问题、改进文档、修复 Bug 或贡献新功能。
 
 更完整的开发文档可参考 [docs/develop-guides/contributing.md](docs/develop-guides/contributing.md)。
 
 ## 开始之前
 
-- 提交前请先搜索现有 [Issues](https://github.com/xerrors/Yuxi/issues)
-- 对于较大的功能改动，建议先开 Issue 讨论方案
+- 提交前请先搜索当前维护仓库中的已有问题
+- 对于较大的功能改动，建议先通过当前仓库的问题跟踪入口讨论方案
 - 保持改动聚焦，避免在一次 PR 中混入无关重构
 
 ## 开发方式
@@ -89,6 +89,6 @@ docker compose exec api uv run pytest
 
 ## 问题反馈
 
-- Bug 反馈/功能讨论：<https://github.com/xerrors/Yuxi/issues>
+- Bug 反馈和功能讨论请使用当前维护仓库提供的问题跟踪入口。
 
 感谢你的贡献 ❤️。

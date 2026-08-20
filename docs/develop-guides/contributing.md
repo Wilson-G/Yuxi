@@ -4,20 +4,16 @@
 
 本文面向通过 Fork 参与开发的贡献者，介绍从领取任务到提交 Pull Request（以下简称 PR）的完整流程。如果你只需要快速了解仓库入口，可以先阅读根目录的 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
 
-<a href="https://github.com/xerrors/Yuxi/contributors">
-    <img src="https://contributors.nn.ci/api?repo=xerrors/Yuxi" alt="贡献者名单">
-</a>
-
 ## 开始之前
 
 开始开发前，请先完成以下确认：
 
-- 搜索已有 [Issues](https://github.com/xerrors/Yuxi/issues)，避免重复提交相同问题。
+- 搜索当前维护仓库中的已有问题，避免重复提交相同问题。
 - 如果任务来自 GitHub Project，阅读任务描述、关联 Issue、验收标准和已有讨论，并确认任务已经分配给你。
-- 对影响范围较大、需求边界不明确或会改变现有架构的改动，先通过 Issue 或 [Discussions](https://github.com/xerrors/Yuxi/discussions) 对齐方案。
+- 对影响范围较大、需求边界不明确或会改变现有架构的改动，先通过当前仓库的问题或讨论入口对齐方案。
 - 一个 PR 只解决一个明确问题，不混入无关重构、格式化或“顺手优化”。
 
-修改不熟悉的模块前，请先阅读 [ARCHITECTURE.md](https://github.com/xerrors/Yuxi/blob/main/ARCHITECTURE.md)，了解前后端边界、主要运行链路和架构不变量，再通过代码搜索定位具体实现。
+修改不熟悉的模块前，请先阅读仓库根目录的 `ARCHITECTURE.md`，了解前后端边界、主要运行链路和架构不变量，再通过代码搜索定位具体实现。
 
 ## 贡献流程概览
 
@@ -29,24 +25,24 @@
 4. 完成开发、测试和文档更新。
 5. 使用独立上下文的 Reviewer Agent 完成提交前 Code Review，并处理 Review 结论。
 6. 提交改动并将分支推送到自己的 Fork。
-7. 从 Fork 分支向 `xerrors/Yuxi:main` 发起 PR。
+7. 从 Fork 分支向当前上游仓库的 `main` 发起 PR。
 8. 根据 CI 和 Review 反馈继续修改，直至合并。
 
 如果任务来自 GitHub Project，开始开发时将任务状态更新为进行中；PR 创建后关联对应 Issue 或 Project 条目。任务只有在必要测试通过并完成合并后，才应标记为完成。
 
 ## 1. Fork 与克隆仓库
 
-先在 GitHub 上 Fork [xerrors/Yuxi](https://github.com/xerrors/Yuxi)，然后克隆自己的 Fork：
+先 Fork 当前维护仓库，然后克隆自己的 Fork：
 
 ```bash
-git clone https://github.com/<your-username>/Yuxi.git
-cd Yuxi
+git clone <your-fork-url> <repo-directory>
+cd <repo-directory>
 ```
 
 克隆完成后，默认的 `origin` 应指向你的 Fork。将官方仓库配置为 `upstream`：
 
 ```bash
-git remote add upstream https://github.com/xerrors/Yuxi.git
+git remote add upstream <upstream-repository-url>
 git remote -v
 ```
 
@@ -54,7 +50,7 @@ git remote -v
 
 ```text
 origin    你的 Fork，用于推送开发分支
-upstream  xerrors/Yuxi，用于获取主仓库更新
+upstream  当前维护仓库，用于获取主仓库更新
 ```
 
 不要把开发分支直接推送到 `upstream`。
@@ -232,7 +228,7 @@ Review 重点检查以下内容：
 
 1. **功能正确且完整**：实现满足需求和验收标准，主路径、关键边界、错误处理和测试可信，没有遗漏主要使用场景或引入明显回归。
 2. **实现简单且低认知负担**：优先复用现有能力，减少重复开发和重复代码；避免过度设计、过度防御、不必要抽象、细碎 helper、冗余 fallback 和过长调用链；主流程应直接、清晰、易读。
-3. **风格一致且位置合理**：新代码与相邻实现保持一致，Python 代码符合 Python 3.12+ 和 Pythonic 风格；路由、服务、仓储、前端 API、测试等内容位于正确边界，并符合 `AGENTS.md`、[ARCHITECTURE.md](https://github.com/xerrors/Yuxi/blob/main/ARCHITECTURE.md)、[测试规范](./testing-guidelines.md) 和相关开发文档。
+3. **风格一致且位置合理**：新代码与相邻实现保持一致，Python 代码符合 Python 3.12+ 和 Pythonic 风格；路由、服务、仓储、前端 API、测试等内容位于正确边界，并符合 `AGENTS.md`、根目录 `ARCHITECTURE.md`、[测试规范](./testing-guidelines.md) 和相关开发文档。
 
 发现影响功能、代码边界或明显增加冗余和认知负担的问题时，应在提交前修正。这个阶段用于提升代码质量，不要求在 PR 中记录 Review 过程或问题清单。
 
@@ -280,10 +276,10 @@ git push -u origin docs/update-contributing-guide
 创建 PR 时确认目标和来源：
 
 ```text
-base repository: xerrors/Yuxi
+base repository: 当前上游仓库
 base branch:     main
 
-head repository: <your-username>/Yuxi
+head repository: 你的 Fork
 compare branch:  当前任务分支
 ```
 
@@ -291,7 +287,7 @@ compare branch:  当前任务分支
 
 由 Agent（Codex、Claude Code 等）创建的 PR，在调用创建命令前先向用户展示拟提交的标题和完整正文，等待明确确认后再创建。确认针对的是标题和正文，不代表跳过测试、敏感信息检查、Fork/远程目标检查和 CI 结果记录等提交前必做项。
 
-PR 标题直接表达变更目标。正文按照 [PR 模板](https://github.com/xerrors/Yuxi/blob/main/.github/PULL_REQUEST_TEMPLATE.md) 填写，并按实际改动补充对应章节：
+PR 标题直接表达变更目标。正文按照仓库中的 `.github/PULL_REQUEST_TEMPLATE.md` 填写，并按实际改动补充对应章节：
 
 **Fix（Bug 修复）**，至少包含：
 
@@ -382,7 +378,6 @@ Agent 可以在任务范围和用户授权内完成 commit、push 和创建 PR�
 
 ## 获取帮助
 
-- Bug 反馈：[GitHub Issues](https://github.com/xerrors/Yuxi/issues)
-- 功能和方案讨论：[GitHub Discussions](https://github.com/xerrors/Yuxi/discussions)
+- Bug 反馈和功能方案讨论请使用当前维护仓库提供的问题与讨论入口。
 
 感谢每一位贡献者的投入。

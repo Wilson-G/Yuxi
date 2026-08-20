@@ -1,8 +1,6 @@
 # 开发路线图
 
-路线图可能会经常变更，如果有强烈的建议，可以在 [issue](https://github.com/xerrors/Yuxi/issues) 中提。
-
-项目看板（Maintainer Only）：[GitHub Project](https://github.com/users/xerrors/projects/2)
+路线图可能会经常变更，建议通过当前维护仓库的问题跟踪入口提交反馈。
 
 
 后续 0.8 的非兼容计划更新
@@ -26,7 +24,7 @@
 
 **其他**
 - [ ] 集成 Memory，基于 deepagents 的文件后端实现，需要考虑定位
-- [ ] 优化 Agent 向用户追问交互：支持较长文本回答输入，并在流式输出时保持聊天区跟随最新内容（[#753](https://github.com/xerrors/Yuxi/issues/753)）
+- [ ] 优化 Agent 向用户追问交互：支持较长文本回答输入，并在流式输出时保持聊天区跟随最新内容（历史事项 #753）
 
 
 ### Bugs
