@@ -728,8 +728,9 @@ async def run_method_calibration(
         ):
             return {"project_id": project_id, "ignored": True}
         sample_ids = list(project.method_sample_material_ids or [])
-        has_pending_calibration = bool(project.method_samples)
-        if has_pending_calibration:
+        needs_method_calibration = project.method_calibration_completed_at is None
+        v2_samples_ready = not needs_method_calibration and project.status == "awaiting_confirmation"
+        if needs_method_calibration:
             _method_calibration_issues(project.method_samples)
             samples = _build_method_calibration_samples(project.method_samples, sample_ids)
         snapshot = {
@@ -740,7 +741,7 @@ async def run_method_calibration(
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
         }
 
-    if has_pending_calibration:
+    if needs_method_calibration:
         calibrated = await tasks.calibrate_project_method(
             model_spec=snapshot["model_spec"],
             project_name=snapshot["name"],
@@ -773,9 +774,10 @@ async def run_method_calibration(
             project.updated_at = utc_now_naive()
             await db.flush()
 
-    result = await run_project_orientation(project_id, method_version, model_tasks=tasks)
-    if result.get("status") != "awaiting_confirmation":
-        return result
+    if not v2_samples_ready:
+        result = await run_project_orientation(project_id, method_version, model_tasks=tasks)
+        if result.get("status") != "awaiting_confirmation":
+            return result
 
     async with pg_manager.get_async_session_context() as db:
         project = await ExpertRepository(db).get_project(project_id)
@@ -1149,7 +1151,7 @@ async def _finish_material_learning(db: AsyncSession, project_id: str, method_ve
         return project.status
 
     passed = [item for item in materials if item.status == "passed"]
-    if project.auto_advance and not passed:
+    if not passed:
         project.status = "needs_attention"
         project.message = "材料处理已完成，但没有材料通过 Review"
         project.error_message = "全部材料均被模型判定不采用，无法形成可信专家 Skill"
