@@ -12,11 +12,7 @@ organization:
 branding:
   name: "ZhiForge"
   title: "把文章与经验，铸成专家的大脑"     # 系统标题
-  subtitle: "创建能理解方法、做出判断、解释依据的专家 Agent"          # 副标题（subtitles 为空时使用）
-  subtitles:
-    - "不只记住知识，更能继承材料中的判断方法"
-    - "理解条件、例外和边界，回答不再停留在相似片段"
-    - "每个关键判断都有材料依据，既专业也可核验"
+  subtitle: "创建能理解方法、做出判断、解释依据的专家 Agent"          # 副标题
 
 # 页脚信息
 footer:
