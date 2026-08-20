@@ -1,10 +1,10 @@
 # 工具系统
 
-Yuxi 的工具系统基于注册机制，支持多种工具类型的动态组装。
+知铸的工具系统基于注册机制，支持多种工具类型的动态组装。
 
 ## 工具注册机制
 
-Yuxi 的工具系统采用 `@tool` 装饰器注册机制，核心位于 `backend/package/yuxi/agents/toolkits/registry.py`。
+知铸的工具系统采用 `@tool` 装饰器注册机制，核心位于 `backend/package/yuxi/agents/toolkits/registry.py`。
 
 ### @tool 装饰器
 
@@ -47,9 +47,9 @@ from yuxi.agents.toolkits import buildin, debug  # 触发模块内 @tool 装饰�
 
 Qwen-Image 生成能力已迁移为内置 Skill `image-gen`。模型调用与图片下载在 Agent 沙盒中完成，生成后的图片保存到 `/home/gem/user-data/outputs/`，再通过 `present_artifacts` 展示。
 
-### 知识库工具 (kbs)
+### 兼容知识库工具 (kbs)
 
-知识库工具使用 `@tool(category="knowledge")` 注册，并通过内置 `knowledge-base` Skill 的 `tool_dependencies` 按需加载。`get_common_kb_tools()` 仍可用于直接获取完整工具列表：
+传统知识库工具使用 `@tool(category="knowledge")` 注册，并通过内置 `knowledge-base` Skill 的 `tool_dependencies` 按需加载。它们不读取资料库，也不作为新专家项目的运行入口；新专家运行通过已启用的专家 Skill。`get_common_kb_tools()` 仍可用于直接获取完整工具列表：
 
 ```python
 from yuxi.agents.toolkits.kbs import get_common_kb_tools

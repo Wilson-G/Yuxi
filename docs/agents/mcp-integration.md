@@ -30,7 +30,7 @@ MCP（Model Context Protocol）是扩展智能体能力的重要方式。系统�
 
 ## 添加系统内置 stdio MCP
 
-只有经过代码审查、确实需要在 Yuxi 容器内启动本地进程的 MCP 才应使用 stdio。能够部署为远程服务时，
+只有经过代码审查、确实需要在知铸容器内启动本地进程的 MCP 才应使用 stdio。能够部署为远程服务时，
 优先使用 SSE 或 Streamable HTTP，通过管理界面添加即可。
 
 编辑 `backend/package/yuxi/agents/mcp/service.py` 中的 `_DEFAULT_MCP_SERVERS`，新增一个全局唯一的 slug。

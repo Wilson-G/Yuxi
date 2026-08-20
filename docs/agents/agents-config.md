@@ -1,6 +1,6 @@
 # 智能体配置
 
-Yuxi 的智能体系统基于 LangGraph 构建。对开发者来说，最重要的不是单独理解某个页面或某个字段，而是理解三件事：
+知铸的智能体系统基于 LangGraph 构建。对开发者来说，最重要的不是单独理解某个页面或某个字段，而是理解三件事：
 
 - Agent 如何被定义和发现
 - Context 如何驱动配置界面
@@ -92,6 +92,8 @@ class MyAgent(BaseAgent):
 | `thread_id` / `uid` | 运行期标识，不作为页面配置项暴露 |
 
 `tools`、`knowledges`、`mcps`、`skills` 在未显式配置时会默认启用当前用户可访问的全部资源。
+
+`knowledges` 和运行时 `_visible_knowledge_bases` 只服务传统知识库兼容能力。资料库不会作为知识库资源注入 Agent；专家能力通过已经启用并授权给当前用户的专家 Skill 进入运行时。
 
 `ChatBotContext` 在 `BaseContext` 之上增加 `subagents` 字段，表示当前主 Agent 允许调用的子智能体。`subagents` 未显式配置或保存空列表时会默认启用当前用户可见的全部子智能体；显式选择后则作为允许列表过滤。
 
@@ -228,7 +230,7 @@ config_json.context + runtime ids -> context_schema instance
 - 可调用子智能体列表：`context.subagents`
 - 摘要阈值：`context.summary_threshold`
 
-因此 Graph 不是和 Context 解耦的。相反，Graph 的构造本身就依赖 Context。普通 Agent 在归一化后的 `context.subagents` 非空时会挂载 Yuxi 的 task middleware；`SubAgentBackend` 自身隐藏并清空 `subagents` 字段，因此子智能体不会继续调用子智能体。
+因此 Graph 不是和 Context 解耦的。相反，Graph 的构造本身就依赖 Context。普通 Agent 在归一化后的 `context.subagents` 非空时会挂载知铸的 task middleware；`SubAgentBackend` 自身隐藏并清空 `subagents` 字段，因此子智能体不会继续调用子智能体。
 
 ### 4.4 Graph 构建与中间件运行阶段
 
@@ -299,7 +301,7 @@ class MyAgent(BaseAgent):
 | `file_upload` | 启用上传入口 |
 | `files` | 启用文件面板 |
 
-像 todo 这类运行态信息，不建议再放进 `capabilities`。Yuxi 当前会直接从 LangGraph state 中提取 `agent_state`，前端在创建对话后常态化展示状态入口，并在状态面板中渲染 `todos`、`files`、`artifacts`、`subagent_runs` 等运行时内容。
+像 todo 这类运行态信息，不建议再放进 `capabilities`。知铸当前会直接从 LangGraph state 中提取 `agent_state`，前端在创建对话后常态化展示状态入口，并在状态面板中渲染 `todos`、`files`、`artifacts`、`subagent_runs` 等运行时内容。
 
 它解决的是“Agent 先天支持什么固定入口”，而不是“运行时当前产生了什么状态”。
 

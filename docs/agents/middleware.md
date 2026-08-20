@@ -1,6 +1,6 @@
 # 中间件系统
 
-中间件是 Yuxi 扩展智能体运行行为的主要机制。它工作在 LangGraph Agent 的模型调用、工具调用、状态更新和文件系统访问路径上，用来把知识库、Skills、附件、子智能体、上下文压缩和运行观测接入同一条执行链路。
+中间件是知铸扩展智能体运行行为的主要机制。它工作在 LangGraph Agent 的模型调用、工具调用、状态更新和文件系统访问路径上，用来把知识库、Skills、附件、子智能体、上下文压缩和运行观测接入同一条执行链路。
 
 内置 `ChatbotAgent` 与 `SubAgentBackend` 都会在 `get_graph()` 中构建中间件列表。运行前的资源过滤不再依赖旧版运行时配置中间件，而是在创建 Graph 前由 `prepare_agent_runtime_context` 完成。
 
@@ -34,9 +34,9 @@
 
 `SubAgentBackend` 使用同一组核心能力，但不会挂载 `YuxiSubAgentMiddleware`，并额外过滤 `present_artifacts`、`ask_user_question`、`install_skill` 等不适合子智能体直接使用的工具。
 
-## 知识库工具
+## 兼容知识库工具
 
-知识库访问能力沉淀为内置 `knowledge-base` Skill。Agent 读取 `/home/gem/skills/knowledge-base/SKILL.md` 激活该 Skill 后，`SkillsMiddleware` 会按依赖追加 `list_kbs`、`query_kb`、`find_kb_document`、`open_kb_document`、`get_mindmap` 等知识库工具。
+传统知识库访问能力沉淀为内置 `knowledge-base` Skill。Agent 读取 `/home/gem/skills/knowledge-base/SKILL.md` 激活该 Skill 后，`SkillsMiddleware` 会按依赖追加 `list_kbs`、`query_kb`、`find_kb_document`、`open_kb_document`、`get_mindmap` 等知识库工具。这条兼容链路不读取资料库，也不是新专家项目的材料入口；专家运行只使用已经启用的专家 Skill。
 
 实际可见知识库仍由 `prepare_agent_runtime_context` 根据当前用户和 Agent 配置写入 `_visible_knowledge_bases`，工具执行时只会在这批知识库中检索。`context.knowledges` 是资源范围，不是 Skill 本身。
 
@@ -67,7 +67,7 @@
 
 ## Summary 上下文压缩
 
-长对话压缩由 Yuxi 封装的 `YuxiSummarizationMiddleware` 负责。它基于 DeepAgents 的 `SummarizationMiddleware`，但针对 Yuxi 的知识库检索和工具调用结果做了额外处理。
+长对话压缩由知铸封装的 `YuxiSummarizationMiddleware` 负责。它基于 DeepAgents 的 `SummarizationMiddleware`，但针对知铸的知识库检索和工具调用结果做了额外处理。
 
 触发条件来自 Agent Context：
 
@@ -79,7 +79,7 @@
 | `summary_tool_result_token_limit` | 工具结果 offload 阈值和预览 token 上限 |
 | `summary_l2_trigger_ratio` | L1 后进入 L2 summary 的触发比例，建议 `0.1~1.0`，默认 `0.4` |
 
-触发判断使用 Yuxi 自己的近似 token 计算结果，不使用模型返回的 `usage_metadata.total_tokens` 作为触发依据，避免 provider 的计费口径、累计口径或异常上报导致短对话过早压缩。
+触发判断使用知铸自己的近似 token 计算结果，不使用模型返回的 `usage_metadata.total_tokens` 作为触发依据，避免 provider 的计费口径、累计口径或异常上报导致短对话过早压缩。
 
 ## Token 用量统计
 
@@ -88,7 +88,7 @@
 - 近似上下文统计通过 `count_tokens_approximately` 计算，用于上下文窗口、摘要阈值和消息构成展示。
 - 实际用量直接保留主 Agent 模型调用返回的 `AIMessage.usage_metadata`，包括 `input_tokens`、`output_tokens`、`total_tokens`、缓存和推理 token 明细。当前不包含 Summary 中间件内部直接发起的 L2 摘要模型调用，因此尚不能作为完整账单口径。
 
-state 中的实际用量分为 `latest`、`run` 和 `thread`：分别表示最近一次模型调用、当前 AgentRun 累计和当前 LangGraph 线程累计。前端状态面板只读取 state；流式终态 chunk 不携带用量。worker 从当前父线程、`current_run_id` 匹配的 AgentState 提取 `run`，在 Run 进入终态时将该快照写入 `AgentRun.token_usage`。`run.models` 与 `thread.models` 使用 Yuxi `provider_id:model_id` 配置 spec 分桶，并记录 Provider 响应中的实际模型 ID，避免模型切换后把不同模型的 token 混为一组，也避免把 OpenAI 兼容协议类型误当作业务供应商。
+state 中的实际用量分为 `latest`、`run` 和 `thread`：分别表示最近一次模型调用、当前 AgentRun 累计和当前 LangGraph 线程累计。前端状态面板只读取 state；流式终态 chunk 不携带用量。worker 从当前父线程、`current_run_id` 匹配的 AgentState 提取 `run`，在 Run 进入终态时将该快照写入 `AgentRun.token_usage`。`run.models` 与 `thread.models` 使用知铸 `provider_id:model_id` 配置 spec 分桶，并记录 Provider 响应中的实际模型 ID，避免模型切换后把不同模型的 token 混为一组，也避免把 OpenAI 兼容协议类型误当作业务供应商。
 
 每个模型桶独立计算缓存 token 命中率：使用 Provider 明确上报的 `input_token_details.cache_read / input_tokens`；OpenAI `priority` / `flex` service tier 对应识别 `priority_cache_read` / `flex_cache_read`。累计时先汇总该模型已上报缓存明细的输入 token，再计算 `sum(cache_read) / sum(input_tokens)`；缺少缓存读取字段表示 Provider 未上报，不按 0 命中处理。当前 Run 的按模型聚合会在终态事务中写入 `AgentRun.token_usage`，父 Run 与 SubAgent Run 分别保存，不重复合并。
 
