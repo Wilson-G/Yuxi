@@ -24,14 +24,14 @@
 
 ### 压缩包
 
-支持上传 ZIP 压缩包，系统会：
+旧知识库和通用解析入口支持上传 ZIP 压缩包，系统会：
 - 自动提取并处理其中的 Markdown 文件
 - 处理图片并上传到对象存储
 - 智能识别 `full.md` 或第一个 `.md` 文件
 
 ### 网页内容
 
-知识库支持先从 URL 抓取页面内容，再作为文件进入现有上传、解析与入库链路：
+启用旧知识库兼容能力后，知识库支持先从 URL 抓取页面内容，再作为文件进入现有上传、解析与入库链路：
 
 1. 配置 `YUXI_URL_WHITELIST` 环境变量启用白名单机制
 2. 系统自动将 HTML 转换为 Markdown
@@ -79,7 +79,7 @@
 
 DeepSeek OCR 固定复用 `siliconflow-cn` 模型供应商的 API 密钥与 Base URL，不显示独立配置表单。其他服务配置保存在通用 `config_options` 表中：每次运行时读取都会查询数据库，数据库非空值优先，字段为空时读取对应环境变量。API Key / Token 允许明文写入数据库，这是明确的部署取舍；需要脱敏的字段由定义中的 `sensitive` 元数据显式标记。读取接口不会回显密钥原文：数据库值只返回真实首尾字符的脱敏预览，环境变量只返回配置来源，前端不会获得环境变量内容。
 
-附件添加和知识库解析使用 OCR Selector。Selector 每次展开都会刷新全部 OCR 方法的健康状态；可用方法直接显示标题和状态，不可用方法默认折叠，管理员可通过右上角“去配置”直接打开 OCR 配置页。资料库逐文件处理使用系统默认 OCR 方法。后端系统配置仍允许将默认值设为 `disable`，但 Selector 默认不展示该选项；需要显示时必须由调用方显式开启。
+附件添加和旧知识库解析使用 OCR Selector。Selector 每次展开都会刷新全部 OCR 方法的健康状态；可用方法直接显示标题和状态，不可用方法默认折叠，管理员可通过右上角“去配置”直接打开 OCR 配置页。资料库没有逐文件 OCR Selector，逐文件处理统一使用系统默认 OCR 方法。后端系统配置仍允许将默认值设为 `disable`，但 Selector 默认不展示该选项；需要显示时必须由调用方显式开启。
 
 ### RapidOCR
 
@@ -144,21 +144,17 @@ PADDLEOCR_API_URL=https://paddleocr.aistudio-app.com/api/v2/ocr/jobs
 - `PaddleOCR-VL-1.6`：对应 `paddleocr_vl_1_6`，用于文档版面解析，返回 Markdown
 - `PP-OCRv6`：对应 `paddleocr_pp_ocrv6`，用于基础 OCR，返回按行拼接的纯文本
 
-## 解析参数与分块快照
+## 旧知识库的解析参数与分块快照
+
+下面这些字段只属于旧知识库兼容链路。资料库保存完整规范化 Markdown，并形成自然主题材料单元，不读取或保存 chunk 配置。
 
 知识库分块配置由两部分组成：`chunk_preset_id` 只表示策略（`general`、`qa`、`book`、`laws`、`semantic`、`separator`），具体参数统一放在 `chunk_parser_config` 中。不要再写入旧的根级 `chunk_size`、`chunk_overlap` 或 `qa_separator` 字段。
 
 文件级 `processing_params` 保存 `ocr_engine`、分块策略和 `chunk_parser_config`。OCR 的连接端点和凭证在执行时从通用配置或环境变量读取，不写入文件快照。
 
-## 图片显示配置
+## 解析图片
 
-上传文档中的图片需要正确配置才能在外部显示：
-
-在 `.env` 中设置服务器 IP：
-
-```
-HOST_IP=your_server_ip
-```
+资料库把解析图片写入私有 MinIO，并通过 `/api/document-images/...` 鉴权读取；专家项目预览沿用同一边界。最终 Skill 只复制精选证据实际引用的图片，不依赖资料库读取权限。旧知识库图片由知识库鉴权接口读取。以上链路不要求配置 `HOST_IP`，也不应公开私有 bucket。
 
 ## 注意事项
 
@@ -167,5 +163,5 @@ HOST_IP=your_server_ip
 3. **API 密钥**：DeepSeek OCR 复用 `siliconflow-cn` 模型供应商凭证；MinerU Official 和 PaddleOCR API 需要各自的 API 密钥或 Access Token
 4. **超时处理**：复杂文档解析可能耗时较长，可通过 `MINERU_TIMEOUT` 环境变量调整超时时间
 5. **文件大小限制**：资料库、知识库与工作区均受后端上传大小配置约束；目录导入会逐文件上传和处理，不会打包成一个大请求
-6. **解析配置**：文件只保存当次 `ocr_engine` 与分块参数快照；端点和凭证执行时使用最新通用配置或环境变量
+6. **解析配置**：旧知识库文件保存当次 `ocr_engine` 与分块参数快照；资料库使用系统默认 OCR，不保存 chunk 参数；端点和凭证执行时使用最新通用配置或环境变量
 7. **Agent 读取非文本文件**：Agent 的 `read_file` 只直接读取 UTF-8 文本和图片；遇到 PDF、Office 或其他二进制文件时，应使用 `ocr_parse_file` 生成 Markdown 后再读取
