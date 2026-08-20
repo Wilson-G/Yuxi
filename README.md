@@ -1,120 +1,95 @@
 <div align="center">
-<h1>知铸 ZhiForge</h1>
+  <img src="web/public/favicon.svg" width="88" alt="知铸 ZhiForge Logo" />
+  <h1>知铸 ZhiForge</h1>
+  <p><strong>把文章与经验，铸成专家的大脑</strong><br/>创建能理解方法、做出判断、说明条件并解释依据的专家 Agent</p>
 
-<p><strong>把可靠材料学习成真正可用的专家 Skill</strong><br/>从确认怎么学，到并行学习、Review、总编成书和手动启用</p>
-
-[![](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=ffffff)](https://github.com/xerrors/Yuxi/blob/main/docker-compose.yml)
-[![](https://img.shields.io/github/issues/xerrors/Yuxi?color=F48D73)](https://github.com/xerrors/Yuxi/issues)
-[![License](https://img.shields.io/github/license/bitcookies/winrar-keygen.svg?logo=github)](https://github.com/xerrors/Yuxi/blob/main/LICENSE)
-[![DeepWiki](https://img.shields.io/badge/DeepWiki-blue.svg)](https://deepwiki.com/xerrors/Yuxi)
-[![Bilibili](https://img.shields.io/badge/历史知识库演示-00A1D6?logo=bilibili&logoColor=fff)](https://www.bilibili.com/video/BV1erE26iEgv/?share_source=copy_web&vd_source=37b0bdbf95b72ea38b2dc959cfadc4d8)
-
-
-<a href="https://trendshift.io/repositories/24335" target="_blank"><img src="https://trendshift.io/api/badge/repositories/24335" alt="xerrors%2FYuxi | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-[[项目文档]](https://xerrors.github.io/Yuxi) · [[版本特性]](http://xhslink.com/o/5Y6QWnmjF2d)
-
+[[项目文档]](docs/index.md) · [[专家 Agent]](docs/intro/expert-projects.md) · [[English README]](README.en.md)
 </div>
 
 ## 简介
 
-知铸（ZhiForge，仓库与技术标识暂保留 `Yuxi`）是一个专家学习与 Skill 编译平台。它先将 PDF、Office、Markdown 和图片等材料转为可靠正文，再让模型学习其中的判断方法、成立条件、例外与边界，最终编成可启用、可检索、可核对依据的独立专家 Skill。
+知铸是一个专家 Agent 制造平台。管理员先在独立资料库导入课程、文章、讲义、案例和企业经验，系统将材料处理为可靠正文和自然主题单元；随后从就绪单元创建专家项目，把材料中的判断方法、适用条件、例外边界和依据编成可启用的专家 Skill。
 
-默认用户流程是：
+传统 RAG 擅长回答“相关内容在哪里”；知铸继续回答“面对这个具体问题应该怎样判断”。最终专家会识别关键信号，结合条件形成结论，解释为什么，也知道什么时候不能轻易下结论。
+
+仓库、Python 包、环境变量、API 和 CLI 等技术标识暂时继续使用 `Yuxi` / `yuxi`；面向用户的默认产品名称使用“知铸”或“ZhiForge”。
+
+## 主流程
 
 ```text
-材料转正文
--> 项目定向与 Prompt 设计
--> 用户确认“怎么学”
--> 逐份学习与 Review
--> 总编组织主题和讲义小样
--> 用户确认“怎么组织”
--> 总编成书
--> 预览并手动启用专家 Skill
+资料库上传与目录整理
+-> OCR / 解析并形成可靠正文
+-> 确认自然主题材料单元
+-> 选择就绪单元创建专家项目
+-> 确认学习方向
+-> 逐份学习材料
+-> 确认知识组织方式
+-> 形成专家 Skill
+-> 预览并手动启用
 ```
 
-普通模型任务负责并行阅读、笔记、Review 和证据准备；同一项目内的总编模型串行决定学习方案、主题结构、正式讲义和最终回答口径。用户在两个真正需要方向判断的位置确认，系统依据项目记录通过 ARQ 持续执行和恢复。
+新增专家项目只从资料库选择已经处理完成的材料单元，不在项目内重复上传、OCR 或解析。旧知识库、向量检索和知识图谱继续作为显式兼容能力，不是新增专家项目的材料来源或运行依赖。
 
-旧知识库、向量检索和知识图谱能力仍作为可选兼容模式保留，不是新专家项目的默认运行链路。
+## 专家能力
 
-导航：[项目介绍](https://xerrors.github.io/Yuxi/) ｜ [快速开始](https://xerrors.github.io/Yuxi/intro/quick-start) ｜ [开发路线图](https://xerrors.github.io/Yuxi/develop-guides/roadmap) | [0.7 版本特性](http://xhslink.com/o/5Y6QWnmjF2d)；最新开发动态，详见 [changelog](https://xerrors.github.io/Yuxi/develop-guides/changelog)。
+- **理解方法**：学习材料中的分析路径、判断顺序和实践经验，而不是只抽取事实。
+- **形成判断**：面对具体问题识别关键信号，从现象走向结论。
+- **懂得条件**：理解前提、例外、分歧和专业边界，知道何时改变判断。
+- **解释依据**：说明为什么这样判断，并让关键结论回到可靠材料核验。
 
-> 📢 求职：作者为江南大学软件工程博士研究生，研究方向 AI Agent、知识图谱与大模型应用，预计 2027 年毕业，现寻求实习/全职机会，欢迎联系：wenjie.zhang@stu.jiangnan.edu.cn
+## 比普通 RAG 更进一步
 
----
+| 普通 RAG | 知铸专家 Agent |
+| --- | --- |
+| 检索与问题相似的知识片段 | 理解材料形成的知识体系与方法 |
+| 围绕召回结果整理答案 | 结合信号、条件和经验形成判断 |
+| 依赖片段是否覆盖例外 | 主动说明适用范围、例外与反转条件 |
+| 给出来源引用 | 同时解释判断逻辑、材料依据与专业边界 |
+| 最终得到可搜索的知识库 | 最终得到可以启用和使用的专家 Agent |
 
-![image-20260606190609377](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260606235615139.png)
+RAG、知识库和知识图谱仍可继续承担资料检索；知铸让可靠材料进入一个真正会判断的专家大脑。
+
+## 平台能力
+
+- 专家制造：资料库、自然材料单元、专家项目、预览与 Skill 启用。
+- 智能体运行时：LangGraph、Skills、MCP、工具、子智能体、中间件与沙盒文件系统。
+- 团队与集成：多租户权限、部门、共享范围、API Key、CLI 与可选 Langfuse 观测。
+- 兼容知识能力：Milvus、Dify / Notion 连接器、知识图谱与 RAG 评估。
 
 ## 技术栈
 
 | 层 | 技术 |
 | --- | --- |
 | 前端 | Vue 3 · Vite · Pinia |
-| 后端 | FastAPI · LangGraph · ARQ (异步 worker) |
-| 存储 | PostgreSQL · Redis · MinIO（Milvus · Neo4j 为兼容模式可选依赖） |
-| 文档解析 | MinerU · PaddleX · RapidOCR |
+| 后端 | FastAPI · LangGraph · ARQ |
+| 核心存储 | PostgreSQL · Redis · MinIO |
+| 兼容知识链路 | Milvus · Neo4j · Dify · Notion |
+| 文档处理 | MinerU · PaddleX · RapidOCR |
 | 部署 | Docker Compose |
+
 ## 快速开始
 
-**前置要求**：已安装 [Docker](https://docs.docker.com/get-docker/) 与 Docker Compose，并准备至少一个兼容 OpenAI 接口的大模型 API。
-
-**1. 克隆代码并初始化**
+前置要求：Docker、Docker Compose，以及至少一个兼容 OpenAI 接口的模型 API。
 
 ```bash
-git clone --depth 1 https://github.com/xerrors/Yuxi.git
-cd Yuxi
+git clone <repository-url> ZhiForge
+cd ZhiForge
 
 # Linux/macOS
 ./scripts/init.sh
 
 # Windows PowerShell
 .\scripts\init.ps1
+
+docker compose up --build -d
 ```
 
-**2. 使用 Docker 启动**
-
-```bash
-docker compose up --build
-```
-
-**3. 访问平台**
-
-等待启动完成后，浏览器打开 `http://localhost:5173`，使用初始化时生成的管理员账户登录即可。
-
-> 💡 默认 Compose 已使用 `LITE_MODE=true`，不启动 Milvus、etcd 和 Neo4j。如需旧知识库兼容能力，使用 `LITE_MODE=false docker compose --profile legacy-knowledge up --build`。更多部署说明见 [项目文档](https://xerrors.github.io/Yuxi)。
-
-## 致谢
-
-本项目参考并引用了以下优秀开源项目，在此致以诚挚的感谢：
-
-- [LightRAG](https://github.com/HKUDS/LightRAG) - 早期版本曾参考其图谱构建与检索思路；当前 Yuxi 已实现自研 Milvus 知识库/图谱链路以替换历史集成，降低兼容性问题
-- [DeepAgents](https://github.com/langchain-ai/deepagents) - 直接引入作为深度智能体框架
-- [DeerFlow](https://github.com/bytedance/deer-flow) - 参考了其 Sandbox 智能体架构的实现思路
-- [RAGflow](https://github.com/infiniflow/ragflow) - 参考了其文档 Text Chunking 的分块策略
-- [LangGraph](https://github.com/langchain-ai/langgraph) - 多智能体编排框架，本项目的核心架构基础
-- [QwenPaw](https://github.com/agentscope-ai/QwenPaw) - 参考模型配置与个人文件区域设计
+浏览器打开 `http://localhost:5173`，按页面引导创建管理员并配置模型。完整说明见[快速开始](docs/intro/quick-start.md)。默认 Compose 使用 `LITE_MODE=true`；旧知识库兼容能力通过 `legacy-knowledge` profile 显式启动。
 
 ## 参与贡献
 
-感谢所有贡献者的支持！
+贡献流程和开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-<a href="https://github.com/xerrors/Yuxi/contributors">
-  <img src="https://contrib.rocks/image?repo=xerrors/Yuxi&max=100&columns=10" />
-</a>
+## 许可证
 
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=xerrors/Yuxi)](https://star-history.com/#xerrors/Yuxi)
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
----
-
-<div align="center">
-
-**如果这个项目对您有帮助，请不要忘记给我们一个 ⭐️**
-
-</div>
+本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)。
