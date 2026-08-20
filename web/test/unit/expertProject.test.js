@@ -13,6 +13,7 @@ import {
   getExpertProjectProgress,
   getExpertStageIndex,
   getExpertTopicProgress,
+  isInitialExpertMethodConfirmation,
   isExpertMethodPreparationRunning,
   shouldPollExpertProject
 } from '../../src/utils/expertProject.js'
@@ -126,6 +127,49 @@ test('项目定向运行时进入学习方案与小样生成视图', () => {
   )
   assert.equal(
     isExpertMethodPreparationRunning({ stage: 'material_learning', status: 'running' }),
+    false
+  )
+})
+
+test('自动推进只在 V1 方法和小样等待确认时选择', () => {
+  assert.equal(
+    isInitialExpertMethodConfirmation({
+      stage: 'orientation',
+      status: 'awaiting_confirmation',
+      method_calibration_completed_at: null,
+      auto_advance: false
+    }),
+    true
+  )
+  assert.equal(
+    isInitialExpertMethodConfirmation({
+      stage: 'orientation',
+      status: 'awaiting_confirmation'
+    }),
+    true
+  )
+  assert.equal(
+    isInitialExpertMethodConfirmation({
+      stage: 'orientation',
+      status: 'awaiting_confirmation',
+      method_calibration_completed_at: '2026-08-20T08:00:00Z'
+    }),
+    false
+  )
+  assert.equal(
+    isInitialExpertMethodConfirmation({
+      stage: 'orientation',
+      status: 'running',
+      method_calibration_completed_at: null
+    }),
+    false
+  )
+  assert.equal(
+    isInitialExpertMethodConfirmation({
+      stage: 'organization',
+      status: 'awaiting_confirmation',
+      method_calibration_completed_at: null
+    }),
     false
   )
 })

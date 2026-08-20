@@ -98,6 +98,12 @@ export const canPauseExpertProject = (project) =>
 export const isExpertMethodPreparationRunning = (project) =>
   project?.stage === 'orientation' && project?.status === 'running'
 
+/** 只在 V1 方法和小样等待确认时允许选择后续推进方式。 */
+export const isInitialExpertMethodConfirmation = (project) =>
+  project?.stage === 'orientation' &&
+  project?.status === 'awaiting_confirmation' &&
+  project?.method_calibration_completed_at == null
+
 /** 计算材料阶段已经得到明确处理结果的比例。 */
 export const getExpertMaterialProgress = (materials = []) => {
   if (!materials.length) return 0

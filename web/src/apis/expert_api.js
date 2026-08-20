@@ -36,9 +36,11 @@ export const startExpertOrientation = async (projectId, representativeMaterialId
     feedback
   })
 
-/** 确认当前项目方法版本并开始逐份学习。 */
-export const confirmExpertMethod = async (projectId) =>
-  apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/confirm`, {})
+/** 确认当前项目方法版本，并显式提交后续推进方式。 */
+export const confirmExpertMethod = async (projectId, autoAdvance) =>
+  apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/confirm`, {
+    auto_advance: Boolean(autoAdvance)
+  })
 
 /** 只重跑一份正文转换失败的材料。 */
 export const retryExpertMaterialConversion = async (projectId, materialId) =>

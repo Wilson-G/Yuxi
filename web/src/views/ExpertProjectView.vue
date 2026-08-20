@@ -344,7 +344,25 @@
                 </div>
               </details>
 
-              <div class="decision-panel">
+              <div class="decision-panel method-decision-panel">
+                <div v-if="isInitialMethodConfirmation" class="auto-advance-choice">
+                  <div>
+                    <strong>自动推进到候选 Skill</strong>
+                    <span v-if="autoAdvanceEnabled">
+                      开启后，本次确认就是候选 Skill
+                      成书前最后一次确认。系统会自动完成方法校准、逐份学习、组织和成书，但不会自动启用
+                      Skill。
+                    </span>
+                    <span v-else>
+                      关闭后，方法校准、材料问题和组织方式仍会等待你查看、调整和确认。
+                    </span>
+                  </div>
+                  <a-switch
+                    v-model:checked="autoAdvanceEnabled"
+                    aria-label="自动推进到候选 Skill"
+                    :disabled="Boolean(actionKey)"
+                  />
+                </div>
                 <a-textarea
                   v-if="project.status === 'awaiting_confirmation'"
                   v-model:value="methodFeedback"
@@ -378,7 +396,7 @@
                     @click="confirmMethod"
                   >
                     <Check :size="14" />
-                    确认学习方向
+                    {{ methodConfirmButtonLabel }}
                   </a-button>
                 </div>
               </div>
@@ -1034,6 +1052,7 @@ import {
   getExpertStatusLabel,
   getExpertStatusTone,
   getExpertTopicProgress,
+  isInitialExpertMethodConfirmation,
   isExpertMethodPreparationRunning,
   shouldPollExpertProject
 } from '@/utils/expertProject'
@@ -1049,6 +1068,7 @@ const selectedRepresentativeIds = ref([])
 const maxRepresentativeMaterials = 20
 const representativeTouched = ref(false)
 const methodFeedback = ref('')
+const autoAdvanceEnabled = ref(true)
 const organizationFeedback = ref('')
 const preview = ref(null)
 const previewLoading = ref(false)
@@ -1105,6 +1125,11 @@ const filteredMaterials = computed(() => {
 const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
+const isInitialMethodConfirmation = computed(() => isInitialExpertMethodConfirmation(project.value))
+const methodConfirmButtonLabel = computed(() => {
+  if (!isInitialMethodConfirmation.value) return '确认并开始学习'
+  return autoAdvanceEnabled.value ? '确认并自动推进' : '确认并人工跟进'
+})
 const selectableMaterials = computed(() =>
   (project.value?.materials || []).filter((material) => material.status === 'ready')
 )
@@ -1165,6 +1190,9 @@ const loadProject = async ({ silent = false } = {}) => {
     const nextProject = response?.item
     if (!nextProject) throw new Error('项目响应缺少正式记录')
     project.value = nextProject
+    autoAdvanceEnabled.value = isInitialExpertMethodConfirmation(nextProject)
+      ? true
+      : Boolean(nextProject.auto_advance)
     if (!representativeTouched.value) {
       selectedRepresentativeIds.value = [...(nextProject.representative_material_ids || [])]
     }
@@ -1301,23 +1329,41 @@ const reviseMethod = () => {
   })
 }
 
-/** 第一次确认当前完整方法版本。 */
+/** 确认当前完整方法版本，并提交首次选择的推进方式。 */
 const confirmMethod = () => {
-  const isCalibratedMethod = Boolean(project.value?.method_calibration_completed_at)
+  const isInitialConfirmation = isInitialMethodConfirmation.value
+  const autoAdvance = isInitialConfirmation
+    ? autoAdvanceEnabled.value
+    : Boolean(project.value?.auto_advance)
+
+  let title = '确认校准后的学习方向？'
+  let content = '这是校准后的学习方案、阶段指令和小样结果。确认后才会开始逐份学习全部材料。'
+  let okText = '确认并开始学习'
+  let successMessage = '校准后的学习方向已确认，正在开始逐份学习'
+
+  if (isInitialConfirmation && autoAdvance) {
+    title = '确认并自动推进到候选 Skill？'
+    content =
+      '本次确认后，系统会自动完成方法校准、逐份学习、组织和成书，不再等待后续确认。候选 Skill 不会自动启用，仍需预览后手动启用。'
+    okText = '确认并自动推进'
+    successMessage = '学习方向已确认，系统将自动推进到候选 Skill'
+  } else if (isInitialConfirmation) {
+    title = '确认学习方向并保留人工跟进？'
+    content = '系统会先校准方法并复跑小样，之后继续等待你查看、调整和确认。'
+    okText = '确认并开始校准'
+    successMessage = '学习方向已确认，正在校准方法并重新试跑小样'
+  }
+
   Modal.confirm({
-    title: '确认这样学习这批材料？',
-    content: isCalibratedMethod
-      ? '这是校准后的学习方案、阶段指令和小样结果。确认后才会开始逐份学习全部材料。'
-      : '确认后会根据小样 Review 中的可泛化问题校准一次并复跑原小样；如果方法发生变化，系统会再次停下等待确认。',
-    okText: isCalibratedMethod ? '确认并开始学习' : '确认并开始校准',
+    title,
+    content,
+    okText,
     cancelText: '继续检查',
     onOk: () =>
       runAction(
         'confirm-method',
-        () => expertApi.confirmMethod(projectId.value),
-        isCalibratedMethod
-          ? '校准后的学习方向已确认，正在开始逐份学习'
-          : '学习方向已确认，正在校准方法并重新试跑小样'
+        () => expertApi.confirmMethod(projectId.value, autoAdvance),
+        successMessage
       )
   })
 }
@@ -2172,6 +2218,43 @@ onBeforeUnmount(() => {
   }
 }
 
+.method-decision-panel {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.auto-advance-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--gray-150);
+
+  > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  strong {
+    color: var(--gray-900);
+    font-size: 14px;
+  }
+
+  span {
+    max-width: 760px;
+    color: var(--gray-600);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  :deep(.ant-switch) {
+    flex: 0 0 auto;
+  }
+}
+
 .decision-actions,
 .release-actions {
   flex: 0 0 auto;
@@ -2602,6 +2685,15 @@ onBeforeUnmount(() => {
     :deep(.ant-btn) {
       flex: 1 1 auto;
       justify-content: center;
+    }
+  }
+
+  .auto-advance-choice {
+    align-items: flex-start;
+
+    :deep(.ant-switch) {
+      min-width: 44px;
+      min-height: 24px;
     }
   }
 
