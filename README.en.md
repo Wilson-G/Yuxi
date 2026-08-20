@@ -72,8 +72,8 @@ RAG, knowledge bases, and knowledge graphs remain useful retrieval capabilities.
 Prerequisites: Docker, Docker Compose, and at least one OpenAI-compatible model API.
 
 ```bash
-git clone <repository-url> ZhiForge
-cd ZhiForge
+git clone <repository-url> <repo-directory>
+cd <repo-directory>
 
 # Linux/macOS
 ./scripts/init.sh

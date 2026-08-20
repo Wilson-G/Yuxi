@@ -72,8 +72,8 @@ RAG、知识库和知识图谱仍可继续承担资料检索；知铸让可靠�
 前置要求：Docker、Docker Compose，以及至少一个兼容 OpenAI 接口的模型 API。
 
 ```bash
-git clone <repository-url> ZhiForge
-cd ZhiForge
+git clone <repository-url> <repo-directory>
+cd <repo-directory>
 
 # Linux/macOS
 ./scripts/init.sh
