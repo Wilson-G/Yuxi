@@ -197,8 +197,7 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
     async with _project_job_lock(project_id):
         try:
             result = await run_method_calibration(project_id, method_version)
-            if result.get("status") == "running":
-                await enqueue_pending_material_learning(project_id, method_version)
+            await enqueue_pending_material_learning(project_id, method_version)
             return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
@@ -235,14 +234,17 @@ async def process_expert_organization(ctx, project_id: str, organization_version
     """在 Worker 中准备候选研究并由总编串行形成组织方案。"""
 
     async with _project_job_lock(project_id):
-        if await _project_stage_is_stale(
-            project_id,
-            stage="organization",
-            organization_version=organization_version,
-        ):
-            return {"project_id": project_id, "ignored": True}
         try:
-            return await run_organization_stage(project_id, organization_version)
+            if await _project_stage_is_stale(
+                project_id,
+                stage="organization",
+                organization_version=organization_version,
+            ):
+                result = {"project_id": project_id, "ignored": True}
+            else:
+                result = await run_organization_stage(project_id, organization_version)
+            await _enqueue_handout_compilation_handoff(project_id, organization_version)
+            return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
                 raise Retry(defer=10) from exc
@@ -366,6 +368,22 @@ async def _enqueue_material_learning_handoff(project_id: str) -> int | None:
     organization_version = await initialize_organization_stage(project_id)
     await enqueue_organization(project_id, organization_version)
     return organization_version
+
+
+async def _enqueue_handout_compilation_handoff(project_id: str, organization_version: int) -> None:
+    """按已提交的项目事实补投当前组织版本的讲义编译。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        if (
+            project is None
+            or project.stage != "handout_compilation"
+            or project.status != "running"
+            or project.organization_version != organization_version
+        ):
+            return
+
+    await enqueue_handout_compilation(project_id, organization_version)
 
 
 def _project_job_lock(project_id: str) -> asyncio.Lock:

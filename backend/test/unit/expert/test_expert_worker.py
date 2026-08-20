@@ -150,6 +150,23 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
             method_version=method_version,
             method_confirmed=bool(flags and flags[0]),
         )
+    for project_id, stage, status in [
+        ("organization", "organization", "running"),
+        ("organization-awaiting", "organization", "awaiting_confirmation"),
+        ("organization-attention", "organization", "needs_attention"),
+        ("organization-paused", "organization", "paused"),
+        ("handouts", "handout_compilation", "running"),
+        ("handouts-attention", "handout_compilation", "needs_attention"),
+        ("handouts-paused", "handout_compilation", "paused"),
+    ]:
+        await _add_project(
+            worker_env,
+            project_id,
+            stage=stage,
+            status=status,
+            method_version=3,
+            organization_version=2,
+        )
 
     jobs: list[tuple[tuple, dict]] = []
 
@@ -184,6 +201,14 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         (
             ("process_expert_material_learning", "learning", "learning-material", 3),
             {"_job_id": "expert:material:learning:learning-material:v3"},
+        ),
+        (
+            ("process_expert_organization", "organization", 2),
+            {"_job_id": "expert:organization:organization:v2"},
+        ),
+        (
+            ("process_expert_handout_compilation", "handouts", 2),
+            {"_job_id": "expert:handouts:handouts:v2:recovery"},
         ),
     ]
 
@@ -227,20 +252,29 @@ async def test_explicit_resume_enqueues_current_stage(worker_env, monkeypatch: p
 
 @pytest.mark.asyncio
 async def test_method_calibration_waits_for_confirmation_without_queueing_materials(
+    worker_env,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """方法校准结束后等待用户确认，不提前投递材料学习任务。"""
 
+    await _add_project(
+        worker_env,
+        "calibrated-project",
+        stage="orientation",
+        status="awaiting_confirmation",
+        method_version=2,
+    )
+
     async def finish_calibration(project_id: str, method_version: int) -> dict:
         return {"project_id": project_id, "method_version": method_version, "status": "awaiting_confirmation"}
 
-    queued: list[tuple[str, int]] = []
+    queued: list[tuple[str, str, int]] = []
 
-    async def queue_material_learning(project_id: str, method_version: int) -> None:
-        queued.append((project_id, method_version))
+    async def queue_material_learning(project_id: str, material_id: str, method_version: int) -> None:
+        queued.append((project_id, material_id, method_version))
 
     monkeypatch.setattr(worker, "run_method_calibration", finish_calibration)
-    monkeypatch.setattr(worker, "enqueue_pending_material_learning", queue_material_learning)
+    monkeypatch.setattr(worker, "enqueue_material_learning", queue_material_learning)
 
     result = await worker.process_expert_method_calibration({"job_try": 1}, "calibrated-project", 2)
 
@@ -249,6 +283,110 @@ async def test_method_calibration_waits_for_confirmation_without_queueing_materi
         "method_version": 2,
         "status": "awaiting_confirmation",
     }
+    assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_method_calibration_retry_queues_materials_from_committed_facts_after_runner_is_ignored(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "calibration-handoff-retry",
+        stage="material_learning",
+        status="running",
+        method_version=2,
+    )
+    async with worker_env() as db:
+        await ExpertRepository(db).update_project(
+            "calibration-handoff-retry",
+            stage="orientation",
+            status="running",
+        )
+        await db.commit()
+    runner_calls = 0
+    enqueue_attempts = 0
+
+    async def run_calibration(_project_id: str, _method_version: int) -> dict:
+        nonlocal runner_calls
+        runner_calls += 1
+        if runner_calls == 1:
+            async with worker_env() as db:
+                await ExpertRepository(db).update_project(
+                    "calibration-handoff-retry",
+                    stage="material_learning",
+                    status="running",
+                )
+                await db.commit()
+            return {"project_id": "calibration-handoff-retry", "status": "running"}
+        return {"project_id": "calibration-handoff-retry", "ignored": True}
+
+    async def enqueue_material(_project_id: str, _material_id: str, _method_version: int) -> None:
+        nonlocal enqueue_attempts
+        enqueue_attempts += 1
+        if enqueue_attempts == 1:
+            raise ConnectionError("Redis 暂时不可用")
+
+    monkeypatch.setattr(worker, "run_method_calibration", run_calibration)
+    monkeypatch.setattr(worker, "enqueue_material_learning", enqueue_material)
+
+    with pytest.raises(Retry):
+        await worker.process_expert_method_calibration(
+            {"job_try": 1},
+            "calibration-handoff-retry",
+            2,
+        )
+
+    result = await worker.process_expert_method_calibration(
+        {"job_try": 2},
+        "calibration-handoff-retry",
+        2,
+    )
+
+    assert result == {"project_id": "calibration-handoff-retry", "ignored": True}
+    assert runner_calls == 2
+    assert enqueue_attempts == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "project_method_version", "job_method_version"),
+    [
+        ("awaiting_confirmation", 2, 2),
+        ("needs_attention", 2, 2),
+        ("paused", 2, 2),
+        ("running", 3, 2),
+    ],
+)
+async def test_method_calibration_handoff_respects_project_fact_boundaries(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    project_method_version: int,
+    job_method_version: int,
+) -> None:
+    project_id = f"calibration-boundary-{status}-{project_method_version}"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status=status,
+        method_version=project_method_version,
+    )
+    queued: list[str] = []
+
+    async def stale_calibration(_project_id: str, _method_version: int) -> dict:
+        return {"project_id": project_id, "ignored": True}
+
+    async def enqueue_material(_project_id: str, material_id: str, _method_version: int) -> None:
+        queued.append(material_id)
+
+    monkeypatch.setattr(worker, "run_method_calibration", stale_calibration)
+    monkeypatch.setattr(worker, "enqueue_material_learning", enqueue_material)
+
+    await worker.process_expert_method_calibration({"job_try": 1}, project_id, job_method_version)
+
     assert queued == []
 
 
@@ -401,6 +539,111 @@ async def test_material_job_retry_restarts_handoff_after_initialization_failure(
     assert result["organization_version"] == 1
     assert initialization_attempts == 2
     assert enqueued == [("handoff-initialization-retry", 1)]
+
+
+@pytest.mark.asyncio
+async def test_organization_retry_queues_handouts_from_committed_facts_after_runner_is_ignored(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "organization-handoff-retry",
+        stage="organization",
+        status="running",
+        method_version=1,
+        organization_version=2,
+    )
+    runner_calls = 0
+    enqueue_attempts = 0
+
+    async def run_organization(_project_id: str, _organization_version: int) -> dict:
+        nonlocal runner_calls
+        runner_calls += 1
+        async with worker_env() as db:
+            await ExpertRepository(db).update_project(
+                "organization-handoff-retry",
+                stage="handout_compilation",
+                status="running",
+            )
+            await db.commit()
+        return {
+            "project_id": "organization-handoff-retry",
+            "stage": "handout_compilation",
+            "status": "running",
+        }
+
+    async def enqueue_handouts(_project_id: str, _organization_version: int, *, token: str = "initial") -> None:
+        nonlocal enqueue_attempts
+        assert token == "initial"
+        enqueue_attempts += 1
+        if enqueue_attempts == 1:
+            raise ConnectionError("Redis 暂时不可用")
+
+    monkeypatch.setattr(worker, "run_organization_stage", run_organization)
+    monkeypatch.setattr(worker, "enqueue_handout_compilation", enqueue_handouts)
+
+    with pytest.raises(Retry):
+        await worker.process_expert_organization(
+            {"job_try": 1},
+            "organization-handoff-retry",
+            2,
+        )
+
+    result = await worker.process_expert_organization(
+        {"job_try": 2},
+        "organization-handoff-retry",
+        2,
+    )
+
+    assert result == {"project_id": "organization-handoff-retry", "ignored": True}
+    assert runner_calls == 1
+    assert enqueue_attempts == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "status", "project_organization_version", "job_organization_version"),
+    [
+        ("organization", "awaiting_confirmation", 2, 2),
+        ("organization", "needs_attention", 2, 2),
+        ("organization", "paused", 2, 2),
+        ("handout_compilation", "running", 3, 2),
+    ],
+)
+async def test_organization_handoff_respects_project_fact_boundaries(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    status: str,
+    project_organization_version: int,
+    job_organization_version: int,
+) -> None:
+    project_id = f"organization-boundary-{status}-{project_organization_version}"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage=stage,
+        status=status,
+        method_version=1,
+        organization_version=project_organization_version,
+    )
+    queued: list[tuple[str, int]] = []
+
+    async def enqueue_handouts(project_id: str, organization_version: int, *, token: str = "initial") -> None:
+        assert token == "initial"
+        queued.append((project_id, organization_version))
+
+    monkeypatch.setattr(worker, "enqueue_handout_compilation", enqueue_handouts)
+
+    result = await worker.process_expert_organization(
+        {"job_try": 1},
+        project_id,
+        job_organization_version,
+    )
+
+    assert result == {"project_id": project_id, "ignored": True}
+    assert queued == []
 
 
 @pytest.mark.asyncio
