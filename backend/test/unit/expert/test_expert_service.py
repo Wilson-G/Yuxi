@@ -1118,8 +1118,8 @@ async def test_cannot_exclude_the_only_remaining_material(expert_env) -> None:
 
 
 @pytest.mark.asyncio
-async def test_method_calibration_compares_samples_and_starts_learning(expert_env) -> None:
-    """校准将 V1 基线与 V2 小样交给残余评估，再直接进入批量学习。"""
+async def test_method_calibration_compares_samples_and_waits_for_second_confirmation(expert_env) -> None:
+    """校准将 V1 与 V2 小样交给残余评估，并等待用户确认 V2 方法。"""
 
     project_id, _ = await _create_project(expert_env, count=2)
     material_ids = await _make_materials_ready(expert_env, project_id)
@@ -1146,7 +1146,7 @@ async def test_method_calibration_compares_samples_and_starts_learning(expert_en
     assert result == {
         "project_id": project_id,
         "method_version": 2,
-        "status": "running",
+        "status": "awaiting_confirmation",
     }
     assert len(model_tasks.calibration_inputs) == 1
     calibration_input = model_tasks.calibration_inputs[0]
@@ -1162,15 +1162,24 @@ async def test_method_calibration_compares_samples_and_starts_learning(expert_en
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
         assert project is not None
-        assert project.stage == service.MATERIAL_LEARNING_STAGE
-        assert project.status == "running"
+        assert project.stage == service.ORIENTATION_STAGE
+        assert project.status == "awaiting_confirmation"
         assert project.learning_plan == "# 校准后的项目学习方案"
         assert project.method_sample_material_ids == material_ids
         assert [sample["material_id"] for sample in project.method_samples] == material_ids
-        assert project.method_confirmed_at is not None
+        assert project.method_confirmed_at is None
         assert project.method_calibration_baseline == []
-        with pytest.raises(ValueError, match="没有等待确认"):
-            await service.confirm_project_method(db, project_id=project_id, created_by="user-1")
+        confirmed_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+        assert confirmed_version == calibrated_version
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert project.stage == service.MATERIAL_LEARNING_STAGE
+        assert project.status == "running"
+        assert project.method_confirmed_at is not None
         with pytest.raises(ValueError, match="当前项目状态不能开始项目定向"):
             await service.start_project_orientation(
                 db,
@@ -1343,10 +1352,11 @@ async def test_method_calibration_automatically_repairs_v2_review_issue(expert_e
         )
 
     result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
-    assert result["status"] == "running"
+    assert result["status"] == "awaiting_confirmation"
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
     assert project is not None
-    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.stage == service.ORIENTATION_STAGE
+    assert project.status == "awaiting_confirmation"
     assert project.method_samples[0]["status"] == "passed"
     assert project.method_samples[0]["final_review"]["decision"] == "pass"

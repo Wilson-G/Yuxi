@@ -627,7 +627,7 @@ async def run_project_orientation(
 
 
 async def confirm_project_method(db: AsyncSession, *, project_id: str, created_by: str) -> int:
-    """确认当前方法：首次确认触发校准，校准后确认才进入批量学习。"""
+    """确认当前方法：首次确认触发校准，校准版本再次确认后进入批量学习。"""
 
     repo = ExpertRepository(db)
     project = await repo.lock_project(project_id)
@@ -643,6 +643,10 @@ async def confirm_project_method(db: AsyncSession, *, project_id: str, created_b
     if not project.method_samples:
         raise ValueError("项目方法缺少真实材料小样")
     _validate_method_samples_ready(project.method_samples)
+    if project.method_calibration_completed_at is not None:
+        project.method_confirmed_at = utc_now_naive()
+        await _start_material_learning(db, project, repo)
+        return project.method_version
     if project.method_confirmed_at is not None:
         raise ValueError("方法校准正在完成，不能再次确认")
     sample_ids = list(project.method_sample_material_ids or [])
@@ -694,7 +698,7 @@ async def run_method_calibration(
     *,
     model_tasks: ExpertModelTasks | None = None,
 ) -> dict[str, Any]:
-    """由总编收敛方法、评估残余问题后直接决定是否批量学习。"""
+    """由总编收敛方法并复跑小样，等待用户确认校准后的方法版本。"""
 
     tasks = model_tasks or ExpertModelTasks()
     async with pg_manager.get_async_session_context() as db:
@@ -791,6 +795,7 @@ async def run_method_calibration(
         ):
             return {"project_id": project_id, "ignored": True}
         project.method_calibration_baseline = []
+        project.method_confirmed_at = None
         if assessment.decision == "needs_attention":
             project.status = "needs_attention"
             project.message = "校准后仍存在会影响批量学习的方法问题"
@@ -798,8 +803,11 @@ async def run_method_calibration(
             project.updated_at = utc_now_naive()
             await db.commit()
             return {"project_id": project_id, "method_version": method_version, "status": "needs_attention"}
-        await _start_material_learning(db, project, repo)
-    return {"project_id": project_id, "method_version": method_version, "status": "running"}
+        project.message = "校准后的学习方案和真实小样已就绪，等待再次确认怎么学"
+        project.error_message = None
+        project.updated_at = utc_now_naive()
+        await db.commit()
+    return {"project_id": project_id, "method_version": method_version, "status": "awaiting_confirmation"}
 
 
 async def run_material_learning_stage(

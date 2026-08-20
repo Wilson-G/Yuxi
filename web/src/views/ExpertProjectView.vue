@@ -1303,17 +1303,21 @@ const reviseMethod = () => {
 
 /** 第一次确认当前完整方法版本。 */
 const confirmMethod = () => {
+  const isCalibratedMethod = Boolean(project.value?.method_calibration_completed_at)
   Modal.confirm({
     title: '确认这样学习这批材料？',
-    content:
-      '确认后会根据小样 Review 中的可泛化问题自动校准一次并复跑原小样；没有这类问题时直接开始逐份学习。小样局部可修问题会交给批量学习继续修订。',
-    okText: '确认并开始校准',
+    content: isCalibratedMethod
+      ? '这是校准后的学习方案、阶段指令和小样结果。确认后才会开始逐份学习全部材料。'
+      : '确认后会根据小样 Review 中的可泛化问题校准一次并复跑原小样；如果方法发生变化，系统会再次停下等待确认。',
+    okText: isCalibratedMethod ? '确认并开始学习' : '确认并开始校准',
     cancelText: '继续检查',
     onOk: () =>
       runAction(
         'confirm-method',
         () => expertApi.confirmMethod(projectId.value),
-        '学习方向已确认，正在校准方法并重新试跑小样'
+        isCalibratedMethod
+          ? '校准后的学习方向已确认，正在开始逐份学习'
+          : '学习方向已确认，正在校准方法并重新试跑小样'
       )
   })
 }

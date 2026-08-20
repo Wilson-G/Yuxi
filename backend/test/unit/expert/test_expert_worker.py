@@ -226,13 +226,13 @@ async def test_explicit_resume_enqueues_current_stage(worker_env, monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_method_calibration_queues_material_learning_after_success(
+async def test_method_calibration_waits_for_confirmation_without_queueing_materials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """方法校准进入批量学习后，Worker 必须投递材料学习任务。"""
+    """方法校准结束后等待用户确认，不提前投递材料学习任务。"""
 
     async def finish_calibration(project_id: str, method_version: int) -> dict:
-        return {"project_id": project_id, "method_version": method_version, "status": "running"}
+        return {"project_id": project_id, "method_version": method_version, "status": "awaiting_confirmation"}
 
     queued: list[tuple[str, int]] = []
 
@@ -244,8 +244,12 @@ async def test_method_calibration_queues_material_learning_after_success(
 
     result = await worker.process_expert_method_calibration({"job_try": 1}, "calibrated-project", 2)
 
-    assert result == {"project_id": "calibrated-project", "method_version": 2, "status": "running"}
-    assert queued == [("calibrated-project", 2)]
+    assert result == {
+        "project_id": "calibrated-project",
+        "method_version": 2,
+        "status": "awaiting_confirmation",
+    }
+    assert queued == []
 
 
 @pytest.mark.asyncio
