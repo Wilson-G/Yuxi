@@ -169,7 +169,7 @@ async def upload_material_source_file_route(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    await _enqueue_or_mark_attention(db, item["file_id"])
+    item = await _enqueue_or_mark_attention(db, item)
     return {"item": item}
 
 
@@ -237,7 +237,9 @@ async def retry_material_source_file_route(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await _enqueue_or_mark_attention(db, file_id)
+    item = await _enqueue_or_mark_attention(db, item)
+    if item["status"] == "needs_attention":
+        raise HTTPException(status_code=503, detail=item["error_message"])
     return {"item": item}
 
 
@@ -291,13 +293,13 @@ async def get_document_image_route(
     return await create_private_image_response(object_path)
 
 
-async def _enqueue_or_mark_attention(db: AsyncSession, file_id: str) -> None:
+async def _enqueue_or_mark_attention(db: AsyncSession, item: dict) -> dict:
     try:
-        await enqueue_material_source_file(file_id)
+        await enqueue_material_source_file(item["file_id"])
     except Exception as exc:
         message = f"来源文件任务投递失败: {exc}"
-        await mark_material_source_enqueue_failed(db, file_id=file_id, error=message)
-        raise HTTPException(status_code=503, detail=message) from exc
+        return await mark_material_source_enqueue_failed(db, file_id=item["file_id"], error=message)
+    return item
 
 
 async def _enqueue_units_or_mark_attention(db: AsyncSession, file_id: str) -> None:

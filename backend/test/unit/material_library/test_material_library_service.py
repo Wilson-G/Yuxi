@@ -234,6 +234,30 @@ async def test_retry_resets_only_selected_source_file(material_env) -> None:
     assert untouched_source.status == "pending"
 
 
+async def test_enqueue_failure_returns_updated_source_file_fact(material_env) -> None:
+    """投递失败后返回数据库中的需要处理事实，不影响其他来源文件。"""
+
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    failed = await _upload_source(material_env, fake_minio, "failed.md")
+    untouched = await _upload_source(material_env, fake_minio, "untouched.md")
+
+    async with material_env() as db:
+        result = await service.mark_material_source_enqueue_failed(
+            db,
+            file_id=failed["file_id"],
+            error="来源文件任务投递失败: redis unavailable",
+        )
+
+    assert result["file_id"] == failed["file_id"]
+    assert result["status"] == "needs_attention"
+    assert result["error_message"] == "来源文件任务投递失败: redis unavailable"
+    async with material_env() as db:
+        untouched_source = await MaterialLibraryRepository(db).get_source_file(untouched["file_id"])
+    assert untouched_source.status == "pending"
+    assert untouched_source.error_message is None
+
+
 async def test_boundary_confirmation_saves_only_ready_units_and_reads_complete_text(
     material_env,
     monkeypatch: pytest.MonkeyPatch,

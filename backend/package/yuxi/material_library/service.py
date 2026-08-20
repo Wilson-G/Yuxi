@@ -287,15 +287,16 @@ async def reset_material_source_units(db: AsyncSession, *, library_id: str, file
     return source_file.to_dict()
 
 
-async def mark_material_source_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> None:
+async def mark_material_source_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> dict[str, Any]:
     """记录来源文件投递失败，让用户可以显式重试这一份文件。"""
 
-    await MaterialLibraryRepository(db).update_source_file(
+    source_file = await MaterialLibraryRepository(db).update_source_file(
         file_id,
         status=SOURCE_ATTENTION_STATUS,
         error_message=error,
     )
     await db.commit()
+    return source_file.to_dict()
 
 
 async def mark_material_unit_enqueue_failed(db: AsyncSession, *, file_id: str, error: str) -> None:

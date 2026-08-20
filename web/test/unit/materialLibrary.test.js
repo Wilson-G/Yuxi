@@ -70,6 +70,30 @@ test('失败文件保留原因且重试只重新执行这一份', async () => {
   assert.equal(queue.retry(latestItems[0].id), false)
 })
 
+test('处理投递失败的已上传文件保留返回事实且不会重新上传', async () => {
+  let latestItems = []
+  const response = {
+    item: {
+      file_id: 'attention-file',
+      status: 'needs_attention',
+      error_message: '来源文件任务投递失败: redis unavailable'
+    }
+  }
+  const queue = createMaterialUploadQueue({
+    upload: async () => response,
+    onChange: (items) => {
+      latestItems = items
+    }
+  })
+
+  queue.enqueue([{ name: 'uploaded.md' }])
+  await flushPromises()
+
+  assert.equal(latestItems[0].status, 'success')
+  assert.equal(latestItems[0].response, response)
+  assert.equal(queue.retry(latestItems[0].id), false)
+})
+
 test('文件状态区分正文就绪和材料单元就绪', () => {
   assert.equal(getMaterialFileStatus({ status: 'processing', unit_status: 'pending' }), 'processing')
   assert.equal(getMaterialFileStatus({ status: 'ready', unit_status: 'processing' }), 'processing')
