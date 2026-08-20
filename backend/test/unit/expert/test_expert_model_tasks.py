@@ -15,6 +15,7 @@ from yuxi.expert.contracts import (
     HandoutReviewResult,
     MaterialNoteResult,
     TopicEvidencePack,
+    TopicMapResult,
 )
 from yuxi.models.providers.cache import ModelInfo
 
@@ -65,7 +66,7 @@ def asset_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "OTHER-TEMPLATE",
         encoding="utf-8",
     )
-    (root / "examples" / "bazi-full-stage-prompt-pack.md").write_text(
+    (root / "examples" / "apprentice-stage-prompt-pack.md").write_text(
         "EXAMPLE-FIRST\nEXAMPLE-LAST",
         encoding="utf-8",
     )
@@ -126,6 +127,7 @@ async def test_model_task_rejects_oversized_input_before_loading_model(monkeypat
         await tasks.write_material_note(
             model_spec="provider:model",
             learning_plan="学习方案",
+            compilation_brief="项目专属编译底稿",
             stage_prompt="笔记要求",
             material_alias="M001",
             title="完整材料",
@@ -152,7 +154,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
                 "learning_plan_markdown": "已确认前的项目学习方案",
                 "compilation_brief_markdown": "项目专属编译底稿",
                 "prompt_pack": _prompt_pack(),
-                "method_sample_aliases": ["M001"],
+                "method_sample_aliases": ["M001", "M002", "M003", "M004"],
             },
         ]
     )
@@ -164,9 +166,15 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
             "title": "代表材料",
             "source": "老师甲",
             "text": "SAMPLE-FIRST\nSAMPLE-MIDDLE\nSAMPLE-LAST",
-        }
+        },
+        {"alias": "M002", "title": "代表材料二", "source": "老师乙", "text": "SAMPLE-TWO"},
+        {"alias": "M003", "title": "代表材料三", "source": "老师丙", "text": "SAMPLE-THREE"},
+        {"alias": "M004", "title": "代表材料四", "source": "老师丁", "text": "SAMPLE-FOUR"},
     ]
-    catalog = "M001 | 代表材料 | 老师甲\nM002 | 未选择材料 | 老师乙"
+    catalog = (
+        "M001 | 代表材料 | 老师甲\nM002 | 代表材料二 | 老师乙\nM003 | 代表材料三 | 老师丙\n"
+        "M004 | 代表材料四 | 老师丁\nM005 | 未选择材料 | 老师戊"
+    )
 
     orientation = await tasks.orient_project(
         model_spec="provider:model",
@@ -190,7 +198,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     orientation_prompt = _prompt(model.calls[0])
     assert catalog in orientation_prompt
     assert "L1: SAMPLE-FIRST\nL2: SAMPLE-MIDDLE\nL3: SAMPLE-LAST" in orientation_prompt
-    assert "M002 | 未选择材料 | 老师乙" in orientation_prompt
+    assert "M005 | 未选择材料 | 老师戊" in orientation_prompt
     assert "UNSELECTED-MATERIAL-BODY" not in orientation_prompt
 
     method_prompt = _prompt(model.calls[1])
@@ -200,11 +208,66 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     assert "EXAMPLE-FIRST\nEXAMPLE-LAST" in method_prompt
     assert "L1: SAMPLE-FIRST\nL2: SAMPLE-MIDDLE\nL3: SAMPLE-LAST" in method_prompt
     assert "method_sample_aliases" in method_prompt
+    assert "选择 4 个 M... 别名" in method_prompt
+    assert "代表材料不足 4 份时必须全部选择" in method_prompt
+    assert "从本篇实际展示的结构、判断转换和取舍中" in method_prompt
+    assert "任何一篇材料都不必具备固定步骤" in method_prompt
+    assert "项目学习方案会被直接交给单篇学习、Review 和修订任务" in method_prompt
+    assert "作者明确提出的领域专属知识" in method_prompt
+    assert "具备项目声明的领域基础的独立同门" in method_prompt
+    assert "可否普遍证明而筛除" in method_prompt
+    assert "少量可直接进入下一轮的判断单元" in method_prompt
+    assert "知识账本不进入 Review 输出" in method_prompt
+    assert "同族知识能按关系、作用方式、位置、介质" in method_prompt
+    assert "不得要求 `note_markdown` 输出 JSON、JSONL、对象、字段名、知识单元数组或内嵌 evidence" in method_prompt
+    assert "讲义 Reviewer 发现输入笔记已经支持同族关系" in method_prompt
+    assert "材料形态和说话人纪律" in method_prompt
+    assert "来源理由/代价" in method_prompt
+    assert "全书收口 Prompt 的输出必须符合现有 Review 合同" in method_prompt
+    assert "发现一个 blocker 不能停止扫描" in method_prompt
+    assert "替编排者交付材料" in method_prompt
+    assert "总编模型" not in method_prompt
+    assert "八字示例" not in method_prompt
     assert method.learning_plan_markdown == "已确认前的项目学习方案"
     assert loader.calls == [
         ("provider:model", {"temperature": 0}),
         ("provider:model", {"temperature": 0}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_method_design_uses_all_samples_when_less_than_four(asset_root: Path) -> None:
+    """代表材料不足四份时，模型任务明确要求全部用于方法试跑。"""
+
+    del asset_root
+    model = RecordingStructuredModel(
+        [
+            {
+                "learning_plan_markdown": "项目学习方案",
+                "compilation_brief_markdown": "项目编译底稿",
+                "prompt_pack": _prompt_pack(),
+                "method_sample_aliases": ["M001"],
+            }
+        ]
+    )
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    orientation = model_tasks.ProjectOrientationResult(
+        template_name="mentor-oral-teaching.md",
+        material_type="单篇口述",
+        expert_identity="领域作者",
+        report_markdown="项目定向报告",
+    )
+
+    result = await tasks.design_project_method(
+        model_spec="provider:model",
+        project_name="单篇项目",
+        orientation=orientation,
+        material_catalog="M001 | 单篇材料 | 来源",
+        samples=[{"alias": "M001", "title": "单篇材料", "source": "来源", "text": "完整正文"}],
+    )
+
+    assert result.method_sample_aliases == ["M001"]
+    assert "选择 1 个 M... 别名" in _prompt(model.calls[0])
 
 
 @pytest.mark.asyncio
@@ -258,10 +321,12 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     text = "SOURCE-FIRST\n\nSOURCE-LAST"
     numbered_text = "L1: SOURCE-FIRST\nL2: \nL3: SOURCE-LAST"
     learning_plan = "CONFIRMED-LEARNING-PLAN"
+    compilation_brief = "PROJECT-COMPILATION-BRIEF"
 
     note = await tasks.write_material_note(
         model_spec="provider:model",
         learning_plan=learning_plan,
+        compilation_brief=compilation_brief,
         stage_prompt="NOTE-STAGE-PROMPT",
         material_alias="M007",
         title="完整案例",
@@ -271,6 +336,7 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     review = await tasks.review_material_note(
         model_spec="provider:model",
         learning_plan=learning_plan,
+        compilation_brief=compilation_brief,
         stage_prompt="REVIEW-STAGE-PROMPT",
         material_alias="M007",
         title="完整案例",
@@ -281,6 +347,7 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     revised = await tasks.revise_material_note(
         model_spec="provider:model",
         learning_plan=learning_plan,
+        compilation_brief=compilation_brief,
         stage_prompt="REVISE-STAGE-PROMPT",
         material_alias="M007",
         title="完整案例",
@@ -295,6 +362,7 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     stage_prompts = ["NOTE-STAGE-PROMPT", "REVIEW-STAGE-PROMPT", "REVISE-STAGE-PROMPT"]
     for prompt, system_prompt, stage_prompt in zip(prompts, system_prompts, stage_prompts, strict=True):
         assert learning_plan in prompt
+        assert compilation_brief in prompt
         assert numbered_text in prompt
         assert "当前材料别名：M007" in prompt
         assert "标题：完整案例" in prompt
@@ -340,6 +408,7 @@ async def test_jsonl_trailing_text_retries_only_the_current_model_task() -> None
     result = await tasks.review_material_note(
         model_spec="provider:model",
         learning_plan="学习方案",
+        compilation_brief="项目专属编译底稿",
         stage_prompt="Review Prompt",
         material_alias="M001",
         title="材料",
@@ -365,6 +434,7 @@ async def test_jsonl_output_failure_exposes_a_short_actionable_error() -> None:
         await tasks.write_material_note(
             model_spec="provider:model",
             learning_plan="学习方案",
+            compilation_brief="项目专属编译底稿",
             stage_prompt="Author Prompt",
             material_alias="M001",
             title="材料",
@@ -460,8 +530,7 @@ async def test_handout_editor_submits_complete_next_editorial_plan() -> None:
     for prompt, system_prompt in ((draft_prompt, draft_system), (revision_prompt, revision_system)):
         assert "完整的下一版有效编辑方案" in system_prompt
         assert "不是修改摘要或增量补丁" in system_prompt
-        assert "humanizer-zh" in system_prompt
-        assert "不得添加第一人称感受" in system_prompt
+        assert "说人话”Skill" not in system_prompt
         assert "完整的下一版有效编辑方案" not in prompt
         assert topic in prompt
         assert notes in prompt
@@ -500,42 +569,66 @@ async def test_single_handout_book_review_does_not_escalate_style_polish_to_atte
 
 
 @pytest.mark.asyncio
-async def test_navigation_and_skill_writing_use_humanizer_zh_guidance() -> None:
-    """可发布的导航和 Skill 使用入口沿用同一套成品表达规则。"""
+async def test_visible_artifacts_call_shuorenhua_skill_after_writing() -> None:
+    """只在展示与发布前调用说人话 Skill，不干扰内部总编写作。"""
 
     model = RecordingStructuredModel(
         [
-            {"navigation_markdown": "# 读者导航\n从当前局面进入对应讲义。"},
-            {"navigation_markdown": "# 统一导航\n按真实问题选择讲义。"},
-            {"skill_markdown": "按判断条件选择讲义，并核对证据范围。"},
+            {
+                "plan_markdown": "# 这批内容怎么排\n按学徒会遇到的事来排。",
+                "topics": [
+                    {
+                        "topic_key": "topic-a",
+                        "title": "材料中的判断动作怎样接起来",
+                        "section": "学艺",
+                        "reader_question": "眼前局面应先复盘什么？",
+                        "purpose": "帮助学徒决定下一步。",
+                        "boundaries": "材料没有说明验证方法。",
+                    }
+                ],
+                "sample_selection_reason": "这篇能看出怎样复盘判断动作。",
+            },
+            {"content_markdown": "# 读者导航\n先按眼前的问题找讲义。"},
         ]
     )
     tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
-    book_review = model_tasks.BookReviewResult(decision="pass", summary="全书通过", issues=[])
-
-    await tasks.write_navigation(
-        model_spec="provider:model",
-        stage_prompt="NAVIGATION-AUTHOR-PROMPT",
-        editorial_plan="FINAL-EDITORIAL-PLAN",
-        book_review=book_review,
-        handouts="正式讲义",
-    )
-    await tasks.merge_navigation(
-        model_spec="provider:model",
-        stage_prompt="NAVIGATION-AUTHOR-PROMPT",
-        editorial_plan="FINAL-EDITORIAL-PLAN",
-        section_navigations="分区导航",
-    )
-    await tasks.write_skill_body(
-        model_spec="provider:model",
-        stage_prompt="SKILL-AUTHOR-PROMPT",
-        learning_plan="CONFIRMED-LEARNING-PLAN",
-        editorial_plan="FINAL-EDITORIAL-PLAN",
-        book_review=book_review,
-        navigation="统一导航",
+    topic_map = TopicMapResult(
+        plan_markdown="# 主题规划\n按读者实际局面组织。",
+        editorial_plan_markdown="# 内部编辑方案",
+        topics=[
+            {
+                "topic_key": "topic-a",
+                "title": "从材料动作复盘判断",
+                "section": "学艺",
+                "reader_question": "眼前局面怎样复盘？",
+                "purpose": "统一判断步骤",
+                "boundaries": "材料不足时停止",
+                "note_aliases": ["N001"],
+                "order": 1,
+            }
+        ],
+        sample_topic_keys=["topic-a"],
+        sample_selection_reason="覆盖判断顺序",
     )
 
-    assert all("humanizer-zh" in _system_prompt(call) for call in model.calls)
+    humanized_map = await tasks.humanize_topic_map(
+        model_spec="provider:model",
+        topic_map=topic_map,
+    )
+    humanized_text = await tasks.humanize_visible_artifact(
+        model_spec="provider:model",
+        artifact_name="读者导航",
+        content_markdown="# 读者导航\n从当前局面进入对应讲义。",
+    )
+
+    assert humanized_map.topics[0].topic_key == "topic-a"
+    assert humanized_text.content_markdown == "# 读者导航\n先按眼前的问题找讲义。"
+    assert all("你正在执行“说人话”Skill" in _system_prompt(call) for call in model.calls)
+    topic_map_prompt = _prompt(model.calls[0])
+    assert "读者实际会遇到的问题或局面" in topic_map_prompt
+    assert "经营问题" not in topic_map_prompt
+    assert topic_map.topics[0].title in _prompt(model.calls[0])
+    assert "读者导航" in _prompt(model.calls[1])
     assert model.responses == []
 
 
@@ -579,7 +672,7 @@ async def test_method_calibration_only_receives_current_method_and_sample_notes_
     assert "遗漏条件" in prompt
     assert "SOURCE-FIRST" not in prompt
     assert "不得写进任何单篇 Prompt" in prompt
-    assert "不要要求判断材料是否来自同一位老师或说话人" in prompt
+    assert "阶段身份统一使用“作者”或通用角色" in prompt
 
 
 @pytest.mark.asyncio
@@ -600,4 +693,4 @@ async def test_method_calibration_assessment_reads_only_v1_and_v2_samples() -> N
     assert "V2 局部问题" in prompt
     assert "V1 学习方案" not in prompt
     assert "不要按问题数量、字数或固定比例机械判断" in prompt
-    assert "不要判断材料是否来自同一位老师或说话人" in prompt
+    assert "不要把具体人物身份名称写进阶段 Prompt" in prompt

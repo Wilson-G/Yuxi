@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -154,13 +155,13 @@ class OrientationModelTasks:
             source_risks=["转写不确定"],
         )
 
-    async def design_project_method(self, **_kwargs) -> ProjectMethodResult:
+    async def design_project_method(self, *, samples: list[dict], **_kwargs) -> ProjectMethodResult:
         self.call_counts["method"] += 1
         return ProjectMethodResult(
             learning_plan_markdown="# 项目学习方案",
             compilation_brief_markdown="# 项目专属编译底稿",
             prompt_pack=_prompt_pack(),
-            method_sample_aliases=["M001", "M002"],
+            method_sample_aliases=[sample["alias"] for sample in samples[:5]],
         )
 
     async def write_material_note(self, *, material_alias: str, title: str, **_kwargs) -> MaterialNoteResult:
@@ -267,18 +268,18 @@ class RepairableResidualTasks(CalibrationModelTasks):
 
 
 class ParallelOrientationSampleTasks(OrientationModelTasks):
-    """让两个小样在笔记调用处相互等待，验证它们可以并发启动。"""
+    """让四个小样在笔记调用处相互等待，验证它们可以并发启动。"""
 
     def __init__(self):
         super().__init__()
         self.started_titles: set[str] = set()
-        self.both_started = asyncio.Event()
+        self.all_started = asyncio.Event()
         self.release = asyncio.Event()
 
     async def write_material_note(self, *, title: str, **kwargs) -> MaterialNoteResult:
         self.started_titles.add(title)
-        if len(self.started_titles) == 2:
-            self.both_started.set()
+        if len(self.started_titles) == 4:
+            self.all_started.set()
         await self.release.wait()
         return await super().write_material_note(title=title, **kwargs)
 
@@ -395,6 +396,47 @@ def test_method_samples_allow_repairable_review_issues_but_block_structural_atte
         )
 
 
+@pytest.mark.asyncio
+async def test_user_can_accept_method_sample_concerns_and_start_learning(expert_env) -> None:
+    """小样内容问题由用户确认后可以进入批量学习。"""
+
+    project_id, material_ids = await _create_project(expert_env, count=4)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            stage=service.ORIENTATION_STAGE,
+            status="needs_attention",
+            method_version=1,
+            learning_plan="# 学习方案",
+            compilation_brief="# 编译底稿",
+            prompt_pack=_prompt_pack().model_dump(),
+            method_samples=[
+                {
+                    "material_id": material_ids[0],
+                    "status": "needs_attention",
+                    "final_review": {"decision": "revise", "issues": [{"problem": "遗漏条件"}]},
+                }
+            ],
+        )
+        method_version = await service.accept_project_method_with_concerns(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
+
+    assert method_version == 1
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
+    assert project.method_confirmed_at is not None
+    assert project.method_calibration_completed_at is not None
+    assert all(material.status == "pending" for material in materials)
+
+
 async def _wait_until(predicate, *, timeout: float = 3.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
@@ -451,6 +493,35 @@ async def test_create_project_commits_independent_materials_before_queue_submiss
         "FIRST MATERIAL",
         "SECOND MATERIAL",
     ]
+
+
+@pytest.mark.asyncio
+async def test_project_detail_returns_structured_final_review(expert_env) -> None:
+    """项目详情把持久化的全书结论解析为前端可直接展示的结构。"""
+
+    project_id, _ = await _create_project(expert_env, count=3)
+    final_review = {
+        "decision": "revise",
+        "summary": "两篇讲义的术语口径不一致",
+        "issues": [
+            {
+                "topic_keys": ["topic-a", "topic-b"],
+                "problem": "同一术语使用了两个定义",
+                "revision_direction": "统一为编辑方案中的定义",
+            }
+        ],
+    }
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(project_id, final_review=json.dumps(final_review, ensure_ascii=False))
+        await db.commit()
+        detail = await service.get_expert_project_detail(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+
+    assert detail["final_review"] == final_review
 
 
 @pytest.mark.asyncio
@@ -516,7 +587,7 @@ async def test_preparation_failure_marks_only_its_material_needs_attention(
 
 @pytest.mark.asyncio
 async def test_orientation_retry_reuses_completed_work_and_preserves_samples(expert_env) -> None:
-    project_id, _ = await _create_project(expert_env, count=3)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     async with expert_env.factory() as db:
@@ -531,7 +602,7 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
             db,
             project_id=project_id,
             created_by="user-1",
-            representative_material_ids=material_ids[:2],
+            representative_material_ids=material_ids,
         )
         with pytest.raises(ValueError, match="没有等待确认"):
             await service.confirm_project_method(db, project_id=project_id, created_by="user-1")
@@ -553,29 +624,21 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         assert project.learning_plan == "# 项目学习方案"
         assert project.compilation_brief == "# 项目专属编译底稿"
         assert project.prompt_pack == _prompt_pack().model_dump()
-        assert [sample["material_id"] for sample in project.method_samples] == material_ids[:1]
-    assert model_tasks.call_counts == {
-        "orientation": 1,
-        "method": 1,
-        "note:01-material": 1,
-        "review:01-material": 1,
-        "note:02-material": 1,
-        "review:02-material": 1,
-    }
+        assert 1 <= len(project.method_samples) < 4
+        assert all(sample["title"] != "02-material" for sample in project.method_samples)
+    assert model_tasks.call_counts["orientation"] == 1
+    assert model_tasks.call_counts["method"] == 1
+    assert model_tasks.call_counts["review:02-material"] == 1
 
     result = await service.run_project_orientation(
         project_id,
         method_version,
         model_tasks=model_tasks,
     )
-    assert model_tasks.call_counts == {
-        "orientation": 1,
-        "method": 1,
-        "note:01-material": 1,
-        "review:01-material": 1,
-        "note:02-material": 2,
-        "review:02-material": 2,
-    }
+    assert model_tasks.call_counts["orientation"] == 1
+    assert model_tasks.call_counts["method"] == 1
+    assert model_tasks.call_counts["review:02-material"] == 2
+    assert all(model_tasks.call_counts[f"review:{index:02d}-material"] >= 1 for index in range(1, 5))
 
     async with expert_env.factory() as db:
         repo = ExpertRepository(db)
@@ -587,10 +650,10 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         assert project.learning_plan == "# 项目学习方案"
         assert project.compilation_brief == "# 项目专属编译底稿"
         assert project.prompt_pack == _prompt_pack().model_dump()
-        assert len(project.method_samples) == 2
+        assert len(project.method_samples) == 4
         assert all(sample["status"] == "passed" for sample in project.method_samples)
         assert all(sample["final_review"]["decision"] == "pass" for sample in project.method_samples)
-        assert [material.material_id for material in materials if material.is_representative] == material_ids[:2]
+        assert [material.material_id for material in materials if material.is_representative] == material_ids
 
     assert result == {
         "project_id": project_id,
@@ -613,6 +676,14 @@ async def test_orientation_accepts_twenty_representative_materials(expert_env) -
                 representative_material_ids=material_ids,
             )
 
+        with pytest.raises(ValueError, match="当前项目请选择 4～20 份代表性材料"):
+            await service.start_project_orientation(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+                representative_material_ids=material_ids[:3],
+            )
+
         method_version = await service.start_project_orientation(
             db,
             project_id=project_id,
@@ -627,8 +698,37 @@ async def test_orientation_accepts_twenty_representative_materials(expert_env) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("material_count", [1, 2, 3])
+async def test_orientation_uses_all_available_materials_below_four(expert_env, material_count: int) -> None:
+    """材料不足四份时，代表材料和试跑小样都使用当前全部材料。"""
+
+    project_id, _ = await _create_project(expert_env, count=material_count)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+
+    result = await service.run_project_orientation(
+        project_id,
+        method_version,
+        model_tasks=OrientationModelTasks(),
+    )
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert result["status"] == "awaiting_confirmation"
+    assert project is not None
+    assert project.representative_material_ids == material_ids
+    assert len(project.method_samples) == material_count
+
+
+@pytest.mark.asyncio
 async def test_orientation_runs_independent_samples_concurrently(expert_env) -> None:
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     async with expert_env.factory() as db:
@@ -640,11 +740,9 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
         )
 
     tasks = ParallelOrientationSampleTasks()
-    runner = asyncio.create_task(
-        service.run_project_orientation(project_id, method_version, model_tasks=tasks)
-    )
-    await asyncio.wait_for(tasks.both_started.wait(), timeout=1)
-    assert tasks.started_titles == {"01-material", "02-material"}
+    runner = asyncio.create_task(service.run_project_orientation(project_id, method_version, model_tasks=tasks))
+    await asyncio.wait_for(tasks.all_started.wait(), timeout=1)
+    assert tasks.started_titles == {"01-material", "02-material", "03-material", "04-material"}
 
     tasks.release.set()
     result = await runner
@@ -657,6 +755,10 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
         "review:01-material": 1,
         "note:02-material": 1,
         "review:02-material": 1,
+        "note:03-material": 1,
+        "review:03-material": 1,
+        "note:04-material": 1,
+        "review:04-material": 1,
     }
 
 
@@ -1058,7 +1160,7 @@ async def test_cannot_exclude_the_only_remaining_material(expert_env) -> None:
 async def test_method_calibration_compares_samples_and_starts_learning(expert_env) -> None:
     """校准将 V1 基线与 V2 小样交给残余评估，再直接进入批量学习。"""
 
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
     model_tasks = CalibrationModelTasks()
 
@@ -1089,12 +1191,12 @@ async def test_method_calibration_compares_samples_and_starts_learning(expert_en
     calibration_input = model_tasks.calibration_inputs[0]
     assert calibration_input["learning_plan"] == "# 项目学习方案"
     assert calibration_input["compilation_brief"] == "# 项目专属编译底稿"
-    assert [item["material_alias"] for item in calibration_input["samples"]] == ["M001", "M002"]
+    assert [item["material_alias"] for item in calibration_input["samples"]] == ["M001", "M002", "M003", "M004"]
     assert all("FIRST-" not in str(item) for item in calibration_input["samples"])
     assert len(model_tasks.assessment_inputs) == 1
     assessment_input = model_tasks.assessment_inputs[0]
     assert assessment_input["v1_samples"] == calibration_input["samples"]
-    assert [item["material_alias"] for item in assessment_input["v2_samples"]] == ["M001", "M002"]
+    assert [item["material_alias"] for item in assessment_input["v2_samples"]] == ["M001", "M002", "M003", "M004"]
 
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
@@ -1116,11 +1218,12 @@ async def test_method_calibration_compares_samples_and_starts_learning(expert_en
                 representative_material_ids=material_ids,
             )
 
+
 @pytest.mark.asyncio
 async def test_method_confirmation_without_review_issue_starts_learning_directly(expert_env) -> None:
     """没有可泛化 Review 问题时，确认方向后直接进入批量学习。"""
 
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
     model_tasks = OrientationModelTasks()
     async with expert_env.factory() as db:
@@ -1150,7 +1253,7 @@ async def test_method_confirmation_without_review_issue_starts_learning_directly
 async def test_method_calibration_stops_when_residual_problem_is_method_level(expert_env) -> None:
     """评估明确认为残余会影响批量学习时，项目进入需要处理。"""
 
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
     model_tasks = AttentionCalibrationTasks()
     async with expert_env.factory() as db:
@@ -1183,7 +1286,7 @@ async def test_method_calibration_stops_when_residual_problem_is_method_level(ex
 async def test_method_calibration_automatically_repairs_v2_review_issue(expert_env) -> None:
     """V2 局部 Review 问题由后台自动修订并复核。"""
 
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
     model_tasks = RepairableResidualTasks()
     async with expert_env.factory() as db:

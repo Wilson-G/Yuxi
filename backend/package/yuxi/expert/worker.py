@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from arq import Retry
 
@@ -70,7 +71,7 @@ async def enqueue_material_learning(project_id: str, method_version: int, *, tok
     )
 
 
-async def enqueue_organization(project_id: str, organization_version: int) -> None:
+async def enqueue_organization(project_id: str, organization_version: int, *, token: str = "initial") -> None:
     """提交候选主题、总编组织和讲义小样任务。"""
 
     pool = await get_arq_pool()
@@ -78,7 +79,7 @@ async def enqueue_organization(project_id: str, organization_version: int) -> No
         "process_expert_organization",
         project_id,
         organization_version,
-        _job_id=f"expert:organization:{project_id}:v{organization_version}",
+        _job_id=f"expert:organization:{project_id}:v{organization_version}:{token}",
     )
 
 
@@ -232,7 +233,7 @@ async def recover_expert_project_jobs() -> None:
         version = project.organization_version
         if project.status == "preparing":
             version = await initialize_organization_stage(project.project_id)
-        await enqueue_organization(project.project_id, version)
+        await enqueue_organization(project.project_id, version, token=f"recovery-{uuid.uuid4().hex}")
     for project in compilation_projects:
         await enqueue_handout_compilation(
             project.project_id,

@@ -19,6 +19,12 @@ def test_prompt_designer_teaches_project_specific_prompt_creation():
     assert "教材化" in skill
     assert "不是材料审计报告" in skill
     assert "用真实小样验证" in skill
+    assert "说话人结构" in skill
+    assert "结构/信号 -> 作者的转换口径或判断" in skill
+    assert "材料结构/信号 -> 作者如何把它转成判断或表现" in skill
+    assert "见某信号，判什么" in skill
+    assert "不预设每篇都要经过资料、原局、取用、运年等固定流程" in skill
+    assert "不重写整本书" in skill
     assert "谁在说话" not in skill
     assert "同一老师" not in skill
 
@@ -42,28 +48,41 @@ def test_prompt_designer_has_material_type_starting_points():
     }
 
 
-def test_prompt_designer_uses_bazi_full_stage_example():
+def test_prompt_designer_uses_apprentice_stage_example():
     skill = (ASSET_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    example = (ASSET_ROOT / "examples" / "bazi-full-stage-prompt-pack.md").read_text(encoding="utf-8")
+    example = (ASSET_ROOT / "examples" / "apprentice-stage-prompt-pack.md").read_text(encoding="utf-8")
 
-    assert "examples/bazi-full-stage-prompt-pack.md" in skill
+    assert "examples/apprentice-stage-prompt-pack.md" in skill
+    headings = {line.removeprefix("## ") for line in example.splitlines() if line.startswith("## ")}
     for stage in (
         "材料侦察",
         "项目学习方案",
-        "学艺笔记",
+        "单篇学艺",
         "笔记 Review",
         "笔记修订",
         "主题候选研究",
-        "总编模型主题地图",
-        "总编模型讲义",
+        "主题地图",
+        "讲义",
         "讲义 Review 与修订",
         "全书收口、导航与最终 Skill",
     ):
-        assert stage in example
+        assert stage in headings
 
-    assert "个案断语改成通则" in example
-    assert "反转与边界" in example
-    assert "Prime 总编" not in example
-    assert "amazon" not in example.lower()
-    assert "asin" not in example.lower()
-    assert "listing" not in example.lower()
+    assert "学艺者" in example
+    assert "独立复核者" in example
+    assert "动作链" in example
+    assert "术语、口诀、经验口径和特殊关系" in example
+    assert "普通常识或可否证明来否定" in example
+    assert "案例过程和原文细节留给证据" in example
+    assert "内部列出" in example
+    assert "不输出内部知识账本" in example
+    assert "JSON、JSONL 或对象" in example
+    assert "不要为不影响下游的措辞打回" in example
+    assert "分型轴" in example
+    assert "不要求本篇出现固定步骤" in example
+    assert "作者的转换口径或判断" in example
+    assert "全书收口只检查" in example
+    assert "发现一个 blocker 不得停止" in example
+    assert "替总编" not in example
+    assert "交给总编" not in example
+    assert "八字" not in example

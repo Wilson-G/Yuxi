@@ -103,9 +103,8 @@
         <section v-if="isReviewingHistory" class="project-section stage-history-section">
           <div class="history-toolbar">
             <div>
-              <span class="section-kicker">阶段回看</span>
               <h2>{{ getExpertStageLabel(reviewStage) }}</h2>
-              <p>这里展示该阶段已保存的产物，不会改变当前项目进度。</p>
+              <p>查看这个阶段保存下来的正式产物，不会改变项目进度。</p>
             </div>
             <a-button type="text" @click="returnToCurrentStage">
               回到当前进度
@@ -114,45 +113,99 @@
           </div>
 
           <template v-if="reviewStage === 'orientation'">
-            <div v-if="project.learning_plan" class="document-block">
-              <MarkdownPreview :content="project.learning_plan" compact />
-            </div>
-            <details v-if="project.orientation_report" class="disclosure-block">
-              <summary>项目定向报告</summary>
-              <MarkdownPreview :content="project.orientation_report" compact />
-            </details>
-            <div v-if="project.method_samples?.length" class="artifact-list stage-history-list">
-              <article
-                v-for="sample in project.method_samples"
-                :key="sample.material_id"
-                class="artifact-row"
-              >
-                <header>
-                  <div>
-                    <strong>{{ sample.title }}</strong>
-                    <span>{{ sample.source }}</span>
+            <div class="history-reader-workspace">
+              <aside class="history-navigator" aria-label="定向阶段产物">
+                <button
+                  v-if="project.learning_plan"
+                  type="button"
+                  :class="{ selected: historySelection === 'orientation-plan' }"
+                  @click="historySelection = 'orientation-plan'"
+                >
+                  <strong>学习方案</strong>
+                  <span>这批材料要怎样学</span>
+                </button>
+                <button
+                  v-if="project.orientation_report"
+                  type="button"
+                  :class="{ selected: historySelection === 'orientation-report' }"
+                  @click="historySelection = 'orientation-report'"
+                >
+                  <strong>项目定向报告</strong>
+                  <span>材料特点和学习方向</span>
+                </button>
+                <button
+                  v-for="sample in project.method_samples || []"
+                  :key="sample.material_id"
+                  type="button"
+                  :class="{ selected: historySelection === `sample:${sample.material_id}` }"
+                  @click="historySelection = `sample:${sample.material_id}`"
+                >
+                  <strong>{{ sample.title }}</strong>
+                  <span>笔记小样 · {{ getExpertMaterialStatusLabel(sample.status) }}</span>
+                </button>
+              </aside>
+
+              <article class="history-reader-pane">
+                <template v-if="historySelection === 'orientation-report'">
+                  <header class="history-reader-heading">
+                    <div>
+                      <h3>项目定向报告</h3>
+                      <p>系统从代表材料中识别出的领域、材料特点和学习风险。</p>
+                    </div>
+                  </header>
+                  <div class="reading-document">
+                    <MarkdownPreview :content="project.orientation_report || ''" compact />
                   </div>
-                  <span class="status-badge" :class="`tone-${getExpertStatusTone(sample.status)}`">
-                    {{ getExpertMaterialStatusLabel(sample.status) }}
-                  </span>
-                </header>
-                <details>
-                  <summary>查看笔记与 Review</summary>
-                  <MarkdownPreview :content="sampleNote(sample)" compact />
-                  <p class="review-summary">
-                    {{ sampleReview(sample)?.summary || '暂无 Review 摘要' }}
-                  </p>
-                </details>
+                </template>
+                <template v-else-if="selectedHistorySample">
+                  <header class="history-reader-heading">
+                    <div>
+                      <h3>{{ selectedHistorySample.title }}</h3>
+                      <p>{{ selectedHistorySample.source }}</p>
+                    </div>
+                    <span
+                      class="status-badge"
+                      :class="`tone-${getExpertStatusTone(selectedHistorySample.status)}`"
+                    >
+                      {{ getExpertMaterialStatusLabel(selectedHistorySample.status) }}
+                    </span>
+                  </header>
+                  <div class="reading-document">
+                    <MarkdownPreview :content="sampleNote(selectedHistorySample)" compact />
+                  </div>
+                  <details class="history-review">
+                    <summary>查看笔记检查结果</summary>
+                    <p>
+                      {{ sampleReview(selectedHistorySample)?.summary || '暂无检查摘要' }}
+                    </p>
+                  </details>
+                </template>
+                <template v-else>
+                  <header class="history-reader-heading">
+                    <div>
+                      <h3>项目学习方案</h3>
+                      <p>这批材料的学习重点、阅读顺序和保真边界。</p>
+                    </div>
+                  </header>
+                  <div class="reading-document">
+                    <MarkdownPreview :content="project.learning_plan || ''" compact />
+                  </div>
+                </template>
               </article>
             </div>
           </template>
 
           <template v-else-if="reviewStage === 'material_learning'">
+            <div class="history-stage-summary">
+              <strong
+                >{{ project.material_summary?.total || project.materials.length }} 份材料</strong
+              >
+              <span>每份材料的笔记和检查结果都保留在下方。</span>
+            </div>
             <div class="count-strip history-count-strip">
-              <span>全部 {{ project.material_summary?.total || project.materials.length }}</span>
-              <span>通过 {{ materialStatusCount('passed') }}</span>
-              <span>不入选 {{ materialStatusCount('no_value') }}</span>
-              <span>需要处理 {{ materialStatusCount('needs_attention') }}</span>
+              <span v-for="item in historyMaterialStatusItems" :key="item.status">
+                {{ item.label }} {{ item.count }}
+              </span>
             </div>
             <div class="material-list section-list">
               <article
@@ -168,10 +221,10 @@
                   {{ getExpertMaterialStatusLabel(material.status) }}
                 </span>
                 <details v-if="material.note || material.review" class="row-details">
-                  <summary>查看笔记与 Review</summary>
+                  <summary>查看笔记和检查结果</summary>
                   <MarkdownPreview v-if="material.note" :content="material.note" compact />
                   <p v-if="material.review" class="review-summary">
-                    Review：{{ material.review.summary || '暂无摘要' }}
+                    检查结果：{{ material.review.summary || '暂无摘要' }}
                   </p>
                 </details>
               </article>
@@ -179,25 +232,77 @@
           </template>
 
           <template v-else-if="reviewStage === 'organization'">
-            <div v-if="project.topic_map?.plan_markdown" class="document-block">
-              <h3>主题与讲义规划</h3>
-              <MarkdownPreview :content="project.topic_map.plan_markdown" compact />
-            </div>
-            <details v-if="project.editorial_plan" class="disclosure-block">
-              <summary>当前编辑方案</summary>
-              <MarkdownPreview :content="project.editorial_plan" compact />
-            </details>
-            <div class="topic-list stage-history-list">
-              <article v-for="topic in project.topics" :key="topic.topic_id" class="topic-row">
-                <div class="topic-position">{{ topic.position }}</div>
-                <div class="topic-copy">
-                  <span>{{ topic.section }}</span>
+            <div class="history-reader-workspace">
+              <aside class="history-navigator" aria-label="组织阶段产物">
+                <button
+                  v-if="project.topic_map?.plan_markdown"
+                  type="button"
+                  :class="{ selected: historySelection === 'organization-plan' }"
+                  @click="historySelection = 'organization-plan'"
+                >
+                  <strong>组织方案</strong>
+                  <span>{{ project.topics.length }} 个主题</span>
+                </button>
+                <button
+                  v-for="topic in project.topics"
+                  :key="topic.topic_id"
+                  type="button"
+                  :class="{ selected: historySelection === `topic:${topic.topic_id}` }"
+                  @click="historySelection = `topic:${topic.topic_id}`"
+                >
                   <strong>{{ topic.title }}</strong>
-                  <p>{{ topic.reader_question }}</p>
-                </div>
-                <span v-if="topic.is_sample" class="sample-label">讲义小样</span>
+                  <span>{{ topic.section }}{{ topic.is_sample ? ' · 讲义小样' : '' }}</span>
+                </button>
+              </aside>
+
+              <article class="history-reader-pane">
+                <template v-if="selectedHistoryTopic">
+                  <header class="history-reader-heading">
+                    <div>
+                      <h3>{{ selectedHistoryTopic.title }}</h3>
+                      <p>{{ selectedHistoryTopic.reader_question }}</p>
+                    </div>
+                    <span v-if="selectedHistoryTopic.is_sample" class="sample-label">讲义小样</span>
+                  </header>
+                  <dl class="topic-facts">
+                    <div>
+                      <dt>主题位置</dt>
+                      <dd>{{ selectedHistoryTopic.section }}</dd>
+                    </div>
+                    <div>
+                      <dt>主题边界</dt>
+                      <dd>{{ selectedHistoryTopic.boundaries }}</dd>
+                    </div>
+                  </dl>
+                  <div v-if="selectedHistoryTopic.handout" class="reading-document">
+                    <MarkdownPreview :content="selectedHistoryTopic.handout" compact />
+                  </div>
+                </template>
+                <template v-else>
+                  <header class="history-reader-heading">
+                    <div>
+                      <h3>主题与讲义规划</h3>
+                      <p>{{ project.topic_map.sample_selection_reason }}</p>
+                    </div>
+                  </header>
+                  <div class="reading-document">
+                    <MarkdownPreview :content="project.topic_map?.plan_markdown || ''" compact />
+                  </div>
+                </template>
               </article>
             </div>
+          </template>
+
+          <template v-else-if="reviewStage === 'handout_compilation'">
+            <ExpertTopicReader
+              v-model="selectedTopicId"
+              :topics="project.topics || []"
+              empty-text="这个项目没有保存正式讲义。"
+            />
+            <details v-if="project.final_review" class="disclosure-block history-final-review">
+              <summary>查看全书检查结果</summary>
+              <MarkdownPreview :content="finalReviewMarkdown" compact />
+            </details>
           </template>
         </section>
 
@@ -295,6 +400,16 @@
                     重新试跑当前方法
                   </a-button>
                   <a-button
+                    v-if="project.status === 'needs_attention' && hasMethodSampleConcerns"
+                    type="primary"
+                    :loading="actionKey === 'accept-method-concerns'"
+                    :disabled="Boolean(actionKey)"
+                    @click="acceptMethodWithConcerns"
+                  >
+                    <Check :size="14" />
+                    接受小样问题并开始学习
+                  </a-button>
+                  <a-button
                     v-if="project.status === 'awaiting_confirmation'"
                     :loading="actionKey === 'revise-method'"
                     :disabled="Boolean(actionKey) || !methodFeedback.trim()"
@@ -332,7 +447,7 @@
               <div class="section-heading">
                 <div>
                   <span class="section-kicker">项目定向</span>
-                  <h2>选择 1～20 份代表性材料</h2>
+                  <h2>选择 {{ representativeRangeLabel }}代表性材料</h2>
                   <p>系统会完整阅读所选材料，用它们试跑项目专属学习方法。选择由你明确完成。</p>
                 </div>
                 <span class="selection-count"
@@ -384,7 +499,10 @@
                 <div class="decision-actions">
                   <a-button
                     type="primary"
-                    :disabled="selectedRepresentativeIds.length < 1 || Boolean(actionKey)"
+                    :disabled="
+                      selectedRepresentativeIds.length < minimumRepresentativeMaterials ||
+                      Boolean(actionKey)
+                    "
                     :loading="actionKey === 'orientation'"
                     @click="startOrientation"
                   >
@@ -561,145 +679,248 @@
 
           <template v-else-if="project.stage === 'organization'">
             <section v-if="project.topic_map?.topics?.length" class="project-section">
-              <div class="section-heading">
+              <div v-if="isOrganizationSampleAttention" class="attention-heading">
+                <div>
+                  <h2>{{ organizationAttentionSamples.length }} 篇讲义小样需要修改</h2>
+                  <p>
+                    主题方案已经形成，不用重新通读全部内容。先核对下面的问题，再写明你希望怎样调整。
+                  </p>
+                  <span>组织版本 {{ project.organization_version }}</span>
+                </div>
+                <span class="status-badge tone-error">需要处理</span>
+              </div>
+
+              <div v-else class="section-heading">
                 <div>
                   <span class="section-kicker">组织版本 {{ project.organization_version }}</span>
-                  <h2>
-                    {{
-                      project.status === 'running'
-                        ? '正在生成主题方案和讲义小样'
-                        : '这样组织和表达已经学到的知识，对不对？'
-                    }}
-                  </h2>
-                  <p>
-                    {{
-                      project.status === 'running'
-                        ? project.message
-                        : '确认后，主题地图、编辑方案和讲义小样会固定并进入批量讲义编写。'
-                    }}
-                  </p>
+                  <h2>{{ organizationStageHeading }}</h2>
+                  <p>{{ organizationStageDescription }}</p>
                 </div>
                 <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
                   {{ getExpertStatusLabel(project.status) }}
                 </span>
               </div>
 
-              <div class="document-block">
-                <h3>主题与讲义规划</h3>
-                <MarkdownPreview :content="project.topic_map.plan_markdown || ''" compact />
-              </div>
-
-              <details v-if="project.editorial_plan" class="disclosure-block">
-                <summary>当前编辑方案</summary>
-                <MarkdownPreview :content="project.editorial_plan" compact />
-              </details>
-
-              <div class="subsection-heading">
-                <div>
-                  <h3>主题关系与覆盖范围</h3>
-                  <p>{{ project.topic_map.sample_selection_reason }}</p>
-                </div>
-              </div>
-              <div class="topic-list">
-                <article v-for="topic in project.topics" :key="topic.topic_id" class="topic-row">
-                  <div class="topic-position">{{ topic.position }}</div>
-                  <div class="topic-copy">
-                    <span>{{ topic.section }}</span>
-                    <strong>{{ topic.title }}</strong>
-                    <p>{{ topic.reader_question }}</p>
-                    <details>
-                      <summary>查看主题边界</summary>
-                      <p>{{ topic.boundaries }}</p>
-                    </details>
-                  </div>
-                  <span v-if="topic.is_sample" class="sample-label">讲义小样</span>
-                </article>
-              </div>
-
-              <div
-                v-if="excludedMaterials.length || project.topic_map.unassigned_notes?.length"
-                class="excluded-band"
-              >
-                <h3>本轮未纳入</h3>
-                <ul>
-                  <li v-for="material in excludedMaterials" :key="material.material_id">
-                    <strong>{{ material.title }}</strong>
-                    <span>{{
-                      material.exclusion_reason || material.error_message || 'Review 判定不入选'
-                    }}</span>
-                  </li>
-                  <li
-                    v-for="item in project.topic_map.unassigned_notes || []"
-                    :key="item.note_alias"
-                  >
-                    <strong>{{ item.note_alias }}</strong>
-                    <span>{{ item.reason }}</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div class="subsection-heading">
-                <div>
-                  <h3>讲义小样</h3>
-                  <p>总编模型定稿，Reviewer 只给出具体问题。</p>
-                </div>
-              </div>
-              <div class="artifact-list">
-                <article
-                  v-for="sample in project.organization_samples || []"
-                  :key="sample.topic_id"
-                  class="artifact-row"
-                >
-                  <header>
-                    <strong>{{ sample.title }}</strong>
-                    <span
-                      class="status-badge"
-                      :class="`tone-${getExpertStatusTone(sample.status)}`"
-                    >
-                      {{ getExpertMaterialStatusLabel(sample.status) }}
+              <template v-if="isOrganizationSampleAttention">
+                <div class="attention-summary" role="status">
+                  <CircleAlert :size="18" />
+                  <div>
+                    <strong>这一步只处理讲义小样</strong>
+                    <span>
+                      每篇小样的问题和修改方向都列在下面。完整主题方案仍可在页面底部展开查看。
                     </span>
-                  </header>
-                  <MarkdownPreview :content="sample.handout || ''" compact />
-                  <details class="review-disclosure">
-                    <summary>查看 Review</summary>
-                    <p class="review-summary">{{ sample.review?.summary || '暂无 Review 摘要' }}</p>
-                    <ul v-if="sample.review?.issues?.length" class="issue-list">
-                      <li v-for="(issue, index) in sample.review.issues" :key="index">
-                        <strong>{{ issue.problem }}</strong>
-                        <span>{{ issue.revision_direction }}</span>
+                  </div>
+                </div>
+
+                <div class="attention-sample-list" aria-label="待修改讲义小样">
+                  <article
+                    v-for="sample in organizationAttentionSamples"
+                    :key="sample.topic_id"
+                    class="attention-sample"
+                  >
+                    <header>
+                      <strong>{{ sample.title }}</strong>
+                      <span class="status-badge tone-error">需要修改</span>
+                    </header>
+
+                    <div
+                      v-for="(issue, index) in sample.review?.issues || []"
+                      :key="index"
+                      class="attention-issue"
+                    >
+                      <dl>
+                        <div>
+                          <dt>修改位置</dt>
+                          <dd>{{ issue.affected_part }}</dd>
+                        </div>
+                        <div>
+                          <dt>问题</dt>
+                          <dd>{{ issue.problem }}</dd>
+                        </div>
+                        <div>
+                          <dt>修改方向</dt>
+                          <dd>{{ issue.revision_direction }}</dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    <details class="attention-sample-reference">
+                      <summary>查看讲义正文和 Review 原文</summary>
+                      <div class="attention-document">
+                        <MarkdownPreview :content="sample.handout || ''" compact />
+                      </div>
+                      <div class="attention-review-original">
+                        <strong>Review 原文</strong>
+                        <p>{{ sample.review?.summary || sample.reason }}</p>
+                      </div>
+                    </details>
+                  </article>
+                </div>
+
+                <div class="decision-panel attention-decision">
+                  <div class="attention-feedback-field">
+                    <label for="organization-feedback">你希望怎么改</label>
+                    <p id="organization-feedback-help">
+                      请确认是否采用上面的修改方向，并补充其他要求。提交后会新建组织版本，重新生成主题方案和全部讲义小样。
+                    </p>
+                    <a-textarea
+                      id="organization-feedback"
+                      v-model:value="organizationFeedback"
+                      :rows="4"
+                      aria-describedby="organization-feedback-help"
+                      placeholder="例如：按上面的修改方向处理，两篇讲义都收紧适用边界"
+                    />
+                  </div>
+                  <div class="decision-actions">
+                    <a-button
+                      type="primary"
+                      :loading="actionKey === 'revise-organization'"
+                      :disabled="Boolean(actionKey) || !organizationFeedback.trim()"
+                      @click="reviseOrganization"
+                    >
+                      <RotateCcw :size="14" />
+                      新建组织版本并重新生成
+                    </a-button>
+                  </div>
+                </div>
+              </template>
+
+              <component
+                :is="isOrganizationSampleAttention ? 'details' : 'div'"
+                class="organization-reference"
+              >
+                <summary v-if="isOrganizationSampleAttention">
+                  查看完整主题方案、主题清单和未纳入材料
+                </summary>
+                <div :class="{ 'organization-reference-content': isOrganizationSampleAttention }">
+                  <div class="document-block">
+                    <h3>主题与讲义规划</h3>
+                    <MarkdownPreview :content="project.topic_map.plan_markdown || ''" compact />
+                  </div>
+
+                  <div class="subsection-heading">
+                    <div>
+                      <h3>主题关系与覆盖范围</h3>
+                      <p>{{ project.topic_map.sample_selection_reason }}</p>
+                    </div>
+                  </div>
+                  <div class="topic-list">
+                    <article
+                      v-for="topic in project.topics"
+                      :key="topic.topic_id"
+                      class="topic-row"
+                    >
+                      <div class="topic-position">{{ topic.position }}</div>
+                      <div class="topic-copy">
+                        <span>{{ topic.section }}</span>
+                        <strong>{{ topic.title }}</strong>
+                        <p>{{ topic.reader_question }}</p>
+                        <details>
+                          <summary>查看主题边界</summary>
+                          <p>{{ topic.boundaries }}</p>
+                        </details>
+                      </div>
+                      <span v-if="topic.is_sample" class="sample-label">讲义小样</span>
+                    </article>
+                  </div>
+
+                  <div
+                    v-if="excludedMaterials.length || project.topic_map.unassigned_notes?.length"
+                    class="excluded-band"
+                  >
+                    <h3>本轮未纳入</h3>
+                    <ul>
+                      <li v-for="material in excludedMaterials" :key="material.material_id">
+                        <strong>{{ material.title }}</strong>
+                        <span>{{
+                          material.exclusion_reason || material.error_message || 'Review 判定不入选'
+                        }}</span>
+                      </li>
+                      <li
+                        v-for="item in project.topic_map.unassigned_notes || []"
+                        :key="item.note_alias"
+                      >
+                        <strong>{{ item.note_alias }}</strong>
+                        <span>{{ item.reason }}</span>
                       </li>
                     </ul>
-                  </details>
-                </article>
-              </div>
-
-              <div v-if="canReviseExpertOrganization(project.status)" class="decision-panel">
-                <a-textarea
-                  v-model:value="organizationFeedback"
-                  :rows="3"
-                  placeholder="需要调整时，说明主题边界、覆盖关系或讲义表达应如何变化"
-                />
-                <div class="decision-actions">
-                  <a-button
-                    :loading="actionKey === 'revise-organization'"
-                    :disabled="Boolean(actionKey)"
-                    @click="reviseOrganization"
-                  >
-                    <RotateCcw :size="14" />
-                    按意见重新生成
-                  </a-button>
-                  <a-button
-                    v-if="project.status === 'awaiting_confirmation'"
-                    type="primary"
-                    :loading="actionKey === 'confirm-organization'"
-                    :disabled="Boolean(actionKey)"
-                    @click="confirmOrganization"
-                  >
-                    <Check :size="14" />
-                    确认组织方式
-                  </a-button>
+                  </div>
                 </div>
-              </div>
+              </component>
+
+              <template v-if="!isOrganizationSampleAttention">
+                <div class="subsection-heading">
+                  <div>
+                    <h3>讲义小样</h3>
+                    <p>
+                      {{
+                        project.status === 'running'
+                          ? '总编正在编写并检查讲义小样。'
+                          : '讲义小样由总编定稿，具体问题会单独列出。'
+                      }}
+                    </p>
+                  </div>
+                </div>
+                <div class="artifact-list">
+                  <article
+                    v-for="sample in project.organization_samples || []"
+                    :key="sample.topic_id"
+                    class="artifact-row"
+                  >
+                    <header>
+                      <strong>{{ sample.title }}</strong>
+                      <span
+                        class="status-badge"
+                        :class="`tone-${getExpertStatusTone(sample.status)}`"
+                      >
+                        {{ getExpertMaterialStatusLabel(sample.status) }}
+                      </span>
+                    </header>
+                    <p v-if="sample.reason" class="reader-error">{{ sample.reason }}</p>
+                    <MarkdownPreview :content="sample.handout || ''" compact />
+                    <details class="review-disclosure">
+                      <summary>查看 Review</summary>
+                      <p class="review-summary">
+                        {{ sample.review?.summary || '暂无 Review 摘要' }}
+                      </p>
+                      <ul v-if="sample.review?.issues?.length" class="issue-list">
+                        <li v-for="(issue, index) in sample.review.issues" :key="index">
+                          <strong>{{ issue.problem }}</strong>
+                          <span>{{ issue.revision_direction }}</span>
+                        </li>
+                      </ul>
+                    </details>
+                  </article>
+                </div>
+
+                <div v-if="canReviseExpertOrganization(project.status)" class="decision-panel">
+                  <a-textarea
+                    v-model:value="organizationFeedback"
+                    :rows="3"
+                    placeholder="需要调整时，说明主题边界、覆盖关系或讲义表达应如何变化"
+                  />
+                  <div class="decision-actions">
+                    <a-button
+                      :loading="actionKey === 'revise-organization'"
+                      :disabled="Boolean(actionKey)"
+                      @click="reviseOrganization"
+                    >
+                      <RotateCcw :size="14" />
+                      按意见重新生成
+                    </a-button>
+                    <a-button
+                      v-if="project.status === 'awaiting_confirmation'"
+                      type="primary"
+                      :loading="actionKey === 'confirm-organization'"
+                      :disabled="Boolean(actionKey)"
+                      @click="confirmOrganization"
+                    >
+                      <Check :size="14" />
+                      确认组织方式
+                    </a-button>
+                  </div>
+                </div>
+              </template>
             </section>
 
             <section
@@ -753,84 +974,20 @@
             </div>
             <a-progress :percent="topicProgress" :show-info="false" :stroke-width="6" />
 
-            <div v-if="project.topics?.length" class="topic-workspace section-list">
-              <aside class="topic-navigator" aria-label="讲义目录">
-                <div class="topic-navigator-heading">
-                  <span>讲义目录</span>
-                  <span>{{ project.topics.length }} 篇</span>
-                </div>
-                <button
-                  v-for="topic in project.topics"
-                  :key="topic.topic_id"
-                  type="button"
-                  class="topic-nav-item"
-                  :class="{ selected: topic.topic_id === selectedTopicId }"
-                  :aria-pressed="topic.topic_id === selectedTopicId"
-                  @click="selectedTopicId = topic.topic_id"
-                >
-                  <span class="topic-position">{{ topic.position }}</span>
-                  <span class="topic-nav-copy">
-                    <span>{{ topic.section }}</span>
-                    <strong>{{ topic.title }}</strong>
-                  </span>
-                  <span class="status-badge" :class="`tone-${getExpertStatusTone(topic.status)}`">
-                    {{ getExpertMaterialStatusLabel(topic.status) }}
-                  </span>
-                </button>
-              </aside>
-
-              <article v-if="selectedTopic" class="topic-reader">
-                <header class="topic-reader-heading">
-                  <div>
-                    <span class="section-kicker">{{ selectedTopic.section }}</span>
-                    <h3>{{ selectedTopic.title }}</h3>
-                    <p>{{ selectedTopic.reader_question }}</p>
-                  </div>
-                  <div class="topic-reader-actions">
-                    <span
-                      class="status-badge"
-                      :class="`tone-${getExpertStatusTone(selectedTopic.status)}`"
-                    >
-                      {{ getExpertMaterialStatusLabel(selectedTopic.status) }}
-                    </span>
-                    <a-button
-                      v-if="selectedTopic.status === 'needs_attention'"
-                      size="small"
-                      :loading="actionKey === `retry-topic:${selectedTopic.topic_id}`"
-                      :disabled="Boolean(actionKey)"
-                      @click="retryTopic(selectedTopic)"
-                    >
-                      重跑讲义
-                    </a-button>
-                  </div>
-                </header>
-
-                <p v-if="selectedTopic.error_message" class="reader-error">
-                  {{ selectedTopic.error_message }}
-                </p>
-                <div v-if="selectedTopic.handout" class="topic-document">
-                  <MarkdownPreview :content="selectedTopic.handout" compact />
-                </div>
-                <div v-else class="topic-reader-empty">
-                  <LoaderCircle
-                    v-if="selectedTopic.status !== 'needs_attention'"
-                    :size="18"
-                    class="spin"
-                  />
-                  <span>{{ selectedTopic.error_message || '总编正在准备当前讲义。' }}</span>
-                </div>
-                <details v-if="selectedTopic.review" class="review-disclosure">
-                  <summary>查看 Review</summary>
-                  <p class="review-summary">
-                    {{ selectedTopic.review.summary || '暂无 Review 摘要' }}
-                  </p>
-                </details>
-              </article>
-            </div>
+            <ExpertTopicReader
+              v-model="selectedTopicId"
+              class="section-list"
+              :topics="project.topics || []"
+              allow-retry
+              :retrying-topic-id="
+                actionKey.startsWith('retry-topic:') ? actionKey.slice('retry-topic:'.length) : ''
+              "
+              @retry="retryTopic"
+            />
 
             <details v-if="project.final_review" class="disclosure-block">
               <summary>查看全书一致性结论</summary>
-              <MarkdownPreview :content="project.final_review" compact />
+              <MarkdownPreview :content="finalReviewMarkdown" compact />
             </details>
 
             <div v-if="showCompilationRetry" class="decision-panel compact-decision">
@@ -885,13 +1042,13 @@
             </a-alert>
 
             <a-tabs v-else-if="preview" v-model:activeKey="previewTab" class="preview-tabs">
-              <a-tab-pane key="skill" tab="Skill">
-                <div class="document-block preview-document">
+              <a-tab-pane key="skill" tab="专家说明">
+                <div class="document-block preview-document primary-preview-document">
                   <MarkdownPreview :content="preview.skill_md || ''" compact />
                 </div>
               </a-tab-pane>
-              <a-tab-pane key="navigation" tab="导航">
-                <div class="document-block preview-document">
+              <a-tab-pane key="navigation" tab="使用导航">
+                <div class="document-block preview-document primary-preview-document">
                   <MarkdownPreview :content="preview.navigation || ''" compact />
                 </div>
               </a-tab-pane>
@@ -902,7 +1059,9 @@
                     :key="item.path"
                     :header="displayFileName(item.path)"
                   >
-                    <MarkdownPreview :content="item.content || ''" compact />
+                    <div class="preview-reading-body">
+                      <MarkdownPreview :content="item.content || ''" compact />
+                    </div>
                   </a-collapse-panel>
                 </a-collapse>
               </a-tab-pane>
@@ -913,7 +1072,9 @@
                     :key="item.path"
                     :header="displayFileName(item.path)"
                   >
-                    <MarkdownPreview :content="item.content || ''" compact />
+                    <div class="preview-reading-body">
+                      <MarkdownPreview :content="item.content || ''" compact />
+                    </div>
                   </a-collapse-panel>
                 </a-collapse>
               </a-tab-pane>
@@ -1007,6 +1168,7 @@ import {
 
 import { expertApi } from '@/apis/expert_api'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
+import ExpertTopicReader from '@/components/extensions/ExpertTopicReader.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import {
   EXPERT_STAGE_ITEMS,
@@ -1034,7 +1196,6 @@ const loading = ref(false)
 const loadError = ref('')
 const actionKey = ref('')
 const selectedRepresentativeIds = ref([])
-const maxRepresentativeMaterials = 20
 const representativeTouched = ref(false)
 const methodFeedback = ref('')
 const organizationFeedback = ref('')
@@ -1049,6 +1210,7 @@ const excludeOpen = ref(false)
 const excludeTarget = ref(null)
 const exclusionReason = ref('')
 const reviewStage = ref('')
+const historySelection = ref('')
 const selectedTopicId = ref('')
 const materialFilter = ref('all')
 let pollingTimer = null
@@ -1064,6 +1226,49 @@ const isReviewingHistory = computed(
 const overallProgress = computed(() => Math.round(getExpertProjectProgress(project.value || {})))
 const materialProgress = computed(() => getExpertMaterialProgress(project.value?.materials || []))
 const topicProgress = computed(() => getExpertTopicProgress(project.value?.topics || []))
+const organizationAttentionSamples = computed(() =>
+  (project.value?.organization_samples || []).filter(
+    (sample) => sample.status === 'needs_attention'
+  )
+)
+const isOrganizationSampleAttention = computed(
+  () =>
+    project.value?.stage === 'organization' &&
+    project.value?.status === 'needs_attention' &&
+    organizationAttentionSamples.value.length > 0
+)
+const organizationSampleInProgress = computed(() =>
+  (project.value?.topics || []).find(
+    (topic) =>
+      topic.is_sample &&
+      ['pending', 'preparing_evidence', 'evidence_ready', 'writing'].includes(topic.status)
+  )
+)
+const organizationStageHeading = computed(() => {
+  if (project.value?.status === 'running') return '正在生成主题方案和讲义小样'
+  if (isOrganizationSampleAttention.value) {
+    return `${organizationAttentionSamples.value.length} 篇讲义小样需要修改`
+  }
+  if (project.value?.status === 'needs_attention') return '主题方案需要调整'
+  return '这样组织和表达已经学到的知识，对不对？'
+})
+const organizationStageDescription = computed(() => {
+  const currentProject = project.value
+  if (!currentProject) return ''
+  if (currentProject.status === 'running' && organizationSampleInProgress.value) {
+    return `正在编写并检查讲义小样《${organizationSampleInProgress.value.title}》`
+  }
+  if (isOrganizationSampleAttention.value) {
+    return `${organizationAttentionSamples.value.length} 篇讲义小样需要修改，主题方案可在页面底部查看`
+  }
+  if (currentProject.status === 'needs_attention') {
+    return currentProject.error_message || '主题方案没有生成，请写明调整方向后重新生成。'
+  }
+  if (currentProject.status === 'awaiting_confirmation') {
+    return '主题地图和讲义小样已经准备好，确认后才会批量编写正式讲义。'
+  }
+  return currentProject.message || getExpertStatusLabel(currentProject.status)
+})
 const currentStageMessage = computed(() => {
   const currentProject = project.value
   if (!currentProject) return ''
@@ -1073,10 +1278,14 @@ const currentStageMessage = computed(() => {
     ).length
     return active ? `正在学习 ${active} 份材料` : currentProject.message
   }
+  if (currentProject.stage === 'organization') return organizationStageDescription.value
   return currentProject.message || getExpertStatusLabel(currentProject.status)
 })
 const showProjectError = computed(
-  () => project.value?.status === 'needs_attention' && Boolean(project.value?.error_message)
+  () =>
+    project.value?.status === 'needs_attention' &&
+    Boolean(project.value?.error_message) &&
+    !isOrganizationSampleAttention.value
 )
 const materialFilterOptions = [
   { key: 'all', label: '全部' },
@@ -1090,15 +1299,42 @@ const filteredMaterials = computed(() => {
   if (materialFilter.value === 'all') return materials
   return materials.filter((material) => material.status === materialFilter.value)
 })
-const selectedTopic = computed(() =>
-  (project.value?.topics || []).find((topic) => topic.topic_id === selectedTopicId.value)
+const selectedHistorySample = computed(() =>
+  (project.value?.method_samples || []).find(
+    (sample) => historySelection.value === `sample:${sample.material_id}`
+  )
+)
+const selectedHistoryTopic = computed(() =>
+  (project.value?.topics || []).find(
+    (topic) => historySelection.value === `topic:${topic.topic_id}`
+  )
+)
+const historyMaterialStatusItems = computed(() =>
+  ['passed', 'review_revise', 'learning', 'pending', 'no_value', 'needs_attention', 'excluded']
+    .map((status) => ({
+      status,
+      label: getExpertMaterialStatusLabel(status),
+      count: (project.value?.materials || []).filter((material) => material.status === status)
+        .length
+    }))
+    .filter((item) => item.count > 0)
 )
 const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
+const hasMethodSampleConcerns = computed(() =>
+  (project.value?.method_samples || []).some((sample) => sample.status === 'needs_attention')
+)
 const selectableMaterials = computed(() =>
   (project.value?.materials || []).filter((material) => material.status === 'ready')
 )
+const minimumRepresentativeMaterials = computed(() => Math.min(4, selectableMaterials.value.length))
+const maxRepresentativeMaterials = computed(() => Math.min(20, selectableMaterials.value.length))
+const representativeRangeLabel = computed(() => {
+  const minimum = minimumRepresentativeMaterials.value
+  const maximum = maxRepresentativeMaterials.value
+  return minimum === maximum ? `${minimum} 份` : `${minimum}～${maximum} 份`
+})
 const canChooseRepresentatives = computed(
   () =>
     ['ready', 'needs_attention'].includes(project.value?.status) &&
@@ -1111,16 +1347,41 @@ const showCompilationRetry = computed(
     project.value?.status === 'needs_attention' &&
     !(project.value?.topics || []).some((topic) => topic.status === 'needs_attention')
 )
+const finalReviewMarkdown = computed(() => {
+  const review = project.value?.final_review
+  if (!review) return ''
+
+  const sections = [review.summary]
+  for (const issue of review.issues || []) {
+    const topicKeys = (issue.topic_keys || []).map((key) => `\`${key}\``).join('、')
+    sections.push(
+      `### ${issue.problem}`,
+      topicKeys ? `涉及主题：${topicKeys}` : '',
+      `修改方向：${issue.revision_direction}`
+    )
+  }
+  return sections.filter(Boolean).join('\n\n')
+})
+
+/** 返回阶段回看首次打开时最重要的产物。 */
+const getDefaultHistorySelection = (stage) => {
+  if (stage === 'orientation') return 'orientation-plan'
+  if (stage === 'organization') return 'organization-plan'
+  return ''
+}
 
 /** 切换已完成阶段的只读回看，不修改项目当前阶段。 */
 const selectStage = (stage, index) => {
   if (index > currentStageIndex.value) return
-  reviewStage.value = stage === project.value?.stage ? '' : stage
+  const nextReviewStage = stage === project.value?.stage ? '' : stage
+  reviewStage.value = nextReviewStage
+  historySelection.value = getDefaultHistorySelection(nextReviewStage)
 }
 
 /** 返回后台当前正在推进的阶段。 */
 const returnToCurrentStage = () => {
   reviewStage.value = ''
+  historySelection.value = ''
 }
 
 const promptLabels = {
@@ -1231,8 +1492,8 @@ const toggleRepresentative = (materialId) => {
     )
     return
   }
-  if (selectedRepresentativeIds.value.length >= maxRepresentativeMaterials) {
-    message.warning(`最多选择 ${maxRepresentativeMaterials} 份代表性材料`)
+  if (selectedRepresentativeIds.value.length >= maxRepresentativeMaterials.value) {
+    message.warning(`最多选择 ${maxRepresentativeMaterials.value} 份代表性材料`)
     return
   }
   selectedRepresentativeIds.value = [...selectedRepresentativeIds.value, materialId]
@@ -1240,8 +1501,8 @@ const toggleRepresentative = (materialId) => {
 
 /** 使用用户明确选择的样本生成项目方法和真实小样。 */
 const startOrientation = async () => {
-  if (!selectedRepresentativeIds.value.length) {
-    message.warning('请选择 1～20 份代表性材料')
+  if (selectedRepresentativeIds.value.length < minimumRepresentativeMaterials.value) {
+    message.warning(`请选择 ${representativeRangeLabel.value}代表性材料`)
     return
   }
   const completed = await runAction(
@@ -1297,6 +1558,23 @@ const confirmMethod = () => {
         'confirm-method',
         () => expertApi.confirmMethod(projectId.value),
         '学习方向已确认，正在校准方法并重新试跑小样'
+      )
+  })
+}
+
+/** 用户认可小样仍有内容问题，但选择按当前方法进入批量学习。 */
+const acceptMethodWithConcerns = () => {
+  Modal.confirm({
+    title: '接受当前小样问题并开始学习？',
+    content:
+      '系统会保留这些小样 Review 供后续查看，并直接按当前学习方案开始逐份学习；不会再自动校准或重跑小样。',
+    okText: '接受并开始学习',
+    cancelText: '继续调整方法',
+    onOk: () =>
+      runAction(
+        'accept-method-concerns',
+        () => expertApi.acceptMethodWithConcerns(projectId.value),
+        '已接受当前小样问题，正在开始逐份学习'
       )
   })
 }
@@ -1378,13 +1656,13 @@ const reviseOrganization = async () => {
     return
   }
   if (!organizationFeedback.value.trim()) {
-    message.warning('请先写明需要调整的组织方式')
+    message.warning('请先写明你希望怎样修改这版组织方案')
     return
   }
   const completed = await runAction(
     'revise-organization',
     () => expertApi.reviseOrganization(projectId.value, organizationFeedback.value.trim()),
-    '已按反馈创建新的组织版本'
+    '已创建新组织版本，正在重新生成主题方案和讲义小样'
   )
   if (completed) organizationFeedback.value = ''
 }
@@ -1812,6 +2090,210 @@ onBeforeUnmount(() => {
   margin-top: 0;
 }
 
+.history-reader-workspace {
+  display: grid;
+  min-height: 500px;
+  grid-template-columns: 250px minmax(0, 1fr);
+  border-top: 1px solid var(--gray-150);
+  border-bottom: 1px solid var(--gray-150);
+}
+
+.history-navigator {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+  max-height: calc(100vh - 260px);
+  overflow-y: auto;
+  border-right: 1px solid var(--gray-150);
+  background: var(--gray-25);
+
+  button {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+    border: 0;
+    border-bottom: 1px solid var(--gray-150);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+
+    &:hover,
+    &.selected {
+      background: var(--main-30);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--main-500);
+      outline-offset: -2px;
+    }
+  }
+
+  strong {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--gray-900);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  span {
+    overflow: hidden;
+    color: var(--gray-500);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.history-reader-pane {
+  min-width: 0;
+  padding: 24px 28px 40px;
+}
+
+.history-reader-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  max-width: 760px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--gray-150);
+
+  h3,
+  p {
+    margin: 0;
+  }
+
+  h3 {
+    color: var(--gray-900);
+    font-size: 19px;
+    font-weight: 650;
+    line-height: 1.4;
+  }
+
+  p {
+    margin-top: 7px;
+    color: var(--gray-600);
+    font-size: 13px;
+    line-height: 1.65;
+  }
+}
+
+.reading-document {
+  max-width: 760px;
+  margin-top: 22px;
+}
+
+.reading-document,
+.preview-document,
+.document-block {
+  :deep(.yk-markdown-preview) {
+    max-width: 760px;
+    font-size: 14px;
+    line-height: 1.8;
+
+    h1 {
+      margin: 0 0 18px;
+      font-size: 21px;
+      line-height: 1.35;
+    }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 17px;
+      line-height: 1.45;
+    }
+
+    h3,
+    h4 {
+      margin: 22px 0 8px;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    p,
+    li {
+      line-height: 1.8;
+    }
+  }
+}
+
+.history-review {
+  max-width: 760px;
+  margin-top: 24px;
+  padding-top: 14px;
+  border-top: 1px solid var(--gray-150);
+
+  summary {
+    width: fit-content;
+    color: var(--main-700);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 10px 0 0;
+    color: var(--gray-700);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+}
+
+.history-stage-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+
+  strong {
+    color: var(--gray-900);
+    font-size: 16px;
+  }
+
+  span {
+    color: var(--gray-600);
+    font-size: 13px;
+  }
+}
+
+.topic-facts {
+  max-width: 760px;
+  margin: 8px 0 0;
+
+  > div {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 14px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--gray-150);
+  }
+
+  dt {
+    color: var(--gray-500);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  dd {
+    margin: 0;
+    color: var(--gray-800);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+}
+
+.history-final-review {
+  margin-top: 20px;
+}
+
 .project-section {
   width: min(100%, 1080px);
   max-width: 100%;
@@ -1851,6 +2333,226 @@ onBeforeUnmount(() => {
     font-size: 13px;
     line-height: 1.65;
   }
+}
+
+.attention-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+
+  h2,
+  p {
+    margin: 0;
+  }
+
+  h2 {
+    color: var(--gray-900);
+    font-size: 22px;
+    font-weight: 650;
+    line-height: 1.35;
+  }
+
+  p {
+    max-width: 720px;
+    margin-top: 7px;
+    color: var(--gray-700);
+    font-size: 14px;
+    line-height: 1.65;
+  }
+
+  > div > span {
+    display: block;
+    margin-top: 6px;
+    color: var(--gray-500);
+    font-size: 12px;
+  }
+}
+
+.attention-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-warning-100);
+  border-radius: 7px;
+  background: var(--color-warning-10);
+  color: var(--color-warning-900);
+
+  svg {
+    flex: 0 0 auto;
+    margin-top: 1px;
+  }
+
+  div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  strong {
+    font-size: 14px;
+  }
+
+  span {
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
+
+.attention-sample-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.attention-sample {
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--gray-150);
+  border-radius: 7px;
+  background: var(--gray-0);
+
+  > header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+
+    > strong {
+      color: var(--gray-900);
+      font-size: 16px;
+      font-weight: 650;
+      line-height: 1.45;
+    }
+  }
+}
+
+.attention-issue {
+  margin-top: 14px;
+
+  dl {
+    margin: 0;
+  }
+
+  dl > div {
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 14px;
+    padding: 11px 0;
+    border-top: 1px solid var(--gray-150);
+  }
+
+  dt {
+    color: var(--gray-500);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  dd {
+    max-width: 760px;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--gray-800);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+
+  dl > div:last-child dd {
+    color: var(--main-900);
+    font-weight: 500;
+  }
+}
+
+.attention-sample-reference {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gray-150);
+
+  > summary {
+    width: fit-content;
+    color: var(--main-700);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  > summary:focus-visible {
+    outline: 2px solid var(--main-500);
+    outline-offset: 3px;
+  }
+}
+
+.attention-document,
+.attention-review-original {
+  max-width: 760px;
+  margin-top: 18px;
+}
+
+.attention-review-original {
+  padding-top: 14px;
+  border-top: 1px solid var(--gray-150);
+
+  strong {
+    color: var(--gray-800);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 6px 0 0;
+    color: var(--gray-700);
+    font-size: 13px;
+    line-height: 1.7;
+  }
+}
+
+.attention-decision {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.attention-feedback-field {
+  min-width: 0;
+
+  label {
+    display: block;
+    color: var(--gray-900);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  p {
+    max-width: 760px;
+    margin: 5px 0 10px;
+    color: var(--gray-600);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+}
+
+details.organization-reference {
+  margin-top: 28px;
+  border-top: 1px solid var(--gray-150);
+
+  > summary {
+    padding: 16px 0;
+    color: var(--gray-700);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  > summary:focus-visible {
+    outline: 2px solid var(--main-500);
+    outline-offset: 3px;
+  }
+}
+
+.organization-reference-content {
+  padding-top: 4px;
 }
 
 .section-kicker {
@@ -2142,136 +2844,6 @@ onBeforeUnmount(() => {
   }
 }
 
-.topic-workspace {
-  display: grid;
-  min-height: 460px;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 2.2fr);
-  border-bottom: 1px solid var(--gray-150);
-}
-
-.topic-navigator {
-  min-width: 0;
-  border-right: 1px solid var(--gray-150);
-  background: var(--gray-25);
-}
-
-.topic-navigator-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--gray-150);
-  color: var(--gray-700);
-  font-size: 12px;
-  font-weight: 600;
-
-  span:last-child {
-    color: var(--gray-500);
-    font-weight: 400;
-  }
-}
-
-.topic-nav-item {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 14px 12px;
-  border: 0;
-  border-bottom: 1px solid var(--gray-150);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-
-  &:hover,
-  &.selected {
-    background: var(--main-30);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--main-500);
-    outline-offset: -2px;
-  }
-
-  .status-badge {
-    grid-column: 2;
-    justify-self: start;
-  }
-}
-
-.topic-nav-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-
-  span {
-    overflow: hidden;
-    color: var(--gray-500);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    display: -webkit-box;
-    overflow: hidden;
-    color: var(--gray-900);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-}
-
-.topic-reader {
-  min-width: 0;
-  padding: 24px 28px 40px;
-}
-
-.topic-reader-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--gray-150);
-
-  h3,
-  p {
-    margin: 0;
-  }
-
-  h3 {
-    margin-top: 4px;
-    color: var(--gray-900);
-    font-size: 19px;
-    font-weight: 650;
-    line-height: 1.4;
-  }
-
-  p {
-    max-width: 720px;
-    margin-top: 7px;
-    color: var(--gray-600);
-    font-size: 13px;
-    line-height: 1.65;
-  }
-}
-
-.topic-reader-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .reader-error {
   margin: 16px 0 0;
   padding: 10px 12px;
@@ -2280,27 +2852,6 @@ onBeforeUnmount(() => {
   color: var(--color-error-700);
   font-size: 13px;
   line-height: 1.6;
-}
-
-.topic-document {
-  max-width: 780px;
-  margin-top: 24px;
-}
-
-.topic-reader-empty {
-  display: flex;
-  min-height: 220px;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--gray-600);
-  font-size: 13px;
-}
-
-.topic-reader .review-disclosure {
-  margin-top: 24px;
-  padding-top: 14px;
-  border-top: 1px solid var(--gray-150);
 }
 
 .row-error {
@@ -2533,6 +3084,37 @@ onBeforeUnmount(() => {
 
 .preview-document {
   min-height: 320px;
+  padding: 26px 28px 40px;
+}
+
+.primary-preview-document {
+  :deep(.frontmatter-card) {
+    display: none;
+  }
+}
+
+.preview-reading-body {
+  max-width: 760px;
+
+  :deep(.yk-markdown-preview) {
+    font-size: 14px;
+    line-height: 1.8;
+
+    h1 {
+      font-size: 21px;
+    }
+
+    h2 {
+      margin-top: 28px;
+      font-size: 17px;
+    }
+
+    h3,
+    h4 {
+      margin-top: 22px;
+      font-size: 15px;
+    }
+  }
 }
 
 .preview-collapse {
@@ -2644,13 +3226,47 @@ onBeforeUnmount(() => {
   }
 
   .section-heading,
+  .attention-heading,
   .release-heading,
   .decision-panel,
   .compact-decision,
-  .history-toolbar,
-  .topic-reader-heading {
+  .history-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .history-reader-workspace {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .history-navigator {
+    position: static;
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--gray-150);
+  }
+
+  .history-reader-pane {
+    padding: 20px 0 32px;
+  }
+
+  .history-reader-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .attention-sample {
+    padding: 16px;
+  }
+
+  .attention-issue dl > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .attention-decision {
+    grid-template-columns: 1fr;
   }
 
   .section-heading h2 {
@@ -2690,33 +3306,6 @@ onBeforeUnmount(() => {
     padding-left: 0;
   }
 
-  .topic-workspace {
-    min-height: 0;
-    grid-template-columns: 1fr;
-  }
-
-  .topic-navigator {
-    border-right: 0;
-    border-bottom: 1px solid var(--gray-150);
-  }
-
-  .topic-nav-item {
-    grid-template-columns: 28px minmax(0, 1fr) auto;
-
-    .status-badge {
-      grid-column: 3;
-      grid-row: 1;
-      justify-self: end;
-    }
-  }
-
-  .topic-reader {
-    padding: 20px 0 32px;
-  }
-
-  .topic-reader-heading,
-  .topic-document,
-  .topic-reader .review-disclosure,
   .reader-error {
     margin-right: 0;
     margin-left: 0;

@@ -220,9 +220,23 @@ async def run_handout_compilation(
         await _mark_compilation_attention(project_id, book_review.summary)
         return {"project_id": project_id, "status": "needs_attention"}
 
+    await _humanize_published_handouts(
+        project_id,
+        organization_version,
+        snapshot["model_spec"],
+        tasks,
+    )
+    topics = await _list_topics(project_id, organization_version)
     navigation = await _write_navigation_with_meaningful_groups(tasks, snapshot, topics, book_review)
     if not navigation.strip():
         raise ValueError("总编没有生成可用的读者导航")
+    navigation = (
+        await tasks.humanize_visible_artifact(
+            model_spec=snapshot["model_spec"],
+            artifact_name="读者导航",
+            content_markdown=navigation,
+        )
+    ).content_markdown
     skill_body = await tasks.write_skill_body(
         model_spec=snapshot["model_spec"],
         stage_prompt=snapshot["prompt_pack"].skill_author,
@@ -233,6 +247,13 @@ async def run_handout_compilation(
     )
     if not skill_body.skill_markdown.strip():
         raise ValueError("总编没有生成专家 Skill 使用入口")
+    skill_body_markdown = (
+        await tasks.humanize_visible_artifact(
+            model_spec=snapshot["model_spec"],
+            artifact_name="专家 Skill 使用入口",
+            content_markdown=skill_body.skill_markdown,
+        )
+    ).content_markdown
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -252,11 +273,11 @@ async def run_handout_compilation(
             materials=materials,
             topics=topics,
             navigation=navigation,
-            skill_body=skill_body.skill_markdown,
+            skill_body=skill_body_markdown,
         )
         project.final_review = json.dumps(book_review.model_dump(), ensure_ascii=False)
         project.navigation = navigation
-        project.skill_body = skill_body.skill_markdown
+        project.skill_body = skill_body_markdown
         project.skill_slug = get_project_skill_slug(project)
         project.skill_dir = skill_dir
         project.stage = "release"
@@ -342,6 +363,47 @@ async def _load_compilation_inputs(project_id: str, organization_version: int) -
 async def _list_topics(project_id: str, organization_version: int) -> list[Any]:
     async with pg_manager.get_async_session_context() as db:
         return await ExpertRepository(db).list_topics(project_id, organization_version)
+
+
+async def _humanize_published_handouts(
+    project_id: str,
+    organization_version: int,
+    model_spec: str,
+    tasks: ExpertModelTasks,
+) -> None:
+    """改写全书通过后的讲义，保留用户已经确认且未再修订的小样。"""
+
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        if project is None or project.organization_version != organization_version:
+            raise ValueError("当前组织版本已经失效")
+        confirmed_samples = {
+            item.get("topic_id"): item.get("handout")
+            for item in project.organization_samples
+            if isinstance(item, dict) and item.get("topic_id") and item.get("handout")
+        }
+    for topic in await _list_topics(project_id, organization_version):
+        if topic.is_sample and topic.handout == confirmed_samples.get(topic.topic_id):
+            continue
+        if not topic.handout:
+            raise ValueError(f"《{topic.title}》缺少已通过的讲义正文")
+        humanized = await tasks.humanize_visible_artifact(
+            model_spec=model_spec,
+            artifact_name=f"正式讲义《{topic.title}》",
+            content_markdown=topic.handout,
+        )
+        async with pg_manager.get_async_session_context() as db:
+            repo = ExpertRepository(db)
+            project = await repo.lock_project(project_id)
+            current = await repo.lock_topic(topic.topic_id)
+            if (
+                project is None
+                or current is None
+                or project.organization_version != organization_version
+                or current.status != "passed"
+            ):
+                raise ValueError("说人话版本生成期间项目状态发生变化")
+            current.handout = humanized.content_markdown
 
 
 async def _load_current_editorial_plan(project_id: str, organization_version: int) -> str:

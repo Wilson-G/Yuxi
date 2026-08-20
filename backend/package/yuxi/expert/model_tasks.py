@@ -18,6 +18,8 @@ from yuxi.expert.contracts import (
     HandoutReviewResult,
     MethodCalibrationAssessment,
     MethodCalibrationResult,
+    HumanizedTextResult,
+    HumanizedTopicMapResult,
     MaterialNoteResult,
     MaterialReviewResult,
     NavigationResult,
@@ -35,14 +37,21 @@ from yuxi.models.providers.cache import model_cache
 PROMPT_DESIGNER_ROOT = Path(__file__).parent / "prompt_designer"
 ContractT = TypeVar("ContractT", bound=BaseModel)
 
-ARTIFACT_HUMANIZER_ZH_GUIDANCE = """
-成品表达采用 humanizer-zh 的编辑原则：直接说明材料已经支持的判断，不用广告语、空泛拔高、
-模板化过渡、机械三段式、含糊归因或为了显得有力而写的金句。句子长短可以自然变化，
-但不要为了变化而改动判断顺序、适用条件、证据指向或章节结构。
+SHUORENHUA_ARTIFACT_SKILL = """
+你正在执行“说人话”Skill，只改写已经完成且准备展示给用户或发布的内容。
 
-这是一份专家讲义，不是聊天或随笔。不得添加第一人称感受、幽默、主观看法、材料外例子，
-也不得用省略事实的方式换取简短。保留读者完成判断所需的具体信号、动作、条件、边界和引用；
-Markdown 标题、列表和响应合同要求的结构同样必须保留。
+保留原文的事实、主体、数字、条件、引用、Markdown 结构和结论强度，不添加材料外方法、例子、
+承诺或解释。删除或改写模板腔、空泛拔高、抽象流程词、机械三段式、无意义过渡和为了显得有力而写的句子。
+
+优先用当前领域的具体对象和动作说清：遇到什么事，先看什么，再做什么，什么情况下不能继续。
+不要把“局面、输入、交接、作者性、学习传统”等抽象流程词当作内容本身；材料没有展开的地方直接说明没有展开。
+
+页面概览不讲“本书、本项目、主题地图怎样组织”，也不复述写作或编译过程。开头直接说读者会遇到什么事，
+这批内容能帮他先看什么、再决定什么。`N001`、`M001`、`CURRENT_MATERIAL` 等内部别名不属于读者内容，
+一律删除。术语、引用标记和来源链接仍按原文保留。
+
+这不是聊天或随笔。不得添加第一人称感受、幽默或主观看法，也不得为了简短删掉判断所需的信号、动作、
+条件、边界和引用。输出必须是可以直接展示或发布的 Markdown 正文。
 """.strip()
 
 
@@ -110,12 +119,19 @@ class ExpertModelTasks:
         material_catalog: str,
         samples: list[dict[str, str]],
     ) -> ProjectMethodResult:
-        """由总编模型生成项目学习方案、编译底稿和完整阶段 Prompt。"""
+        """生成项目学习方案、编译底稿和完整阶段 Prompt。"""
 
         selected_template = (PROMPT_DESIGNER_ROOT / "templates" / orientation.template_name).read_text(encoding="utf-8")
-        example = (PROMPT_DESIGNER_ROOT / "examples" / "bazi-full-stage-prompt-pack.md").read_text(encoding="utf-8")
+        example = (PROMPT_DESIGNER_ROOT / "examples" / "apprentice-stage-prompt-pack.md").read_text(encoding="utf-8")
+        minimum_sample_count = min(4, len(samples))
+        maximum_sample_count = min(5, len(samples))
+        sample_range = (
+            str(minimum_sample_count)
+            if minimum_sample_count == maximum_sample_count
+            else f"{minimum_sample_count}～{maximum_sample_count}"
+        )
         prompt = f"""
-你是“{project_name}”专家作品的总编模型。请依据项目定向报告，把中央方法改写成只属于当前项目的完整编译方法。
+你正在为“{project_name}”设计项目学习方法。请依据项目定向报告，把中央方法改写成只属于当前项目的完整编译方法。
 
 项目定向报告：
 {orientation.report_markdown}
@@ -129,14 +145,42 @@ class ExpertModelTasks:
 当前材料类型模板只提供提问方向，不能直接复制：
 {selected_template}
 
-下面的八字示例只展示 Prompt 的教材化结构、阶段交接和必要材料纪律。不得复制其中的领域术语、判断顺序或章节结构：
+下面的通用示例只展示 Prompt 如何让学艺者复盘作者的判断动作。不得复制其中的领域称谓、任务名称或章节结构：
 {example}
 
-请交付人可读的项目学习方案、自然连贯的项目专属编译底稿，
-以及响应合同要求的全部阶段 Prompt。每份 Prompt 都要能在系统注入当前完整业务输入后直接工作，
-不能写成通用规则加项目补丁，也不要出现任务 ID、存储路径、队列、哈希或发布实现。讲义相关 Prompt
-必须把材料中的判断动作编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
-从上方代表材料中选择 1～2 个 M... 别名作为 method_sample_aliases，用于试跑这套 Prompt；
+请交付人可读的项目学习方案、自然连贯的项目专属编译底稿，以及响应合同要求的全部阶段 Prompt。
+每份 Prompt 都要在系统注入当前完整业务输入后直接工作，不能写成通用规则加项目补丁，也不要把机器流程写进角色职责。
+阶段 Prompt 必须采用参考项目的来源合同：材料形态和说话人纪律、
+结构/信号 -> 作者如何转成判断或表现 -> 来源理由/代价 -> 适用边界或反转、专属知识和证据边界。
+阶段身份统一使用“作者”“材料中的作者”或项目声明的通用角色，不把项目名、作者姓名、UP 主名或人物名写进 Prompt 身份。
+讲义相关 Prompt 必须把材料中的判断动作编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
+项目方法必须同时学习两类内容：作者怎样判断，以及作者明确提出的领域专属知识。
+后者包括术语、口诀、经验口径、特殊关系、取用法或断语；要求每篇材料按原意、
+含义和适用条件提炼，不能因外部共识、普通常识或可否普遍证明而筛除。
+单篇笔记是后续主题合成的知识载荷，不是展示成品或思考记录。每个候选判断都要区分三层：材料结构/信号，作者如何把它转成判断或表现，以及这条转换的适用条件与边界。
+只输出少量可直接进入下一轮的判断单元：结构/信号 -> 作者的转换口径或判断 -> 适用条件、证据强度或改变结论的条件。
+来源明确的机制、经验依据、方式语义、顺序和条件只在会改变使用时保留。
+案例过程、逐步推演、人物事件、原文行号和审稿说明不进正文，分别留给证据字段和 Review。
+原文只给口诀、公式、固定顺序或经验口径时如实保留，不补造理论。
+单篇阶段 Prompt 不得要求 `note_markdown` 输出 JSON、JSONL、对象、字段名、知识单元数组或内嵌 evidence；
+系统已有正式响应合同，笔记正文只能是面向读者的自然 Markdown，证据仍由正式 `evidence` 字段承载。
+项目学习方案会被直接交给单篇学习、Review 和修订任务，只能说明学习深度和共同的学艺方向；
+不得把代表样本的具体概念、案例类型或整书编排身份写成后续每篇的学习重点或检查清单。
+单篇学习与修订 Prompt 的主语必须是正在向材料中的作者学艺的人：从本篇实际展示的结构、判断转换和取舍中，复盘能学到的门道。
+单篇 Review 必须是具备项目声明的领域基础的独立同门，检查这份复盘和专属知识是否忠实而可学习。
+Reviewer 必须先在内部完整列出本篇会改变下游学习的知识账本，
+再逐段读完整材料后一次性提出所有实质问题。发现一个 blocker 不能停止扫描；
+必须读到原文末尾，收齐所有实质问题后才给 verdict，后续复审不得补报本轮已可见的遗漏。
+知识账本不进入 Review 输出。
+任何一篇材料都不必具备固定步骤；不得让这些阶段把自己设定为替编排者交付材料、替后续角色整理目录，或按代表样本列出的具体概念逐项验收。
+主题与讲义 Prompt 必须按读者局面组织“条件 -> 判断”主干；
+同族知识能按关系、作用方式、位置、介质或其他材料支持的显式轴分型时，
+必须写出该轴和各类从结构到语义的迁移方向，案例只作类内实例。
+讲义 Reviewer 发现输入笔记已经支持同族关系、而讲义仍平铺案例且未给出材料支持的分型轴时，
+必须要求修订；不能因措辞偏好或非实质性的路标写法阻断交接。
+全书收口 Prompt 的输出必须符合现有 Review 合同：只返回通过或具体跨讲义问题，不要求它重写整本书。
+从上方代表材料中选择 {sample_range} 个 M... 别名作为 method_sample_aliases，
+用于并发试跑这套 Prompt；代表材料不足 4 份时必须全部选择。
 选择覆盖不同表达或判断方式的材料，不要因样本内容预设后续单篇的主题。
 """.strip()
         return await self._invoke_structured(
@@ -159,7 +203,7 @@ class ExpertModelTasks:
         """只依据既有方法与小样 Review 收敛下一版方法。"""
 
         prompt = f"""
-你是“{project_name}”专家作品的总编。用户已经认可第一版学习方向，现在请求唯一一次方法校准。
+你正在为“{project_name}”校准已经确认过的学习方法。用户已经认可第一版学习方向，现在请求唯一一次方法校准。
 
 你只能阅读下方当前学习方案、编译底稿、完整 Prompt 包，
 以及同一批小样的最终笔记和独立 Review。
@@ -168,9 +212,22 @@ class ExpertModelTasks:
 你的职责是判断 Review 暴露的哪些问题属于可泛化的 Prompt 职责缺口，
 例如 Author、Reviewer 或修订任务没有明确保护何种判断关系、证据纪律或材料边界。只收敛这类职责。
 
+同时检查单篇 Prompt 是否仍把 Author 和修订者设定成从材料中学艺、把 Reviewer 设定成独立复核者。若 Prompt 把这些任务写成
+替编排者交付材料、替后续角色整理目录，或把代表样本中的具体概念变成逐篇必检项，这是可泛化的职责缺口，必须改正。
+学习方案也会被单篇任务直接继承：其中只能保留学习深度和共同的学艺方向，不得写入代表样本的具体概念、案例类型或整书编排身份。
+学艺者可以从作者实际展示的结构、判断转换和取舍中归纳门道；归纳必须区分
+“材料结构/信号 -> 作者如何转成判断或表现 -> 适用条件与边界”，不得假定每篇都有相同步骤，
+也不得用外部知识补成作者没展示的理论。
+同时检查 Author 是否提炼作者明确提出的领域专属知识、Reviewer 是否保护这些知识的原意、含义和适用条件。
+不得因为外部共识、普通常识或可否普遍证明而删除或要求收窄材料中明确的作者口径。
+同时检查直接判断是否保留了必要的机制、经验依据或条件，且没有把案例过程误作独立知识。
+主题与讲义 Prompt 必须把多篇笔记写成“结构/信号 -> 作者的转换判断 -> 机制或作者口径 -> 条件/分叉”的手册；
+同族知识能按关系、作用方式、位置、介质或其他材料支持的显式轴分型时，必须写出该轴和各类的迁移方向，案例只作类内实例。
+
 小样中的术语、指标、动作、案例类型、具体结论和转写细节都只是问题证据，
 不得写进任何单篇 Prompt，也不得变成后续材料的固定检查项。单篇转写、归属或表述问题不能升级为项目规则；
-只有材料明确存在多来源且来源差异会改变同一判断的处理时，才可在方法中保留该差异。不要要求判断材料是否来自同一位老师或说话人。
+只有材料明确存在多来源且来源差异会改变同一判断的处理时，才可在方法中保留该差异。
+阶段身份统一使用“作者”或通用角色，不把项目名、作者姓名或人物名写进 Prompt。
 
 如果某条 Review 问题不能泛化为 Prompt 职责，保留现有方法，不要为了改动而添加规则。
 输出必须是可直接替换当前版本的完整学习方案、
@@ -214,7 +271,7 @@ class ExpertModelTasks:
 
 若残余问题仍会系统性扭曲后续材料的判断、证据、条件或边界，或 V2 小样无法形成可用笔记，
 则返回 `needs_attention`。不要按问题数量、字数或固定比例机械判断；根据问题对方法级行为的实际影响作出结论。
-不要判断材料是否来自同一位老师或说话人。
+不要把具体人物身份名称写进阶段 Prompt。
 
 V1 小样基线：
 {json.dumps(v1_samples, ensure_ascii=False, indent=2)}
@@ -234,6 +291,7 @@ V2 小样结果：
         *,
         model_spec: str,
         learning_plan: str,
+        compilation_brief: str,
         stage_prompt: str,
         material_alias: str,
         title: str,
@@ -245,6 +303,9 @@ V2 小样结果：
         prompt = f"""
 已确认的项目学习方案：
 {learning_plan}
+
+已确认的项目专属编译底稿：
+{compilation_brief}
 
 当前材料别名：{material_alias}
 标题：{title}
@@ -265,6 +326,7 @@ V2 小样结果：
         *,
         model_spec: str,
         learning_plan: str,
+        compilation_brief: str,
         stage_prompt: str,
         material_alias: str,
         title: str,
@@ -277,6 +339,9 @@ V2 小样结果：
         prompt = f"""
 已确认的项目学习方案：
 {learning_plan}
+
+已确认的项目专属编译底稿：
+{compilation_brief}
 
 当前材料别名：{material_alias}
 标题：{title}
@@ -300,6 +365,7 @@ V2 小样结果：
         *,
         model_spec: str,
         learning_plan: str,
+        compilation_brief: str,
         stage_prompt: str,
         material_alias: str,
         title: str,
@@ -313,6 +379,9 @@ V2 小样结果：
         prompt = f"""
 已确认的项目学习方案：
 {learning_plan}
+
+已确认的项目专属编译底稿：
+{compilation_brief}
 
 当前材料别名：{material_alias}
 标题：{title}
@@ -408,11 +477,11 @@ V2 小样结果：
         excluded_materials: str,
         feedback: str = "",
     ) -> TopicMapResult:
-        """由项目内唯一总编判断入口形成主题地图和编辑方案。"""
+        """形成项目的主题地图和组织方案。"""
 
         feedback_section = f"\n\n用户对上一版组织方式的反馈：\n{feedback.strip()}" if feedback.strip() else ""
         task_instruction = """
-你是当前项目唯一的总编模型。候选研究只是输入，不是目录；由你统一决定主题边界、
+你负责当前项目唯一的主题组织决策。候选研究只是输入，不是目录；由你统一决定主题边界、
 来源冲突口径、讲义顺序、导航思路和 1～2 个有代表性的讲义小样。
 """.strip()
         prompt = f"""
@@ -434,6 +503,53 @@ V2 小样结果：
             prompt=prompt,
         )
 
+    async def humanize_topic_map(
+        self,
+        *,
+        model_spec: str,
+        topic_map: TopicMapResult,
+    ) -> HumanizedTopicMapResult:
+        """调用说人话 Skill 改写用户可见的主题地图。"""
+
+        prompt = f"""
+下面是已经确定的主题地图。只改写给用户看的说明、标题、问题、目的和边界；不要改主题数量、
+topic_key、笔记归属、顺序或小样选择。未纳入笔记的别名必须原样保留在响应字段中，但不要写进展示文案。
+
+plan_markdown 是页面开头的导读。它必须直接讲读者实际会遇到的问题或局面和能获得的判断，不得以
+“本书按……组织”“本项目……”或“主题地图……”开头，也不要解释生成过程。
+
+主题地图：
+{json.dumps(topic_map.model_dump(), ensure_ascii=False, indent=2)}
+""".strip()
+        return await self._invoke_structured(
+            model_spec,
+            HumanizedTopicMapResult,
+            system=_stage_system(SHUORENHUA_ARTIFACT_SKILL),
+            prompt=prompt,
+        )
+
+    async def humanize_visible_artifact(
+        self,
+        *,
+        model_spec: str,
+        artifact_name: str,
+        content_markdown: str,
+    ) -> HumanizedTextResult:
+        """调用说人话 Skill 改写一份已通过的展示或发布内容。"""
+
+        prompt = f"""
+请改写下面的{artifact_name}。保留全部 Markdown 标题、列表、链接、引用标记和事实关系。
+
+原文：
+{content_markdown}
+""".strip()
+        return await self._invoke_structured(
+            model_spec,
+            HumanizedTextResult,
+            system=_stage_system(SHUORENHUA_ARTIFACT_SKILL),
+            prompt=prompt,
+        )
+
     async def prepare_topic_evidence(
         self,
         *,
@@ -446,7 +562,7 @@ V2 小样结果：
         """让普通研究助手为当前主题选择证据并列出冲突和遗漏。"""
 
         task_instruction = """
-你现在只为总编准备当前主题的证据包，不决定主题地图，也不写讲义。
+你现在只为当前主题准备证据包，不决定主题地图，也不写讲义。
 只能选择提供的已通过笔记及其原文行号依据；不得新增材料外判断。
 """.strip()
         prompt = f"""
@@ -481,11 +597,11 @@ V2 小样结果：
         notes: str,
         evidence_pack: TopicEvidencePack,
     ) -> HandoutDraftResult:
-        """由总编模型依据编辑方案形成一篇讲义候选稿。"""
+        """依据组织方案形成一篇讲义候选稿。"""
 
         task_instruction = """
 本次响应必须同时提交讲义候选稿和完整的下一版有效编辑方案。
-下一版编辑方案供后续总编任务直接使用，不是修改摘要或增量补丁。
+下一版组织方案供后续讲义任务直接使用，不是修改摘要或增量补丁。
 只能依据当前编辑方案与当前任务更新本主题的状态、结论和待解决问题；
 其他既定决定必须保留，不得依赖会话记忆或未提供的材料补写。
 """.strip()
@@ -508,7 +624,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             HandoutDraftResult,
-            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
+            system=_stage_system(stage_prompt, task_instruction),
             prompt=prompt,
         )
 
@@ -564,11 +680,11 @@ V2 小样结果：
         handout: HandoutDraftResult,
         review: HandoutReviewResult,
     ) -> HandoutDraftResult:
-        """由总编仅按具体 Review 问题定点修订当前讲义。"""
+        """仅按具体 Review 问题定点修订当前讲义。"""
 
         task_instruction = """
 本次响应必须同时提交修订后的讲义和完整的下一版有效编辑方案。
-下一版编辑方案供后续总编任务直接使用，不是修改摘要或增量补丁。
+下一版组织方案供后续讲义任务直接使用，不是修改摘要或增量补丁。
 只能依据当前编辑方案与当前修订任务更新本主题的状态、结论和待解决问题；
 其他既定决定必须保留，不得依赖会话记忆或未提供的材料补写。
 """.strip()
@@ -595,7 +711,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             HandoutDraftResult,
-            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
+            system=_stage_system(stage_prompt, task_instruction),
             prompt=prompt,
         )
 
@@ -608,10 +724,10 @@ V2 小样结果：
         editorial_plan: str,
         handouts: str,
     ) -> BookReviewResult:
-        """由总编检查全书术语、主题边界、冲突、重复和缺口。"""
+        """检查全书术语、主题边界、冲突、重复和缺口。"""
 
         task_instruction = """
-你是当前项目唯一的总编模型。现在只做全书一致性检查，不新增材料外判断。
+你现在只做全书一致性检查，不新增材料外判断。
 检查术语、主题边界、多来源观点、重复、缺口、证据边界和回答姿态；
 需要修订时必须指明受影响的 topic_key 和具体方向。
 
@@ -661,7 +777,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             NavigationResult,
-            system=_stage_system(stage_prompt, ARTIFACT_HUMANIZER_ZH_GUIDANCE),
+            system=_stage_system(stage_prompt),
             prompt=prompt,
         )
 
@@ -719,7 +835,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             NavigationResult,
-            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
+            system=_stage_system(stage_prompt, task_instruction),
             prompt=prompt,
         )
 
@@ -755,7 +871,7 @@ V2 小样结果：
         return await self._invoke_structured(
             model_spec,
             SkillBodyResult,
-            system=_stage_system(stage_prompt, "\n\n".join((task_instruction, ARTIFACT_HUMANIZER_ZH_GUIDANCE))),
+            system=_stage_system(stage_prompt, task_instruction),
             prompt=prompt,
         )
 

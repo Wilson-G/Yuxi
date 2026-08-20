@@ -14,6 +14,7 @@ from server.utils.auth_middleware import get_db, get_required_user
 from yuxi.agents.models import resolve_chat_model_spec
 from yuxi.config.options import system_options
 from yuxi.expert.service import (
+    accept_project_method_with_concerns,
     confirm_project_method,
     create_expert_project,
     exclude_material,
@@ -255,6 +256,32 @@ async def confirm_project_method_route(
         raise HTTPException(
             status_code=503,
             detail="确认结果已保存，但后台任务暂时无法投递；Worker 恢复后会继续",
+        ) from exc
+
+
+@expert_projects.post("/{project_id}/method/accept-with-concerns")
+async def accept_project_method_with_concerns_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """用户接受小样内容问题后，直接按当前方法开始批量学习。"""
+
+    try:
+        method_version = await accept_project_method_with_concerns(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        await enqueue_material_learning(project_id, method_version)
+        return {"project_id": project_id, "method_version": method_version, "status": "running"}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to accept expert method with concerns {}", project_id)
+        raise HTTPException(
+            status_code=503,
+            detail="接受结果已保存，但后台任务暂时无法投递；Worker 恢复后会继续",
         ) from exc
 
 

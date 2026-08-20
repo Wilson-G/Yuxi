@@ -16,6 +16,8 @@ from yuxi.expert import organization_service, storage
 from yuxi.expert.contracts import (
     HandoutDraftResult,
     HandoutReviewResult,
+    HumanizedTextResult,
+    HumanizedTopicMapResult,
     PlanningGroupsResult,
     TopicEvidencePack,
     TopicMapResult,
@@ -185,6 +187,7 @@ class OrganizationModelTasks:
         self.reviewer_editorial_plans: list[str] = []
         self.reviser_notes = ""
         self.reviser_editorial_plan = ""
+        self.humanized_artifacts: list[str] = []
 
     async def plan_note_groups(self, **_kwargs) -> PlanningGroupsResult:
         return PlanningGroupsResult(
@@ -254,6 +257,41 @@ class OrganizationModelTasks:
             sample_topic_keys=["diagnosis"],
             sample_selection_reason="同时覆盖判断顺序和材料边界",
         )
+
+    async def humanize_topic_map(self, **_kwargs) -> HumanizedTopicMapResult:
+        return HumanizedTopicMapResult(
+            plan_markdown="# 这批内容怎么排\n按读者会遇到的问题安排。",
+            topics=[
+                {
+                    "topic_key": "diagnosis",
+                    "title": "遇到问题时，先看哪里出了岔子",
+                    "section": "先判断问题",
+                    "reader_question": "遇到问题时，第一步该看什么？",
+                    "purpose": "帮助读者先找到问题。",
+                    "boundaries": "材料没有说清时先停下来。",
+                },
+                {
+                    "topic_key": "action",
+                    "title": "条件满足后，下一步怎么做",
+                    "section": "决定怎么做",
+                    "reader_question": "条件满足后，下一步怎么做？",
+                    "purpose": "说明接下来该怎么选。",
+                    "boundaries": "不要把单个案例当成通用做法。",
+                },
+            ],
+            unassigned_notes=[{"note_alias": "N004", "reason": "只有单个案例，暂时不单独成篇。"}],
+            sample_selection_reason="这篇能看出材料怎样教人先判断再行动。",
+        )
+
+    async def humanize_visible_artifact(
+        self,
+        *,
+        artifact_name: str,
+        content_markdown: str,
+        **_kwargs,
+    ) -> HumanizedTextResult:
+        self.humanized_artifacts.append(artifact_name)
+        return HumanizedTextResult(content_markdown=f"# 可读版\n\n{content_markdown}")
 
     async def prepare_topic_evidence(self, *, topic: str, **_kwargs) -> TopicEvidencePack:
         self.evidence_topic = topic
@@ -593,11 +631,10 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
     assert all(batch.result["group_key"] == batch.group_key for batch in batches)
     assert project is not None
     assert project.status == "awaiting_confirmation"
-    assert project.topic_map["unassigned_notes"] == [
-        {"note_alias": "N004", "reason": "只有个案信息，不足以形成正式主题"}
-    ]
+    assert project.topic_map["unassigned_notes"] == [{"note_alias": "N004", "reason": "只有单个案例，暂时不单独成篇。"}]
     assert len(project.organization_samples) == 1
     assert project.organization_samples[0]["status"] == "passed"
+    assert project.organization_samples[0]["handout"].startswith("# 可读版")
     assert tasks.revision_calls == 1
     assert tasks.review_calls == 2
     assert "停止条件应由哪一段原文支撑？" in tasks.evidence_topic
@@ -613,6 +650,11 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
         "diagnosis": (True, "passed", 1),
         "action": (False, "pending", 0),
     }
+    assert {topic.topic_key: topic.title for topic in topics} == {
+        "diagnosis": "遇到问题时，先看哪里出了岔子",
+        "action": "条件满足后，下一步怎么做",
+    }
+    assert tasks.humanized_artifacts == ["讲义小样《遇到问题时，先看哪里出了岔子》"]
 
     async with organization_env.factory() as db:
         confirmed_version = await organization_service.confirm_organization_stage(
@@ -634,4 +676,57 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
         "diagnosis": "passed",
         "action": "pending",
     }
+    confirmed_sample = next(topic for topic in topics if topic.topic_key == "diagnosis")
+    assert confirmed_sample.handout == project.organization_samples[0]["handout"]
+    assert confirmed_sample.handout_contract["handout_markdown"] == project.organization_samples[0]["handout"]
     assert json.loads(json.dumps(project.topic_map, ensure_ascii=False))["sample_topic_keys"] == ["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_organization_stops_for_an_existing_sample_review_problem(organization_env) -> None:
+    """小样未通过时保留 Review 原因，不能伪装成等待确认。"""
+
+    await _seed_organization_project(organization_env, material_count=1)
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        assert project is not None
+        project.stage = "organization"
+        project.status = "running"
+        project.organization_version = 1
+        project.planning_groups = [{"group_key": "existing"}]
+        project.topic_map = {"topics": [{"topic_key": "sample"}]}
+        await repo.replace_topics(
+            PROJECT_ID,
+            1,
+            [
+                {
+                    "topic_id": "sample-topic",
+                    "topic_key": "sample",
+                    "title": "小样主题",
+                    "section": "测试",
+                    "reader_question": "应该怎样判断？",
+                    "purpose": "验证小样处理状态",
+                    "boundaries": "材料没有展开验证方法",
+                    "position": 1,
+                    "material_ids": ["material-1"],
+                    "evidence_requirements": [],
+                    "is_sample": True,
+                    "status": "needs_attention",
+                    "handout": "# 已审小样",
+                    "review": {"decision": "revise", "summary": "需要收回一处越界判断", "issues": []},
+                    "error_message": "需要收回一处越界判断",
+                }
+            ],
+        )
+        await db.commit()
+
+    result = await organization_service.run_organization_stage(PROJECT_ID, 1, model_tasks=object())
+
+    async with organization_env.factory() as db:
+        project = await ExpertRepository(db).get_project(PROJECT_ID)
+    assert result == {"project_id": PROJECT_ID, "organization_version": 1, "status": "needs_attention"}
+    assert project is not None
+    assert project.status == "needs_attention"
+    assert project.error_message == "需要收回一处越界判断"
+    assert project.organization_samples[0]["reason"] == "需要收回一处越界判断"

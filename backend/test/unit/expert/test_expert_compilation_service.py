@@ -18,6 +18,7 @@ from yuxi.expert.contracts import (
     BookReviewResult,
     HandoutDraftResult,
     HandoutReviewResult,
+    HumanizedTextResult,
     NavigationResult,
     SkillBodyResult,
     TopicEvidencePack,
@@ -183,6 +184,7 @@ class CompilationModelTasks:
         self.reviewer_notes: dict[str, list[str]] = {}
         self.reviser_notes: dict[str, str] = {}
         self.book_calls = 0
+        self.humanized_artifacts: list[str] = []
 
     @staticmethod
     def _topic_key(topic: str) -> str:
@@ -254,6 +256,16 @@ class CompilationModelTasks:
 
     async def write_skill_body(self, **_kwargs) -> SkillBodyResult:
         return SkillBodyResult(skill_markdown="这是一位说明条件、边界和停止线的专家。")
+
+    async def humanize_visible_artifact(
+        self,
+        *,
+        artifact_name: str,
+        content_markdown: str,
+        **_kwargs,
+    ) -> HumanizedTextResult:
+        self.humanized_artifacts.append(artifact_name)
+        return HumanizedTextResult(content_markdown=f"{content_markdown}\n\n这是一版更好读的表达。")
 
     def _draft(self, topic_key: str, *, suffix: str) -> HandoutDraftResult:
         return HandoutDraftResult(
@@ -395,6 +407,15 @@ async def test_book_revision_and_context_grouping_finish_candidate_without_activ
     }
     assert all(topic.status == "passed" for topic in topics)
     assert "全书定点修订" in next(topic.handout for topic in topics if topic.topic_key == "topic-a")
+    assert tasks.humanized_artifacts == [
+        "正式讲义《主题 A》",
+        "正式讲义《主题 B》",
+        "正式讲义《主题 C》",
+        "读者导航",
+        "专家 Skill 使用入口",
+    ]
+    assert "更好读的表达" in project.navigation
+    assert "更好读的表达" in project.skill_body
 
     assert len(tasks.book_inputs) == 4
     assert all(topic_key in tasks.book_inputs[0] for topic_key in topic_keys)
@@ -410,3 +431,68 @@ async def test_book_revision_and_context_grouping_finish_candidate_without_activ
     assert "topic-a" in tasks.navigation_inputs[2] and "topic-b" not in tasks.navigation_inputs[2]
     assert "topic-b" in tasks.navigation_inputs[3] and "topic-a" not in tasks.navigation_inputs[3]
     assert "topic-c" in tasks.navigation_inputs[4]
+
+
+@pytest.mark.asyncio
+async def test_confirmed_sample_handout_is_not_humanized_again(compilation_env) -> None:
+    """用户确认过的可读小样直接进入发布，成书阶段只改写其他讲义。"""
+
+    await _seed_compilation_project(compilation_env)
+    confirmed_handout = "# 用户确认的小样\n\n按确认版本直接发布。"
+    async with compilation_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        sample = await repo.lock_topic("id-topic-a")
+        assert project is not None and sample is not None
+        sample.is_sample = True
+        sample.status = "passed"
+        sample.handout = confirmed_handout
+        sample.evidence_pack = {
+            "topic_key": "topic-a",
+            "evidence": [
+                {
+                    "note_alias": "N001",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "supports": "topic-a 的关键判断",
+                }
+            ],
+            "conflicts": [],
+            "omissions": [],
+        }
+        sample.handout_contract = {
+            "topic_key": "topic-a",
+            "handout_markdown": confirmed_handout,
+            "citations": sample.evidence_pack["evidence"],
+            "editorial_plan_markdown": "# 已确认的编辑方案",
+        }
+        sample.review = {"decision": "pass", "summary": "小样已通过", "issues": []}
+        project.organization_samples = [
+            {
+                "topic_id": sample.topic_id,
+                "topic_key": sample.topic_key,
+                "title": sample.title,
+                "status": "passed",
+                "handout": confirmed_handout,
+                "review": sample.review,
+                "reason": "",
+            }
+        ]
+        await db.commit()
+
+    tasks = CompilationModelTasks()
+    result = await compilation_service.run_handout_compilation(PROJECT_ID, 1, model_tasks=tasks)
+
+    async with compilation_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        topics = await repo.list_topics(PROJECT_ID, 1)
+    assert result["status"] == "ready"
+    assert project is not None
+    assert next(topic.handout for topic in topics if topic.topic_key == "topic-a") == confirmed_handout
+    assert tasks.humanized_artifacts == [
+        "正式讲义《主题 B》",
+        "正式讲义《主题 C》",
+        "读者导航",
+        "专家 Skill 使用入口",
+    ]

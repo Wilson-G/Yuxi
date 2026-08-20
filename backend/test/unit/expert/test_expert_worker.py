@@ -163,6 +163,38 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
 
 
 @pytest.mark.asyncio
+async def test_organization_recovery_uses_a_new_job_id_after_interruption(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker 重启后不能复用已经耗尽重试次数的组织任务 ID。"""
+
+    await _add_project(
+        worker_env,
+        "organization",
+        stage="organization",
+        status="running",
+        method_version=1,
+        organization_version=2,
+    )
+    jobs: list[tuple[tuple, dict]] = []
+
+    class FakePool:
+        async def enqueue_job(self, *args, **kwargs) -> None:
+            jobs.append((args, kwargs))
+
+    async def fake_get_arq_pool():
+        return FakePool()
+
+    monkeypatch.setattr(worker, "get_arq_pool", fake_get_arq_pool)
+
+    await worker.recover_expert_project_jobs()
+
+    assert jobs[0][0] == ("process_expert_organization", "organization", 2)
+    assert jobs[0][1]["_job_id"].startswith("expert:organization:organization:v2:recovery-")
+
+
+@pytest.mark.asyncio
 async def test_method_calibration_queues_material_learning_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

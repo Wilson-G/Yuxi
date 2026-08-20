@@ -115,16 +115,17 @@ test('批量学习状态可筛选，并说明修订由后台继续处理', async
 
   assert.match(view, /const materialFilter = ref\('all'\)/)
   assert.match(view, /v-for="option in materialFilterOptions"/)
-  assert.match(view, /每份材料在后台完成笔记、Review 和必要的自动修订/)
+  assert.match(view, /每份材料在后台完成笔记、Review\s+和最多两次自动修订/)
   assert.match(projectUtils, /review_revise: '自动修订中'/)
 })
 
-test('项目定向页面允许用户选择至多 20 份代表性材料', async () => {
+test('项目定向页面按当前材料数计算代表材料范围', async () => {
   const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
 
-  assert.match(view, /const maxRepresentativeMaterials = 20/)
-  assert.match(view, /选择 1～20 份代表性材料/)
-  assert.match(view, /最多选择 \$\{maxRepresentativeMaterials\} 份代表性材料/)
+  assert.match(view, /Math\.min\(4, selectableMaterials\.value\.length\)/)
+  assert.match(view, /Math\.min\(20, selectableMaterials\.value\.length\)/)
+  assert.match(view, /选择 \{\{ representativeRangeLabel \}\}代表性材料/)
+  assert.match(view, /selectedRepresentativeIds\.value\.length < minimumRepresentativeMaterials\.value/)
 })
 
 test('方法小样的系统失败可用原代表材料重新试跑', async () => {
@@ -135,21 +136,62 @@ test('方法小样的系统失败可用原代表材料重新试跑', async () =>
   assert.match(view, /expertApi\.startOrientation\(projectId\.value, project\.value\.representative_material_ids/)
 })
 
+test('小样内容问题可由用户接受后开始逐份学习', async () => {
+  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
+  const api = await readFile(new URL('../../src/apis/expert_api.js', import.meta.url), 'utf8')
+
+  assert.match(view, /hasMethodSampleConcerns/)
+  assert.match(view, /接受小样问题并开始学习/)
+  assert.match(view, /expertApi\.acceptMethodWithConcerns\(projectId\.value\)/)
+  assert.match(api, /method\/accept-with-concerns/)
+})
+
 test('等待确认时保留用户反馈调整方法的入口', async () => {
   const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
 
   assert.match(view, /project\.status === 'awaiting_confirmation'/)
   assert.match(view, /按意见调整学习方向/)
   assert.match(view, /project\.learning_plan \|\| ''/)
-  assert.doesNotMatch(view, /<h3>项目学习方案<\/h3>/)
+  assert.match(view, /historySelection === 'orientation-plan'/)
 })
 
 test('方法确认后自动校准一次，不开放第二个方法确认点', async () => {
   const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
   const api = await readFile(new URL('../../src/apis/expert_api.js', import.meta.url), 'utf8')
 
-  assert.match(view, /根据小样 Review 自动校准一次方法并复跑原小样/)
+  assert.match(view, /根据小样 Review 中的可泛化问题自动校准一次并复跑原小样/)
   assert.match(view, /确认并开始校准/)
   assert.doesNotMatch(view, /calibrateMethod/)
   assert.doesNotMatch(api, /method\/calibrate/)
+})
+
+test('已完成项目可回看五个阶段的真实产物', async () => {
+  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
+  const topicReader = await readFile(
+    new URL('../../src/components/extensions/ExpertTopicReader.vue', import.meta.url),
+    'utf8'
+  )
+
+  assert.match(view, /reviewStage === 'orientation'/)
+  assert.match(view, /reviewStage === 'material_learning'/)
+  assert.match(view, /reviewStage === 'organization'/)
+  assert.match(view, /reviewStage === 'handout_compilation'/)
+  assert.match(view, /historyMaterialStatusItems/)
+  assert.match(view, /'review_revise'/)
+  assert.match(view, /<ExpertTopicReader/)
+  assert.match(topicReader, /讲义目录/)
+  assert.match(topicReader, /selectedTopic\.handout/)
+  assert.match(topicReader, /@media \(max-width: 768px\)/)
+  assert.match(topicReader, /grid-template-columns: minmax\(0, 1fr\)/)
+  assert.match(view, /finalReviewMarkdown/)
+})
+
+test('专家成品正文隐藏重复元数据并限制阅读宽度', async () => {
+  const view = await readFile(new URL('../../src/views/ExpertProjectView.vue', import.meta.url), 'utf8')
+
+  assert.match(view, /tab="专家说明"/)
+  assert.match(view, /tab="使用导航"/)
+  assert.match(view, /\.primary-preview-document/)
+  assert.match(view, /:deep\(\.frontmatter-card\)/)
+  assert.match(view, /max-width: 760px/)
 })

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.expert.contracts import (
     HandoutDraftResult,
     HandoutReviewResult,
+    HumanizedTopicMapResult,
     PlanningGroupsResult,
     ProjectPromptPack,
     TopicEvidencePack,
@@ -125,12 +126,17 @@ async def run_organization_stage(
             feedback=snapshot["organization_feedback"],
         )
         _validate_topic_map(topic_map, set(note_aliases.values()))
+        display_topic_map = await tasks.humanize_topic_map(
+            model_spec=snapshot["model_spec"],
+            topic_map=topic_map,
+        )
+        topic_map = _merge_humanized_topic_map(topic_map, display_topic_map)
         topics = await _save_topic_map(project_id, organization_version, topic_map, note_aliases)
 
     sample_results = []
     for topic in topics:
         if topic.is_sample:
-            if topic.status == "passed":
+            if topic.status in {"passed", "needs_attention"}:
                 sample_results.append(_serialize_sample_topic(topic))
             else:
                 sample_results.append(
@@ -144,6 +150,14 @@ async def run_organization_stage(
                 )
 
     needs_attention = [item for item in sample_results if item["status"] == "needs_attention"]
+    if not needs_attention:
+        for sample in sample_results:
+            humanized = await tasks.humanize_visible_artifact(
+                model_spec=snapshot["model_spec"],
+                artifact_name=f"讲义小样《{sample['title']}》",
+                content_markdown=sample["handout"],
+            )
+            sample["handout"] = humanized.content_markdown
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
@@ -217,6 +231,22 @@ async def confirm_organization_stage(db: AsyncSession, *, project_id: str, creat
     samples = [topic for topic in topics if topic.is_sample]
     if not samples or any(topic.status != "passed" for topic in samples):
         raise ValueError("讲义小样尚未全部通过独立 Review")
+    sample_results = {
+        item.get("topic_id"): item
+        for item in project.organization_samples
+        if isinstance(item, dict) and item.get("topic_id")
+    }
+    if set(sample_results) != {topic.topic_id for topic in samples}:
+        raise ValueError("组织方案保存的讲义小样与正式主题不一致")
+    for topic in samples:
+        confirmed_handout = str(sample_results[topic.topic_id].get("handout") or "").strip()
+        if not confirmed_handout:
+            raise ValueError(f"讲义小样《{topic.title}》缺少确认正文")
+        topic.handout = confirmed_handout
+        topic.handout_contract = {
+            **(topic.handout_contract or {}),
+            "handout_markdown": confirmed_handout,
+        }
     for topic in topics:
         if not topic.is_sample:
             topic.status = "pending"
@@ -358,6 +388,43 @@ async def _research_one_batch(
         batch.error_message = None
 
 
+def _merge_humanized_topic_map(
+    topic_map: TopicMapResult,
+    humanized: HumanizedTopicMapResult,
+) -> TopicMapResult:
+    """将说人话版本写入展示字段，保留总编确定的主题归属与顺序。"""
+
+    raw_by_key = {topic.topic_key: topic for topic in topic_map.topics}
+    display_by_key = {topic.topic_key: topic for topic in humanized.topics}
+    if set(display_by_key) != set(raw_by_key):
+        raise ValueError("说人话版本缺少或新增了主题")
+
+    raw_unassigned = {item.note_alias for item in topic_map.unassigned_notes}
+    display_unassigned = {item.note_alias for item in humanized.unassigned_notes}
+    if display_unassigned != raw_unassigned:
+        raise ValueError("说人话版本改变了未纳入笔记范围")
+
+    return topic_map.model_copy(
+        update={
+            "plan_markdown": humanized.plan_markdown,
+            "topics": [
+                raw_by_key[item.topic_key].model_copy(
+                    update={
+                        "title": item.title,
+                        "section": item.section,
+                        "reader_question": item.reader_question,
+                        "purpose": item.purpose,
+                        "boundaries": item.boundaries,
+                    }
+                )
+                for item in humanized.topics
+            ],
+            "unassigned_notes": humanized.unassigned_notes,
+            "sample_selection_reason": humanized.sample_selection_reason,
+        }
+    )
+
+
 async def _save_topic_map(
     project_id: str,
     organization_version: int,
@@ -493,6 +560,8 @@ async def write_topic_handout(
         materials = await repo.list_project_materials(project_id)
         selected = [material for material in materials if material.material_id in set(topic.material_ids or [])]
         topic.status = "writing"
+        if project.stage == "organization":
+            project.message = f"正在编写并 Review 讲义小样《{topic.title}》"
         snapshot = {
             "model_spec": project.model_spec,
             "learning_plan": project.learning_plan or "",

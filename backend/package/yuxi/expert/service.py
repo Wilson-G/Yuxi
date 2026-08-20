@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from pathlib import Path
@@ -130,6 +131,8 @@ async def get_expert_project_detail(
     materials = await repo.list_project_materials(project_id)
     data = project.to_dict()
     data.pop("skill_dir", None)
+    if project.final_review:
+        data["final_review"] = json.loads(project.final_review)
     data["materials"] = [_serialize_material(material) for material in materials]
     data["material_summary"] = _material_summary(materials)
     if project.organization_version > 0:
@@ -229,6 +232,14 @@ async def start_project_orientation(
 
     materials = await repo.list_project_materials(project_id)
     by_id = {item.material_id: item for item in materials}
+    ready_materials = [item for item in materials if item.status == "ready"]
+    minimum_samples = min(4, len(ready_materials))
+    maximum_samples = min(20, len(ready_materials))
+    if len(selected_ids) < minimum_samples:
+        sample_range = (
+            str(minimum_samples) if minimum_samples == maximum_samples else f"{minimum_samples}～{maximum_samples}"
+        )
+        raise ValueError(f"当前项目请选择 {sample_range} 份代表性材料")
     if any(material_id not in by_id or by_id[material_id].status != "ready" for material_id in selected_ids):
         raise ValueError("代表性材料必须已经转换为可靠正文")
     unresolved = [item for item in materials if item.status == "needs_attention"]
@@ -320,6 +331,7 @@ async def run_project_orientation(
     )
     if has_method_candidate:
         learning_plan = project_snapshot["learning_plan"]
+        compilation_brief = project_snapshot["compilation_brief"]
         prompt_pack = ProjectPromptPack.model_validate(project_snapshot["prompt_pack"])
         sample_material_ids = project_snapshot["method_sample_material_ids"]
         _validate_method_contract(learning_plan, project_snapshot["compilation_brief"], prompt_pack)
@@ -342,14 +354,25 @@ async def run_project_orientation(
         _validate_method_contract(method.learning_plan_markdown, method.compilation_brief_markdown, method.prompt_pack)
         selected_aliases = set(method.method_sample_aliases)
         available_aliases = {sample["alias"] for sample in samples}
-        if not selected_aliases <= available_aliases or not 1 <= len(selected_aliases) <= 2:
-            raise ValueError("项目方法没有从代表材料中选择 1～2 份试跑小样")
+        minimum_sample_count = min(4, len(samples))
+        maximum_sample_count = min(5, len(samples))
+        if (
+            not selected_aliases <= available_aliases
+            or not minimum_sample_count <= len(selected_aliases) <= maximum_sample_count
+        ):
+            sample_range = (
+                str(minimum_sample_count)
+                if minimum_sample_count == maximum_sample_count
+                else f"{minimum_sample_count}～{maximum_sample_count}"
+            )
+            raise ValueError(f"项目方法应从代表材料中选择 {sample_range} 份试跑小样")
         sample_material_ids = [
             material.material_id
             for material, sample in zip(representative_materials, samples, strict=True)
             if sample["alias"] in selected_aliases
         ]
         learning_plan = method.learning_plan_markdown
+        compilation_brief = method.compilation_brief_markdown
         prompt_pack = method.prompt_pack
 
         async with pg_manager.get_async_session_context() as db:
@@ -381,6 +404,7 @@ async def run_project_orientation(
         for item in project_snapshot["method_samples"]
         if isinstance(item, dict) and item.get("material_id") in sample_material_ids
     }
+
     async def run_sample(material: Any, sample: dict[str, str]) -> dict[str, Any]:
         result = completed_samples.get(material.material_id)
         if result is not None:
@@ -390,6 +414,7 @@ async def run_project_orientation(
             tasks=tasks,
             model_spec=project_snapshot["model_spec"],
             learning_plan=learning_plan,
+            compilation_brief=compilation_brief,
             prompt_pack=prompt_pack,
             material=material,
             alias=sample["alias"],
@@ -486,6 +511,31 @@ async def confirm_project_method(db: AsyncSession, *, project_id: str, created_b
     project.error_message = None
     project.updated_at = utc_now_naive()
     await db.commit()
+    return project.method_version
+
+
+async def accept_project_method_with_concerns(db: AsyncSession, *, project_id: str, created_by: str) -> int:
+    """由用户接受小样内容问题后直接开始批量学习。"""
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise ValueError("专家项目不存在")
+    if project.stage != ORIENTATION_STAGE or project.status != "needs_attention":
+        raise ValueError("当前项目没有可由用户接受的方法问题")
+    _validate_method_contract(
+        project.learning_plan or "",
+        project.compilation_brief or "",
+        ProjectPromptPack.model_validate(project.prompt_pack),
+    )
+    samples = list(project.method_samples or [])
+    if not samples or not any(item.get("status") == "needs_attention" for item in samples if isinstance(item, dict)):
+        raise ValueError("当前需要处理的状态不是小样内容问题")
+
+    project.method_confirmed_at = utc_now_naive()
+    project.method_calibration_completed_at = utc_now_naive()
+    project.method_calibration_baseline = []
+    await _start_material_learning(db, project, repo)
     return project.method_version
 
 
@@ -837,6 +887,7 @@ async def _learn_one_material(
         snapshot = {
             "model_spec": project.model_spec,
             "learning_plan": project.learning_plan or "",
+            "compilation_brief": project.compilation_brief or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "title": material.title,
             "source_path": material.source_path,
@@ -863,6 +914,7 @@ async def _learn_one_material(
                 tasks=tasks,
                 model_spec=snapshot["model_spec"],
                 learning_plan=snapshot["learning_plan"],
+                compilation_brief=snapshot["compilation_brief"],
                 prompt_pack=snapshot["prompt_pack"],
                 material=material_view,
                 alias="CURRENT_MATERIAL",
@@ -950,8 +1002,13 @@ async def _finish_material_preparation(db: AsyncSession, project_id: str) -> Non
         project.message = f"有 {len(unresolved)} 份材料需要处理"
         project.error_message = unresolved[0].error_message
     elif ready:
+        minimum_samples = min(4, len(ready))
+        maximum_samples = min(20, len(ready))
+        sample_range = (
+            str(minimum_samples) if minimum_samples == maximum_samples else f"{minimum_samples}～{maximum_samples}"
+        )
         project.status = "ready"
-        project.message = "材料正文已准备好，请选择 1～20 份代表样本"
+        project.message = f"材料正文已准备好，请选择 {sample_range} 份代表样本"
         project.error_message = None
     else:
         project.status = "needs_attention"
@@ -966,6 +1023,7 @@ async def _run_method_sample(
     tasks: ExpertModelTasks,
     model_spec: str,
     learning_plan: str,
+    compilation_brief: str,
     prompt_pack: ProjectPromptPack,
     material: Any,
     alias: str,
@@ -980,6 +1038,7 @@ async def _run_method_sample(
         note = await tasks.write_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
+            compilation_brief=compilation_brief,
             stage_prompt=prompt_pack.note_author,
             material_alias=alias,
             title=material.title,
@@ -990,6 +1049,7 @@ async def _run_method_sample(
         review = await tasks.review_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
+            compilation_brief=compilation_brief,
             stage_prompt=prompt_pack.note_reviewer,
             material_alias=alias,
             title=material.title,
@@ -1010,6 +1070,7 @@ async def _run_method_sample(
         revision = await tasks.revise_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
+            compilation_brief=compilation_brief,
             stage_prompt=prompt_pack.note_reviser,
             material_alias=alias,
             title=material.title,
@@ -1024,6 +1085,7 @@ async def _run_method_sample(
         final_review = await tasks.review_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
+            compilation_brief=compilation_brief,
             stage_prompt=prompt_pack.note_reviewer,
             material_alias=alias,
             title=material.title,
@@ -1175,6 +1237,7 @@ def _serialize_material(material: Any) -> dict[str, Any]:
 
 
 __all__ = [
+    "accept_project_method_with_concerns",
     "confirm_project_method",
     "create_expert_project",
     "exclude_material",

@@ -50,7 +50,7 @@ class ProjectMethodResult(ExpertContract):
     learning_plan_markdown: str
     compilation_brief_markdown: str
     prompt_pack: ProjectPromptPack
-    method_sample_aliases: list[str] = Field(min_length=1, max_length=2)
+    method_sample_aliases: list[str] = Field(min_length=1, max_length=5)
 
 
 class MethodCalibrationResult(ExpertContract):
@@ -170,6 +170,32 @@ class TopicMapResult(ExpertContract):
     unassigned_notes: list[UnassignedNote] = Field(default_factory=list)
     sample_topic_keys: list[str]
     sample_selection_reason: str
+
+
+class HumanizedTopicDefinition(ExpertContract):
+    """展示给用户的主题标题、问题与边界。"""
+
+    topic_key: str
+    title: str
+    section: str
+    reader_question: str
+    purpose: str
+    boundaries: str
+
+
+class HumanizedTopicMapResult(ExpertContract):
+    """说人话任务改写后的主题地图展示内容。"""
+
+    plan_markdown: str
+    topics: list[HumanizedTopicDefinition]
+    unassigned_notes: list[UnassignedNote] = Field(default_factory=list)
+    sample_selection_reason: str
+
+
+class HumanizedTextResult(ExpertContract):
+    """说人话任务改写后可直接展示或发布的正文。"""
+
+    content_markdown: str = Field(min_length=1)
 
 
 class TopicEvidenceItem(ExpertContract):
