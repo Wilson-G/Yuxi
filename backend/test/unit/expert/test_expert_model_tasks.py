@@ -28,8 +28,8 @@ class RecordingStructuredModel:
         self.responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
-    async def ainvoke(self, messages: list[BaseMessage]) -> AIMessage:
-        self.calls.append({"messages": list(messages)})
+    async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> AIMessage:
+        self.calls.append({"messages": list(messages), "kwargs": kwargs})
         response = self.responses.pop(0)
         content = (
             response if isinstance(response, str) else json.dumps(response, ensure_ascii=False, separators=(",", ":"))
@@ -86,8 +86,11 @@ def _system_prompt(call: dict[str, Any]) -> str:
     assert len(messages) == 2
     assert isinstance(messages[0], SystemMessage)
     assert isinstance(messages[1], HumanMessage)
-    assert isinstance(messages[0].content, str)
-    return messages[0].content
+    content = messages[0].content
+    if isinstance(content, str):
+        return content
+    assert isinstance(content, list)
+    return "\n".join(str(block.get("text") or "") for block in content if isinstance(block, dict))
 
 
 def _prompt_pack() -> dict[str, str]:
@@ -134,6 +137,124 @@ async def test_model_task_rejects_oversized_input_before_loading_model(monkeypat
         )
 
     assert loader.calls == []
+
+
+@pytest.mark.asyncio
+async def test_gpt_5_6_material_tasks_reuse_stable_explicit_cache_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一方法版本共享缓存前缀，但每个任务仍发送自己的完整材料。"""
+
+    model_info = ModelInfo(
+        provider_id="openai",
+        model_id="gpt-5.6-test",
+        model_type="chat",
+        display_name="GPT 5.6 Test",
+        api_key="sk-test",
+        base_url="https://api.openai.com/v1",
+        provider_type="openai",
+    )
+    monkeypatch.setattr(model_tasks.model_cache, "get_model_info", lambda _model_spec: model_info)
+    first_result = {
+        "decision": "learned",
+        "note_markdown": "第一份判断链",
+        "routing_labels": ["判断条件"],
+        "candidate_questions": [],
+        "evidence": [
+            {
+                "material_alias": "M001",
+                "start_line": 1,
+                "end_line": 1,
+                "supports": "第一份材料支持当前判断",
+            }
+        ],
+    }
+    second_result = {
+        **first_result,
+        "note_markdown": "第二份判断链",
+        "evidence": [
+            {
+                "material_alias": "M002",
+                "start_line": 1,
+                "end_line": 1,
+                "supports": "第二份材料支持当前判断",
+            }
+        ],
+    }
+    model = RecordingStructuredModel([first_result, second_result])
+    tasks = model_tasks.ExpertModelTasks(
+        RecordingModelLoader(model),
+        prompt_cache_namespace="expert:project-1:method:1",
+    )
+
+    for alias, text in (("M001", "第一份完整材料"), ("M002", "第二份完整材料")):
+        await tasks.write_material_note(
+            model_spec="openai:gpt-5.6-test",
+            learning_plan="已确认学习方案",
+            stage_prompt="项目专属笔记 Prompt",
+            material_alias=alias,
+            title=f"材料 {alias}",
+            source="测试来源",
+            text=text,
+        )
+
+    first_call, second_call = model.calls
+    assert first_call["kwargs"] == second_call["kwargs"]
+    assert first_call["kwargs"]["prompt_cache_options"] == {"mode": "explicit"}
+    assert len(first_call["kwargs"]["prompt_cache_key"]) == 64
+    system_content = first_call["messages"][0].content
+    assert isinstance(system_content, list)
+    assert system_content[0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+    assert "已确认学习方案" in _system_prompt(first_call)
+    assert "第一份完整材料" in _prompt(first_call)
+    assert "第二份完整材料" in _prompt(second_call)
+    assert "第一份完整材料" not in _prompt(second_call)
+
+
+@pytest.mark.asyncio
+async def test_other_models_keep_plain_messages_without_cache_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未验证的模型保持原请求，不携带 GPT-5.6 缓存协议字段。"""
+
+    model_info = ModelInfo(
+        provider_id="siliconflow",
+        model_id="deepseek-test",
+        model_type="chat",
+        display_name="DeepSeek Test",
+        api_key="test-key",
+        base_url="https://api.siliconflow.cn/v1",
+        provider_type="openai",
+    )
+    monkeypatch.setattr(model_tasks.model_cache, "get_model_info", lambda _model_spec: model_info)
+    model = RecordingStructuredModel(
+        [
+            {
+                "decision": "no_value",
+                "note_markdown": "",
+                "routing_labels": [],
+                "candidate_questions": [],
+                "evidence": [],
+            }
+        ]
+    )
+    tasks = model_tasks.ExpertModelTasks(
+        RecordingModelLoader(model),
+        prompt_cache_namespace="expert:project-1:method:1",
+    )
+
+    await tasks.write_material_note(
+        model_spec="siliconflow:deepseek-test",
+        learning_plan="已确认学习方案",
+        stage_prompt="项目专属笔记 Prompt",
+        material_alias="M001",
+        title="材料 M001",
+        source="测试来源",
+        text="完整材料",
+    )
+
+    assert model.calls[0]["kwargs"] == {}
+    assert isinstance(model.calls[0]["messages"][0].content, str)
 
 
 @pytest.mark.asyncio
@@ -295,7 +416,8 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     system_prompts = [_system_prompt(call) for call in model.calls]
     stage_prompts = ["NOTE-STAGE-PROMPT", "REVIEW-STAGE-PROMPT", "REVISE-STAGE-PROMPT"]
     for prompt, system_prompt, stage_prompt in zip(prompts, system_prompts, stage_prompts, strict=True):
-        assert learning_plan in prompt
+        assert learning_plan in system_prompt
+        assert learning_plan not in prompt
         assert numbered_text in prompt
         assert "当前材料别名：M007" in prompt
         assert "标题：完整案例" in prompt

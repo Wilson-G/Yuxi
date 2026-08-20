@@ -189,7 +189,9 @@ async def run_handout_compilation(
 ) -> dict[str, Any]:
     """并发准备证据、串行定稿讲义，再完成全书收口和候选 Skill。"""
 
-    tasks = model_tasks or ExpertModelTasks()
+    tasks = model_tasks or ExpertModelTasks(
+        prompt_cache_namespace=f"expert:{project_id}:organization:{organization_version}"
+    )
     snapshot, materials, topics = await _load_compilation_inputs(project_id, organization_version)
     note_aliases = {
         material.material_id: f"N{index:03d}"

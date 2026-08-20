@@ -75,7 +75,9 @@ async def run_organization_stage(
 ) -> dict[str, Any]:
     """形成有意义规划分组、候选研究、主题地图和讲义小样。"""
 
-    tasks = model_tasks or ExpertModelTasks()
+    tasks = model_tasks or ExpertModelTasks(
+        prompt_cache_namespace=f"expert:{project_id}:organization:{organization_version}"
+    )
     snapshot, materials = await _load_organization_inputs(project_id, organization_version)
     note_aliases = {material.material_id: f"N{index:03d}" for index, material in enumerate(materials, start=1)}
 

@@ -865,7 +865,8 @@ async def run_material_learning_stage(
 ) -> dict[str, Any]:
     """在一个独立 Worker 工作中完成一份材料的笔记与 Review。"""
 
-    await _learn_one_material(project_id, material_id, method_version, model_tasks or ExpertModelTasks())
+    tasks = model_tasks or ExpertModelTasks(prompt_cache_namespace=f"expert:{project_id}:method:{method_version}")
+    await _learn_one_material(project_id, material_id, method_version, tasks)
     async with pg_manager.get_async_session_context() as db:
         status = await _finish_material_learning(db, project_id, method_version)
     return {
