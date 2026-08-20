@@ -40,10 +40,6 @@ export const startExpertOrientation = async (projectId, representativeMaterialId
 export const confirmExpertMethod = async (projectId) =>
   apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/confirm`, {})
 
-/** 用户接受小样内容问题，按当前方法直接开始逐份学习。 */
-export const acceptExpertMethodWithConcerns = async (projectId) =>
-  apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/accept-with-concerns`, {})
-
 /** 只重跑一份正文转换失败的材料。 */
 export const retryExpertMaterialConversion = async (projectId, materialId) =>
   apiAdminPost(
@@ -115,7 +111,6 @@ export const expertApi = {
   getMaterialText: getExpertMaterialText,
   startOrientation: startExpertOrientation,
   confirmMethod: confirmExpertMethod,
-  acceptMethodWithConcerns: acceptExpertMethodWithConcerns,
   retryMaterialConversion: retryExpertMaterialConversion,
   retryMaterialLearning: retryExpertMaterialLearning,
   excludeMaterial: excludeExpertMaterial,

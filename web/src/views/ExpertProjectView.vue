@@ -362,16 +362,6 @@
                     重新试跑当前方法
                   </a-button>
                   <a-button
-                    v-if="canAcceptMethodConcerns"
-                    type="primary"
-                    :loading="actionKey === 'accept-method-concerns'"
-                    :disabled="Boolean(actionKey)"
-                    @click="acceptMethodWithConcerns"
-                  >
-                    <Check :size="14" />
-                    接受小样问题并开始学习
-                  </a-button>
-                  <a-button
                     v-if="project.status === 'awaiting_confirmation'"
                     :loading="actionKey === 'revise-method'"
                     :disabled="Boolean(actionKey) || !methodFeedback.trim()"
@@ -1029,7 +1019,6 @@ import ExpertTopicReader from '@/components/extensions/ExpertTopicReader.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import {
   EXPERT_STAGE_ITEMS,
-  canAcceptExpertMethodConcerns,
   canDeleteExpertProject,
   canExcludeExpertMaterial,
   canPauseExpertProject,
@@ -1116,7 +1105,6 @@ const filteredMaterials = computed(() => {
 const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
-const canAcceptMethodConcerns = computed(() => canAcceptExpertMethodConcerns(project.value))
 const selectableMaterials = computed(() =>
   (project.value?.materials || []).filter((material) => material.status === 'ready')
 )
@@ -1326,23 +1314,6 @@ const confirmMethod = () => {
         'confirm-method',
         () => expertApi.confirmMethod(projectId.value),
         '学习方向已确认，正在校准方法并重新试跑小样'
-      )
-  })
-}
-
-/** 用户明确接受小样的内容残余后，按当前方法进入逐份学习。 */
-const acceptMethodWithConcerns = () => {
-  Modal.confirm({
-    title: '接受当前小样问题并开始学习？',
-    content:
-      '系统会保留这些小样 Review 供后续查看，并按当前学习方案开始逐份学习；不会再自动校准或重跑小样。',
-    okText: '接受并开始学习',
-    cancelText: '继续调整方法',
-    onOk: () =>
-      runAction(
-        'accept-method-concerns',
-        () => expertApi.acceptMethodWithConcerns(projectId.value),
-        '已接受当前小样问题，正在开始逐份学习'
       )
   })
 }

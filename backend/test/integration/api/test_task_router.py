@@ -51,11 +51,6 @@ async def test_standard_user_keeps_tasker_read_contract_without_expert_projectio
             "/api/expert-projects/not-real/orientation",
             {"json": {"representative_material_ids": ["material-1"]}},
         ),
-        (
-            "post",
-            "/api/expert-projects/not-real/method/accept-with-concerns",
-            {},
-        ),
     ],
 )
 async def test_expert_project_routes_require_admin(test_client, standard_user, method, path, kwargs):

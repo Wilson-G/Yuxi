@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  canAcceptExpertMethodConcerns,
   canDeleteExpertProject,
   canExcludeExpertMaterial,
   canPauseExpertProject,
@@ -129,35 +128,6 @@ test('项目定向运行时进入学习方案与小样生成视图', () => {
     isExpertMethodPreparationRunning({ stage: 'material_learning', status: 'running' }),
     false
   )
-})
-
-test('小样只剩有限修订后的内容问题时允许用户接受', () => {
-  const passed = {
-    material_id: 'material-1',
-    status: 'passed',
-    final_review: { decision: 'pass', issues: [] }
-  }
-  const contentConcern = {
-    material_id: 'material-2',
-    status: 'needs_attention',
-    revision_count: 2,
-    final_review: { decision: 'revise', issues: [{ problem: '缺少条件' }] }
-  }
-  const project = {
-    status: 'needs_attention',
-    method_sample_material_ids: ['material-1', 'material-2'],
-    method_samples: [passed, contentConcern]
-  }
-
-  assert.equal(canAcceptExpertMethodConcerns(project), true)
-  assert.equal(
-    canAcceptExpertMethodConcerns({
-      ...project,
-      method_samples: [passed, { ...contentConcern, final_review: { decision: 'needs_attention' } }]
-    }),
-    false
-  )
-  assert.equal(canAcceptExpertMethodConcerns({ ...project, method_samples: [passed] }), false)
 })
 
 test('全书 Review 按结构展示并兼容旧项目纯文本', () => {

@@ -663,60 +663,6 @@ async def confirm_project_method(db: AsyncSession, *, project_id: str, created_b
     return project.method_version
 
 
-async def accept_project_method_with_concerns(
-    db: AsyncSession,
-    *,
-    project_id: str,
-    created_by: str,
-) -> int:
-    """用户接受小样的具体内容问题后，按当前方法进入逐份学习。"""
-
-    repo = ExpertRepository(db)
-    project = await repo.lock_project(project_id)
-    if project is None or project.created_by != created_by:
-        raise ValueError("专家项目不存在")
-    if project.stage != ORIENTATION_STAGE or project.status != "needs_attention":
-        raise ValueError("当前项目没有可接受的小样内容问题")
-
-    _validate_method_contract(
-        project.learning_plan or "",
-        project.compilation_brief or "",
-        ProjectPromptPack.model_validate(project.prompt_pack),
-    )
-    samples = list(project.method_samples or [])
-    sample_ids = list(project.method_sample_material_ids or [])
-    if (
-        not 1 <= len(sample_ids) <= 2
-        or len(samples) != len(sample_ids)
-        or {sample.get("material_id") for sample in samples} != set(sample_ids)
-    ):
-        raise ValueError("项目方法小样集合不完整")
-
-    has_content_concern = False
-    for sample in samples:
-        final_review = sample.get("final_review") or {}
-        status = sample.get("status")
-        if status == "passed" and final_review.get("decision") == "pass":
-            continue
-        if (
-            status == "needs_attention"
-            and final_review.get("decision") == "revise"
-            and final_review.get("issues")
-            and sample.get("revision_count") == MAX_MATERIAL_REVISIONS
-        ):
-            has_content_concern = True
-            continue
-        raise ValueError("项目方法小样包含不可接受的系统或合同失败")
-    if not has_content_concern:
-        raise ValueError("当前没有可接受的小样内容问题")
-
-    project.method_confirmed_at = utc_now_naive()
-    project.method_calibration_completed_at = utc_now_naive()
-    project.method_calibration_baseline = []
-    await _start_material_learning(db, project, repo)
-    return project.method_version
-
-
 async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertRepository) -> int:
     """在已完成方法校准后初始化逐份材料学习。"""
 
@@ -1419,7 +1365,6 @@ def _serialize_material(material: Any) -> dict[str, Any]:
 
 
 __all__ = [
-    "accept_project_method_with_concerns",
     "confirm_project_method",
     "create_expert_project",
     "delete_expert_project",
