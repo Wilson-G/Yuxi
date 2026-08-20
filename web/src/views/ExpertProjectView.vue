@@ -160,10 +160,11 @@
 
           <template v-if="reviewStage === 'orientation'">
             <div v-if="project.learning_plan" class="document-block">
+              <h3>学习方案</h3>
               <MarkdownPreview :content="project.learning_plan" compact />
             </div>
             <details v-if="project.orientation_report" class="disclosure-block">
-              <summary>项目定向报告</summary>
+              <summary>查看定向依据</summary>
               <MarkdownPreview :content="project.orientation_report" compact />
             </details>
             <div v-if="project.method_samples?.length" class="artifact-list stage-history-list">
@@ -244,6 +245,18 @@
               </article>
             </div>
           </template>
+
+          <template v-else-if="reviewStage === 'handout_compilation'">
+            <ExpertTopicReader
+              v-model="selectedTopicId"
+              :topics="project.topics || []"
+              empty-text="这个项目没有保存正式讲义。"
+            />
+            <details v-if="project.final_review" class="disclosure-block history-final-review">
+              <summary>查看全书检查结果</summary>
+              <MarkdownPreview :content="finalReviewMarkdown" compact />
+            </details>
+          </template>
         </section>
 
         <section v-else-if="project.status === 'paused'" class="project-section paused-section">
@@ -264,7 +277,7 @@
                 <div>
                   <span class="section-kicker">方法版本 {{ project.method_version }}</span>
                   <h2>这样学习这批材料，对不对？</h2>
-                  <p>确认后，当前学习方案、编译底稿和阶段 Prompt 会一起固定并用于逐份学习。</p>
+                  <p>确认后，当前学习方向会固定并用于后续逐份学习。</p>
                 </div>
                 <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
                   {{ getExpertStatusLabel(project.status) }}
@@ -272,11 +285,12 @@
               </div>
 
               <div class="document-block">
+                <h3>学习方案</h3>
                 <MarkdownPreview :content="project.learning_plan || ''" compact />
               </div>
 
               <details v-if="project.orientation_report" class="disclosure-block">
-                <summary>项目定向报告</summary>
+                <summary>查看定向依据</summary>
                 <MarkdownPreview :content="project.orientation_report" compact />
               </details>
 
@@ -321,7 +335,7 @@
               </div>
 
               <details class="disclosure-block prompt-disclosure">
-                <summary>查看项目专属 Prompt 包</summary>
+                <summary>查看阶段指令（高级检查）</summary>
                 <div class="prompt-list">
                   <details v-for="(prompt, key) in project.prompt_pack || {}" :key="key">
                     <summary>{{ promptLabel(key) }}</summary>
@@ -346,6 +360,16 @@
                   >
                     <RotateCcw :size="14" />
                     重新试跑当前方法
+                  </a-button>
+                  <a-button
+                    v-if="canAcceptMethodConcerns"
+                    type="primary"
+                    :loading="actionKey === 'accept-method-concerns'"
+                    :disabled="Boolean(actionKey)"
+                    @click="acceptMethodWithConcerns"
+                  >
+                    <Check :size="14" />
+                    接受小样问题并开始学习
                   </a-button>
                   <a-button
                     v-if="project.status === 'awaiting_confirmation'"
@@ -806,84 +830,20 @@
             </div>
             <a-progress :percent="topicProgress" :show-info="false" :stroke-width="6" />
 
-            <div v-if="project.topics?.length" class="topic-workspace section-list">
-              <aside class="topic-navigator" aria-label="讲义目录">
-                <div class="topic-navigator-heading">
-                  <span>讲义目录</span>
-                  <span>{{ project.topics.length }} 篇</span>
-                </div>
-                <button
-                  v-for="topic in project.topics"
-                  :key="topic.topic_id"
-                  type="button"
-                  class="topic-nav-item"
-                  :class="{ selected: topic.topic_id === selectedTopicId }"
-                  :aria-pressed="topic.topic_id === selectedTopicId"
-                  @click="selectedTopicId = topic.topic_id"
-                >
-                  <span class="topic-position">{{ topic.position }}</span>
-                  <span class="topic-nav-copy">
-                    <span>{{ topic.section }}</span>
-                    <strong>{{ topic.title }}</strong>
-                  </span>
-                  <span class="status-badge" :class="`tone-${getExpertStatusTone(topic.status)}`">
-                    {{ getExpertMaterialStatusLabel(topic.status) }}
-                  </span>
-                </button>
-              </aside>
-
-              <article v-if="selectedTopic" class="topic-reader">
-                <header class="topic-reader-heading">
-                  <div>
-                    <span class="section-kicker">{{ selectedTopic.section }}</span>
-                    <h3>{{ selectedTopic.title }}</h3>
-                    <p>{{ selectedTopic.reader_question }}</p>
-                  </div>
-                  <div class="topic-reader-actions">
-                    <span
-                      class="status-badge"
-                      :class="`tone-${getExpertStatusTone(selectedTopic.status)}`"
-                    >
-                      {{ getExpertMaterialStatusLabel(selectedTopic.status) }}
-                    </span>
-                    <a-button
-                      v-if="selectedTopic.status === 'needs_attention'"
-                      size="small"
-                      :loading="actionKey === `retry-topic:${selectedTopic.topic_id}`"
-                      :disabled="Boolean(actionKey)"
-                      @click="retryTopic(selectedTopic)"
-                    >
-                      重跑讲义
-                    </a-button>
-                  </div>
-                </header>
-
-                <p v-if="selectedTopic.error_message" class="reader-error">
-                  {{ selectedTopic.error_message }}
-                </p>
-                <div v-if="selectedTopic.handout" class="topic-document">
-                  <MarkdownPreview :content="selectedTopic.handout" compact />
-                </div>
-                <div v-else class="topic-reader-empty">
-                  <LoaderCircle
-                    v-if="selectedTopic.status !== 'needs_attention'"
-                    :size="18"
-                    class="spin"
-                  />
-                  <span>{{ selectedTopic.error_message || '总编正在准备当前讲义。' }}</span>
-                </div>
-                <details v-if="selectedTopic.review" class="review-disclosure">
-                  <summary>查看 Review</summary>
-                  <p class="review-summary">
-                    {{ selectedTopic.review.summary || '暂无 Review 摘要' }}
-                  </p>
-                </details>
-              </article>
-            </div>
+            <ExpertTopicReader
+              v-model="selectedTopicId"
+              class="section-list"
+              :topics="project.topics || []"
+              allow-retry
+              :retrying-topic-id="
+                actionKey.startsWith('retry-topic:') ? actionKey.slice('retry-topic:'.length) : ''
+              "
+              @retry="retryTopic"
+            />
 
             <details v-if="project.final_review" class="disclosure-block">
               <summary>查看全书一致性结论</summary>
-              <MarkdownPreview :content="project.final_review" compact />
+              <MarkdownPreview :content="finalReviewMarkdown" compact />
             </details>
 
             <div v-if="showCompilationRetry" class="decision-panel compact-decision">
@@ -938,13 +898,13 @@
             </a-alert>
 
             <a-tabs v-else-if="preview" v-model:activeKey="previewTab" class="preview-tabs">
-              <a-tab-pane key="skill" tab="Skill">
-                <div class="document-block preview-document">
+              <a-tab-pane key="skill" tab="专家说明">
+                <div class="document-block preview-document primary-preview-document">
                   <MarkdownPreview :content="preview.skill_md || ''" compact />
                 </div>
               </a-tab-pane>
-              <a-tab-pane key="navigation" tab="导航">
-                <div class="document-block preview-document">
+              <a-tab-pane key="navigation" tab="使用导航">
+                <div class="document-block preview-document primary-preview-document">
                   <MarkdownPreview :content="preview.navigation || ''" compact />
                 </div>
               </a-tab-pane>
@@ -1065,14 +1025,17 @@ import {
 
 import { expertApi } from '@/apis/expert_api'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
+import ExpertTopicReader from '@/components/extensions/ExpertTopicReader.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import {
   EXPERT_STAGE_ITEMS,
+  canAcceptExpertMethodConcerns,
   canDeleteExpertProject,
   canExcludeExpertMaterial,
   canPauseExpertProject,
   canPreviewExpertMaterial,
   canReviseExpertOrganization,
+  formatExpertFinalReview,
   getExcludedExpertMaterials,
   getExpertMaterialProgress,
   getExpertMaterialStatusLabel,
@@ -1150,12 +1113,10 @@ const filteredMaterials = computed(() => {
   if (materialFilter.value === 'all') return materials
   return materials.filter((material) => material.status === materialFilter.value)
 })
-const selectedTopic = computed(() =>
-  (project.value?.topics || []).find((topic) => topic.topic_id === selectedTopicId.value)
-)
 const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
+const canAcceptMethodConcerns = computed(() => canAcceptExpertMethodConcerns(project.value))
 const selectableMaterials = computed(() =>
   (project.value?.materials || []).filter((material) => material.status === 'ready')
 )
@@ -1171,6 +1132,7 @@ const showCompilationRetry = computed(
     project.value?.status === 'needs_attention' &&
     !(project.value?.topics || []).some((topic) => topic.status === 'needs_attention')
 )
+const finalReviewMarkdown = computed(() => formatExpertFinalReview(project.value?.final_review))
 const canPauseProject = computed(() => canPauseExpertProject(project.value))
 const canDeleteProject = computed(() => canDeleteExpertProject(project.value))
 const deleteProjectLabel = computed(() => {
@@ -1364,6 +1326,23 @@ const confirmMethod = () => {
         'confirm-method',
         () => expertApi.confirmMethod(projectId.value),
         '学习方向已确认，正在校准方法并重新试跑小样'
+      )
+  })
+}
+
+/** 用户明确接受小样的内容残余后，按当前方法进入逐份学习。 */
+const acceptMethodWithConcerns = () => {
+  Modal.confirm({
+    title: '接受当前小样问题并开始学习？',
+    content:
+      '系统会保留这些小样 Review 供后续查看，并按当前学习方案开始逐份学习；不会再自动校准或重跑小样。',
+    okText: '接受并开始学习',
+    cancelText: '继续调整方法',
+    onOk: () =>
+      runAction(
+        'accept-method-concerns',
+        () => expertApi.acceptMethodWithConcerns(projectId.value),
+        '已接受当前小样问题，正在开始逐份学习'
       )
   })
 }
@@ -2272,168 +2251,6 @@ onBeforeUnmount(() => {
   }
 }
 
-.topic-workspace {
-  display: grid;
-  min-height: 460px;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 2.2fr);
-  border-bottom: 1px solid var(--gray-150);
-}
-
-.topic-navigator {
-  min-width: 0;
-  border-right: 1px solid var(--gray-150);
-  background: var(--gray-25);
-}
-
-.topic-navigator-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--gray-150);
-  color: var(--gray-700);
-  font-size: 12px;
-  font-weight: 600;
-
-  span:last-child {
-    color: var(--gray-500);
-    font-weight: 400;
-  }
-}
-
-.topic-nav-item {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 14px 12px;
-  border: 0;
-  border-bottom: 1px solid var(--gray-150);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-
-  &:hover,
-  &.selected {
-    background: var(--main-30);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--main-500);
-    outline-offset: -2px;
-  }
-
-  .status-badge {
-    grid-column: 2;
-    justify-self: start;
-  }
-}
-
-.topic-nav-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-
-  span {
-    overflow: hidden;
-    color: var(--gray-500);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    display: -webkit-box;
-    overflow: hidden;
-    color: var(--gray-900);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-}
-
-.topic-reader {
-  min-width: 0;
-  padding: 24px 28px 40px;
-}
-
-.topic-reader-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--gray-150);
-
-  h3,
-  p {
-    margin: 0;
-  }
-
-  h3 {
-    margin-top: 4px;
-    color: var(--gray-900);
-    font-size: 19px;
-    font-weight: 650;
-    line-height: 1.4;
-  }
-
-  p {
-    max-width: 720px;
-    margin-top: 7px;
-    color: var(--gray-600);
-    font-size: 13px;
-    line-height: 1.65;
-  }
-}
-
-.topic-reader-actions {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.reader-error {
-  margin: 16px 0 0;
-  padding: 10px 12px;
-  border: 1px solid var(--color-error-100);
-  border-radius: 6px;
-  background: var(--color-error-10);
-  color: var(--color-error-700);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.topic-document {
-  max-width: 780px;
-  margin-top: 24px;
-}
-
-.topic-reader-empty {
-  display: flex;
-  min-height: 220px;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--gray-600);
-  font-size: 13px;
-}
-
-.topic-reader .review-disclosure {
-  margin-top: 24px;
-  padding-top: 14px;
-  border-top: 1px solid var(--gray-150);
-}
-
 .row-error {
   color: var(--color-error-700) !important;
   white-space: normal !important;
@@ -2673,6 +2490,18 @@ onBeforeUnmount(() => {
   min-height: 320px;
 }
 
+.primary-preview-document {
+  max-width: 820px;
+
+  :deep(.frontmatter-card) {
+    display: none;
+  }
+}
+
+.history-final-review {
+  margin-top: 20px;
+}
+
 .preview-collapse {
   border: 1px solid var(--gray-150);
   background: var(--gray-0);
@@ -2786,11 +2615,6 @@ onBeforeUnmount(() => {
   .decision-panel,
   .compact-decision,
   .history-toolbar,
-  .topic-reader-heading {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .section-heading h2 {
     font-size: 18px;
   }
@@ -2826,38 +2650,6 @@ onBeforeUnmount(() => {
   .learning-row .row-actions,
   .compilation-row .row-actions {
     padding-left: 0;
-  }
-
-  .topic-workspace {
-    min-height: 0;
-    grid-template-columns: 1fr;
-  }
-
-  .topic-navigator {
-    border-right: 0;
-    border-bottom: 1px solid var(--gray-150);
-  }
-
-  .topic-nav-item {
-    grid-template-columns: 28px minmax(0, 1fr) auto;
-
-    .status-badge {
-      grid-column: 3;
-      grid-row: 1;
-      justify-self: end;
-    }
-  }
-
-  .topic-reader {
-    padding: 20px 0 32px;
-  }
-
-  .topic-reader-heading,
-  .topic-document,
-  .topic-reader .review-disclosure,
-  .reader-error {
-    margin-right: 0;
-    margin-left: 0;
   }
 
   .status-badge {

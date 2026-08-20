@@ -29,7 +29,7 @@
       :description="
         searchQuery
           ? '换个关键词试试。'
-          : '导入可靠材料，先确定学习方法，再逐份学习并由总编模型形成专家 Skill。'
+          : '先在资料库处理材料，再选择就绪材料单元创建项目并确定学习方法。'
       "
       :icon="LibraryBig"
     >
@@ -94,11 +94,7 @@
     >
       <a-form ref="createFormRef" :model="createForm" :rules="createRules" layout="vertical">
         <a-form-item label="项目名称" name="name">
-          <a-input
-            v-model:value="createForm.name"
-            placeholder="例如：四柱判断方法"
-            :maxlength="120"
-          />
+          <a-input v-model:value="createForm.name" placeholder="输入项目名称" :maxlength="120" />
         </a-form-item>
 
         <a-form-item label="项目说明" name="description">
@@ -106,7 +102,7 @@
             v-model:value="createForm.description"
             :rows="3"
             :maxlength="500"
-            placeholder="说明材料来源、希望继承的判断手艺和最终读者"
+            placeholder="说明材料来源、希望重点学习的内容，以及主要使用者"
           />
         </a-form-item>
 

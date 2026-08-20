@@ -2,11 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  canAcceptExpertMethodConcerns,
   canDeleteExpertProject,
   canExcludeExpertMaterial,
   canPauseExpertProject,
   canPreviewExpertMaterial,
   canReviseExpertOrganization,
+  formatExpertFinalReview,
   getExcludedExpertMaterials,
   getExpertMaterialProgress,
   getExpertProjectProgress,
@@ -45,13 +47,20 @@ test('材料和讲义进度按真实终态计算', () => {
     50
   )
   assert.equal(
-    getExpertTopicProgress([{ status: 'passed' }, { status: 'writing' }, { status: 'needs_attention' }]),
+    getExpertTopicProgress([
+      { status: 'passed' },
+      { status: 'writing' },
+      { status: 'needs_attention' }
+    ]),
     67
   )
 })
 
 test('总体进度遵循确认点和当前阶段', () => {
-  assert.equal(getExpertProjectProgress({ stage: 'orientation', status: 'awaiting_confirmation' }), 20)
+  assert.equal(
+    getExpertProjectProgress({ stage: 'orientation', status: 'awaiting_confirmation' }),
+    20
+  )
   assert.equal(
     getExpertProjectProgress({
       stage: 'material_learning',
@@ -85,7 +94,11 @@ test('不能排除项目中最后一份仍可能进入学习的材料', () => {
   assert.equal(canExcludeExpertMaterial([blocked], blocked.material_id), false)
   assert.equal(
     canExcludeExpertMaterial(
-      [blocked, { material_id: 'no-value', status: 'no_value' }, { material_id: 'old', status: 'excluded' }],
+      [
+        blocked,
+        { material_id: 'no-value', status: 'no_value' },
+        { material_id: 'old', status: 'excluded' }
+      ],
       blocked.material_id
     ),
     false
@@ -107,10 +120,7 @@ test('组织方案只有在等待确认或需要处理时允许提交反馈', ()
 })
 
 test('项目定向运行时进入学习方案与小样生成视图', () => {
-  assert.equal(
-    isExpertMethodPreparationRunning({ stage: 'orientation', status: 'running' }),
-    true
-  )
+  assert.equal(isExpertMethodPreparationRunning({ stage: 'orientation', status: 'running' }), true)
   assert.equal(
     isExpertMethodPreparationRunning({ stage: 'orientation', status: 'preparing' }),
     false
@@ -119,4 +129,50 @@ test('项目定向运行时进入学习方案与小样生成视图', () => {
     isExpertMethodPreparationRunning({ stage: 'material_learning', status: 'running' }),
     false
   )
+})
+
+test('小样只剩有限修订后的内容问题时允许用户接受', () => {
+  const passed = {
+    material_id: 'material-1',
+    status: 'passed',
+    final_review: { decision: 'pass', issues: [] }
+  }
+  const contentConcern = {
+    material_id: 'material-2',
+    status: 'needs_attention',
+    revision_count: 2,
+    final_review: { decision: 'revise', issues: [{ problem: '缺少条件' }] }
+  }
+  const project = {
+    status: 'needs_attention',
+    method_sample_material_ids: ['material-1', 'material-2'],
+    method_samples: [passed, contentConcern]
+  }
+
+  assert.equal(canAcceptExpertMethodConcerns(project), true)
+  assert.equal(
+    canAcceptExpertMethodConcerns({
+      ...project,
+      method_samples: [passed, { ...contentConcern, final_review: { decision: 'needs_attention' } }]
+    }),
+    false
+  )
+  assert.equal(canAcceptExpertMethodConcerns({ ...project, method_samples: [passed] }), false)
+})
+
+test('全书 Review 按结构展示并兼容旧项目纯文本', () => {
+  const review = JSON.stringify({
+    summary: '全书需要补一处边界',
+    issues: [
+      {
+        problem: '主题边界重复',
+        topic_keys: ['topic-a', 'topic-b'],
+        revision_direction: '合并重复段落'
+      }
+    ]
+  })
+
+  assert.match(formatExpertFinalReview(review), /全书需要补一处边界/)
+  assert.match(formatExpertFinalReview(review), /涉及主题：`topic-a`、`topic-b`/)
+  assert.equal(formatExpertFinalReview('旧项目全书检查结果'), '旧项目全书检查结果')
 })

@@ -41,6 +41,7 @@ const TERMINAL_MATERIAL_STATUSES = new Set([
   'excluded'
 ])
 const TERMINAL_TOPIC_STATUSES = new Set(['passed', 'needs_attention'])
+const MAX_METHOD_SAMPLE_REVISIONS = 2
 
 /** 返回当前业务阶段在主流程中的位置。 */
 export const getExpertStageIndex = (stage) => {
@@ -144,6 +145,62 @@ export const canExcludeExpertMaterial = (materials = [], materialId) =>
 /** 组织反馈只在后端允许创建新组织版本的状态提交。 */
 export const canReviseExpertOrganization = (status) =>
   status === 'awaiting_confirmation' || status === 'needs_attention'
+
+/** 只在小样完整且仅剩有限修订后的内容问题时展示接受入口。 */
+export const canAcceptExpertMethodConcerns = (project) => {
+  const samples = project?.method_samples || []
+  const sampleIds = project?.method_sample_material_ids || []
+  if (
+    project?.status !== 'needs_attention' ||
+    samples.length !== sampleIds.length ||
+    !samples.length
+  ) {
+    return false
+  }
+
+  let hasContentConcern = false
+  for (const sample of samples) {
+    const finalReview = sample.final_review || {}
+    if (sample.status === 'passed' && finalReview.decision === 'pass') continue
+    if (
+      sample.status === 'needs_attention' &&
+      finalReview.decision === 'revise' &&
+      finalReview.issues?.length &&
+      sample.revision_count === MAX_METHOD_SAMPLE_REVISIONS
+    ) {
+      hasContentConcern = true
+      continue
+    }
+    return false
+  }
+  return hasContentConcern
+}
+
+/** 把持久化的全书 Review 转成可读 Markdown，并兼容旧项目纯文本。 */
+export const formatExpertFinalReview = (storedReview) => {
+  if (!storedReview) return ''
+
+  let review = storedReview
+  if (typeof storedReview === 'string') {
+    try {
+      review = JSON.parse(storedReview)
+    } catch {
+      return storedReview
+    }
+  }
+  if (!review || typeof review !== 'object') return String(review)
+
+  const sections = [review.summary]
+  for (const issue of review.issues || []) {
+    const topicKeys = (issue.topic_keys || []).map((key) => `\`${key}\``).join('、')
+    sections.push(
+      `### ${issue.problem}`,
+      topicKeys ? `涉及主题：${topicKeys}` : '',
+      `修改方向：${issue.revision_direction}`
+    )
+  }
+  return sections.filter(Boolean).join('\n\n')
+}
 
 /** 判断一份材料是否已经有可供用户核对的可靠正文。 */
 export const canPreviewExpertMaterial = (material) =>
