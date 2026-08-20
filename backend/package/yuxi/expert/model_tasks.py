@@ -35,6 +35,13 @@ from yuxi.models.providers.cache import model_cache
 PROMPT_DESIGNER_ROOT = Path(__file__).parent / "prompt_designer"
 ContractT = TypeVar("ContractT", bound=BaseModel)
 
+
+def _read_prompt_designer_skill() -> str:
+    """读取项目 Prompt 设计的中央方法，避免各任务复制规则。"""
+
+    return (PROMPT_DESIGNER_ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+
 ARTIFACT_HUMANIZER_ZH_GUIDANCE = """
 成品表达采用 humanizer-zh 的编辑原则：直接说明材料已经支持的判断，不用广告语、空泛拔高、
 模板化过渡、机械三段式、含糊归因或为了显得有力而写的金句。句子长短可以自然变化，
@@ -97,7 +104,7 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             ProjectOrientationResult,
-            system=_stage_system((PROMPT_DESIGNER_ROOT / "SKILL.md").read_text(encoding="utf-8")),
+            system=_stage_system(_read_prompt_designer_skill()),
             prompt=prompt,
         )
 
@@ -113,7 +120,7 @@ class ExpertModelTasks:
         """由总编模型生成项目学习方案、编译底稿和完整阶段 Prompt。"""
 
         selected_template = (PROMPT_DESIGNER_ROOT / "templates" / orientation.template_name).read_text(encoding="utf-8")
-        example = (PROMPT_DESIGNER_ROOT / "examples" / "bazi-full-stage-prompt-pack.md").read_text(encoding="utf-8")
+        example = (PROMPT_DESIGNER_ROOT / "examples" / "apprentice-stage-prompt-pack.md").read_text(encoding="utf-8")
         prompt = f"""
 你是“{project_name}”专家作品的总编模型。请依据项目定向报告，把中央方法改写成只属于当前项目的完整编译方法。
 
@@ -129,20 +136,23 @@ class ExpertModelTasks:
 当前材料类型模板只提供提问方向，不能直接复制：
 {selected_template}
 
-下面的八字示例只展示 Prompt 的教材化结构、阶段交接和必要材料纪律。不得复制其中的领域术语、判断顺序或章节结构：
+下面的通用示例只展示 Prompt 的教材化结构、阶段交接和必要材料纪律，不携带领域术语、判断顺序或章节结构：
 {example}
 
 请交付人可读的项目学习方案、自然连贯的项目专属编译底稿，
 以及响应合同要求的全部阶段 Prompt。每份 Prompt 都要能在系统注入当前完整业务输入后直接工作，
-不能写成通用规则加项目补丁，也不要出现任务 ID、存储路径、队列、哈希或发布实现。讲义相关 Prompt
-必须把材料中的判断动作编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
+不能写成通用规则加项目补丁，也不要出现任务 ID、存储路径、队列、哈希或发布实现。
+三个交付物必须按中央方法分层：学习方案面向用户确认，定向依据供用户展开查看，
+编译底稿和 Prompt 包只承担内部编译职责。学习方案和定向依据不得把内部角色、阶段交接
+或编译过程写给用户。讲义相关 Prompt 必须把材料中的判断动作和明确术语、经验口径
+编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
 从上方代表材料中选择 1～2 个 M... 别名作为 method_sample_aliases，用于试跑这套 Prompt；
 选择覆盖不同表达或判断方式的材料，不要因样本内容预设后续单篇的主题。
 """.strip()
         return await self._invoke_structured(
             model_spec,
             ProjectMethodResult,
-            system=_stage_system((PROMPT_DESIGNER_ROOT / "SKILL.md").read_text(encoding="utf-8")),
+            system=_stage_system(_read_prompt_designer_skill()),
             prompt=prompt,
         )
 
@@ -191,7 +201,10 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             MethodCalibrationResult,
-            system=_stage_system("你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。"),
+            system=_stage_system(
+                _read_prompt_designer_skill(),
+                "你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。",
+            ),
             prompt=prompt,
         )
 

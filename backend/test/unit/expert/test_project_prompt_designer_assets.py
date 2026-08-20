@@ -19,6 +19,9 @@ def test_prompt_designer_teaches_project_specific_prompt_creation():
     assert "教材化" in skill
     assert "不是材料审计报告" in skill
     assert "用真实小样验证" in skill
+    assert "作者明确提出的领域知识" in skill
+    assert "交付物分层" in skill
+    assert "不输出审稿过程" in skill
     assert "谁在说话" not in skill
     assert "同一老师" not in skill
 
@@ -42,28 +45,27 @@ def test_prompt_designer_has_material_type_starting_points():
     }
 
 
-def test_prompt_designer_uses_bazi_full_stage_example():
+def test_prompt_designer_uses_generic_apprentice_stage_example():
     skill = (ASSET_ROOT / "SKILL.md").read_text(encoding="utf-8")
-    example = (ASSET_ROOT / "examples" / "bazi-full-stage-prompt-pack.md").read_text(encoding="utf-8")
+    example = (ASSET_ROOT / "examples" / "apprentice-stage-prompt-pack.md").read_text(encoding="utf-8")
 
-    assert "examples/bazi-full-stage-prompt-pack.md" in skill
+    assert "examples/apprentice-stage-prompt-pack.md" in skill
     for stage in (
         "材料侦察",
         "项目学习方案",
-        "学艺笔记",
+        "单篇学艺",
         "笔记 Review",
         "笔记修订",
         "主题候选研究",
-        "总编模型主题地图",
-        "总编模型讲义",
+        "总编主题地图",
+        "总编讲义",
         "讲义 Review 与修订",
         "全书收口、导航与最终 Skill",
     ):
         assert stage in example
 
-    assert "个案断语改成通则" in example
-    assert "反转与边界" in example
-    assert "Prime 总编" not in example
-    assert "amazon" not in example.lower()
-    assert "asin" not in example.lower()
-    assert "listing" not in example.lower()
+    assert "术语、口诀、公式、经验口径" in example
+    assert "不要输出审稿过程" in example
+    assert "不携带领域术语" in example
+    assert "八字" not in skill
+    assert "八字" not in example

@@ -65,7 +65,7 @@ def asset_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "OTHER-TEMPLATE",
         encoding="utf-8",
     )
-    (root / "examples" / "bazi-full-stage-prompt-pack.md").write_text(
+    (root / "examples" / "apprentice-stage-prompt-pack.md").write_text(
         "EXAMPLE-FIRST\nEXAMPLE-LAST",
         encoding="utf-8",
     )
@@ -200,6 +200,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     assert "EXAMPLE-FIRST\nEXAMPLE-LAST" in method_prompt
     assert "L1: SAMPLE-FIRST\nL2: SAMPLE-MIDDLE\nL3: SAMPLE-LAST" in method_prompt
     assert "method_sample_aliases" in method_prompt
+    assert "三个交付物必须按中央方法分层" in method_prompt
     assert method.learning_plan_markdown == "已确认前的项目学习方案"
     assert loader.calls == [
         ("provider:model", {"temperature": 0}),
@@ -580,6 +581,7 @@ async def test_method_calibration_only_receives_current_method_and_sample_notes_
     assert "SOURCE-FIRST" not in prompt
     assert "不得写进任何单篇 Prompt" in prompt
     assert "不要要求判断材料是否来自同一位老师或说话人" in prompt
+    assert "作者明确提出的领域知识" in _system_prompt(model.calls[0])
 
 
 @pytest.mark.asyncio

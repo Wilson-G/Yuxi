@@ -448,6 +448,94 @@ def test_method_samples_allow_repairable_review_issues_but_block_structural_atte
         )
 
 
+def _method_sample(
+    material_id: str,
+    *,
+    status: str,
+    final_decision: str,
+    revision_count: int = 0,
+) -> dict:
+    """构造已经由小样生成流程校验并保存的结果摘要。"""
+
+    return {
+        "material_id": material_id,
+        "status": status,
+        "revision_count": revision_count,
+        "final_review": {
+            "decision": final_decision,
+            "issues": [{"problem": "遗漏改变处理的条件"}] if final_decision == "revise" else [],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_accept_method_concerns_allows_only_complete_content_residuals(expert_env) -> None:
+    """只允许用户接受完整小样在有限修订后留下的内容问题。"""
+
+    project_id, material_ids = await _create_project(expert_env, count=2)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            status="needs_attention",
+            method_version=1,
+            learning_plan="# 学习方案",
+            compilation_brief="# 编译底稿",
+            prompt_pack=_prompt_pack().model_dump(),
+            method_sample_material_ids=material_ids,
+            method_samples=[_method_sample(material_ids[0], status="passed", final_decision="pass")],
+        )
+
+        with pytest.raises(ValueError, match="小样集合不完整"):
+            await service.accept_project_method_with_concerns(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+            )
+
+        await repo.update_project(
+            project_id,
+            method_samples=[
+                _method_sample(material_ids[0], status="needs_attention", final_decision="needs_attention"),
+                _method_sample(material_ids[1], status="passed", final_decision="pass"),
+            ],
+        )
+        with pytest.raises(ValueError, match="系统或合同失败"):
+            await service.accept_project_method_with_concerns(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+            )
+
+        await repo.update_project(
+            project_id,
+            method_samples=[
+                _method_sample(material_ids[0], status="passed", final_decision="pass"),
+                _method_sample(
+                    material_ids[1],
+                    status="needs_attention",
+                    final_decision="revise",
+                    revision_count=2,
+                ),
+            ],
+        )
+        method_version = await service.accept_project_method_with_concerns(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
+
+    assert method_version == 1
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
+    assert project.method_confirmed_at is not None
+    assert all(material.status == "pending" for material in materials)
+
+
 async def _wait_until(predicate, *, timeout: float = 3.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
