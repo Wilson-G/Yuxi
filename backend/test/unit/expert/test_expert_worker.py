@@ -289,14 +289,14 @@ async def test_independent_material_jobs_do_not_share_project_lock(monkeypatch: 
     assert max_active == 2
 
 
-def test_material_jobs_do_not_keep_arq_results_that_block_explicit_retry() -> None:
-    material_job = next(
-        function
-        for function in WorkerSettings.functions
-        if getattr(function, "name", "") == "process_expert_material_learning"
-    )
+@pytest.mark.parametrize(
+    "job_name",
+    ["process_expert_material_learning", "process_expert_organization"],
+)
+def test_retryable_expert_jobs_do_not_keep_arq_results(job_name: str) -> None:
+    job = next(function for function in WorkerSettings.functions if getattr(function, "name", "") == job_name)
 
-    assert material_job.keep_result_s == 0
+    assert job.keep_result_s == 0
 
 
 @pytest.mark.asyncio

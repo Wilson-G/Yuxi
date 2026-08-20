@@ -792,6 +792,7 @@ class WorkerSettings:
         func(
             process_expert_organization,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+            keep_result=0,
         ),
         func(
             process_expert_handout_compilation,

@@ -135,7 +135,7 @@ async def run_organization_stage(
     sample_results = []
     for topic in topics:
         if topic.is_sample:
-            if topic.status == "passed":
+            if topic.status in {"passed", "needs_attention"}:
                 sample_results.append(_serialize_sample_topic(topic))
             else:
                 sample_results.append(

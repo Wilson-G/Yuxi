@@ -635,3 +635,38 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
         "action": "pending",
     }
     assert json.loads(json.dumps(project.topic_map, ensure_ascii=False))["sample_topic_keys"] == ["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_organization_retry_preserves_sample_review_failure(organization_env) -> None:
+    """组织任务重投时保留已经保存的讲义小样 Review 原因。"""
+
+    await _seed_organization_project(organization_env, material_count=4)
+    version = await organization_service.initialize_organization_stage(PROJECT_ID)
+    tasks = OrganizationModelTasks()
+    await organization_service.run_organization_stage(PROJECT_ID, version, model_tasks=tasks)
+
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.lock_project(PROJECT_ID)
+        topics = await repo.list_topics(PROJECT_ID, version)
+        sample = next(topic for topic in topics if topic.is_sample)
+        assert project is not None
+        project.status = "running"
+        sample.status = "needs_attention"
+        sample.error_message = "Review 仍要求补回判断条件"
+        await db.commit()
+
+    result = await organization_service.run_organization_stage(
+        PROJECT_ID,
+        version,
+        model_tasks=tasks,
+    )
+
+    async with organization_env.factory() as db:
+        project = await ExpertRepository(db).get_project(PROJECT_ID)
+
+    assert result["status"] == "needs_attention"
+    assert project is not None
+    assert project.organization_samples[0]["reason"] == "Review 仍要求补回判断条件"
+    assert project.error_message == "Review 仍要求补回判断条件"
