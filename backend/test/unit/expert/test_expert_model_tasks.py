@@ -582,6 +582,40 @@ async def test_jsonl_trailing_text_retries_only_the_current_model_task() -> None
 
 
 @pytest.mark.asyncio
+async def test_topic_editor_may_reject_all_notes_only_with_explicit_reasons() -> None:
+    model = RecordingStructuredModel(
+        [
+            {
+                "plan_markdown": "# 无法形成主题",
+                "editorial_plan_markdown": "# 编辑判断",
+                "topics": [],
+                "unassigned_notes": [
+                    {"note_alias": "N001", "reason": "只有孤立事实，无法形成可信方法"},
+                    {"note_alias": "N002", "reason": "没有可迁移判断"},
+                ],
+                "sample_topic_keys": [],
+                "sample_selection_reason": "没有主题可供试写",
+            }
+        ]
+    )
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+
+    result = await tasks.edit_topic_map(
+        model_spec="provider:model",
+        learning_plan="已确认的学习方案",
+        stage_prompt="TOPIC-EDITOR-PROMPT",
+        candidate_research="N001 与 N002 的完整候选研究",
+        excluded_materials="无",
+    )
+
+    system_prompt = _system_prompt(model.calls[0])
+    assert result.topics == []
+    assert [item.note_alias for item in result.unassigned_notes] == ["N001", "N002"]
+    assert "空 topics 和空 sample_topic_keys" in system_prompt
+    assert "逐条给出不采用的具体原因" in system_prompt
+
+
+@pytest.mark.asyncio
 async def test_jsonl_output_failure_exposes_a_short_actionable_error() -> None:
     model = RecordingStructuredModel(["not json", "still not json"])
     tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))

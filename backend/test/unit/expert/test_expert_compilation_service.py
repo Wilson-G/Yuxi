@@ -432,6 +432,103 @@ async def test_book_revision_ignores_excluded_legacy_material_without_text_path(
 
 
 @pytest.mark.asyncio
+async def test_candidate_preview_merges_unassigned_note_without_shifting_later_alias(
+    compilation_env,
+) -> None:
+    await _seed_compilation_project(compilation_env)
+    async with compilation_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.lock_project(PROJECT_ID)
+        assert project is not None
+        project.topic_map = {"unassigned_notes": [{"note_alias": "N002", "reason": "总编判断该笔记不足以形成正式主题"}]}
+        await repo.replace_topics(
+            PROJECT_ID,
+            1,
+            [
+                {
+                    "topic_id": "id-topic-a",
+                    "topic_key": "topic-a",
+                    "title": "主题 A",
+                    "section": "基础判断",
+                    "reader_question": "主题 A 应该怎样判断？",
+                    "purpose": "帮助读者完成主题 A 的判断",
+                    "boundaries": "资料不足时停止",
+                    "position": 1,
+                    "material_ids": ["material-1"],
+                    "evidence_requirements": [],
+                    "is_sample": False,
+                    "status": "pending",
+                },
+                {
+                    "topic_id": "id-topic-c",
+                    "topic_key": "topic-c",
+                    "title": "主题 C",
+                    "section": "行动边界",
+                    "reader_question": "主题 C 应该怎样判断？",
+                    "purpose": "帮助读者完成主题 C 的判断",
+                    "boundaries": "资料不足时停止",
+                    "position": 2,
+                    "material_ids": ["material-3"],
+                    "evidence_requirements": [],
+                    "is_sample": False,
+                    "status": "pending",
+                },
+            ],
+        )
+        await repo.create_materials(
+            PROJECT_ID,
+            [
+                {
+                    "material_id": "material-no-value",
+                    "title": "材料阶段未采用",
+                    "source_path": "series/no-value.md",
+                    "raw_path": None,
+                    "text_path": None,
+                    "file_type": ".md",
+                    "status": "no_value",
+                    "line_count": 2,
+                    "error_message": "Reviewer 判断没有迁移价值",
+                }
+            ],
+        )
+        await db.commit()
+
+    result = await compilation_service.run_handout_compilation(
+        PROJECT_ID,
+        1,
+        model_tasks=CompilationModelTasks(),
+    )
+
+    async with compilation_env.factory() as db:
+        project = await ExpertRepository(db).get_project(PROJECT_ID)
+        preview = await compilation_service.get_candidate_preview(
+            db,
+            project_id=PROJECT_ID,
+            created_by="user-1",
+        )
+
+    assert result["status"] == "ready"
+    assert project is not None
+    assert project.stage == "release"
+    assert project.status == "ready"
+    assert {source["source_title"] for source in preview["sources"]} == {"材料 1", "材料 3"}
+    assert preview["excluded_materials"] == [
+        {
+            "material_id": "material-no-value",
+            "title": "材料阶段未采用",
+            "source_path": "series/no-value.md",
+            "reason": "Reviewer 判断没有迁移价值",
+        },
+        {
+            "material_id": "material-2",
+            "title": "材料 2",
+            "source_path": "series/02.md",
+            "reason": "总编判断该笔记不足以形成正式主题",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_uninstall_uses_shared_delete_and_keeps_candidate(
     compilation_env,
     monkeypatch: pytest.MonkeyPatch,

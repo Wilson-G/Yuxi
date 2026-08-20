@@ -133,6 +133,14 @@ async def run_organization_stage(
         )
         _validate_topic_map(topic_map, set(note_aliases.values()))
         topics = await _save_topic_map(project_id, organization_version, topic_map, note_aliases)
+        if topics is None:
+            return {"project_id": project_id, "ignored": True}
+        if not topics:
+            return {
+                "project_id": project_id,
+                "organization_version": organization_version,
+                "status": "needs_attention",
+            }
 
     sample_results = []
     for topic in topics:
@@ -157,19 +165,30 @@ async def run_organization_stage(
         if project is None or project.status != "running" or project.organization_version != organization_version:
             return {"project_id": project_id, "ignored": True}
         project.organization_samples = sample_results
-        project.status = "needs_attention" if needs_attention else "awaiting_confirmation"
-        project.message = (
-            "讲义小样仍有明确问题，请调整组织方式后重新生成"
-            if needs_attention
-            else "主题方案和讲义小样已就绪，等待确认怎么组织"
-        )
-        project.error_message = needs_attention[0]["reason"] if needs_attention else None
-        project.updated_at = utc_now_naive()
+        if needs_attention:
+            project.status = "needs_attention"
+            project.message = "讲义小样仍有明确问题，请调整组织方式后重新生成"
+            project.error_message = needs_attention[0]["reason"]
+            result_stage = "organization"
+            result_status = "needs_attention"
+        elif project.auto_advance:
+            topics = await repo.list_topics(project_id, organization_version)
+            _start_handout_compilation(project, topics)
+            result_stage = "handout_compilation"
+            result_status = "running"
+        else:
+            project.status = "awaiting_confirmation"
+            project.message = "主题方案和讲义小样已就绪，等待确认怎么组织"
+            project.error_message = None
+            project.updated_at = utc_now_naive()
+            result_stage = "organization"
+            result_status = "awaiting_confirmation"
         await db.flush()
     return {
         "project_id": project_id,
         "organization_version": organization_version,
-        "status": "needs_attention" if needs_attention else "awaiting_confirmation",
+        "stage": result_stage,
+        "status": result_status,
     }
 
 
@@ -217,10 +236,17 @@ async def confirm_organization_stage(db: AsyncSession, *, project_id: str, creat
         raise ValueError("专家项目不存在")
     if project.stage != "organization" or project.status != "awaiting_confirmation":
         raise ValueError("当前项目没有等待确认的组织方案")
+    topics = await repo.list_topics(project_id, project.organization_version)
+    _start_handout_compilation(project, topics)
+    await db.commit()
+    return project.organization_version
+
+
+def _start_handout_compilation(project: Any, topics: list[Any]) -> None:
+    """固定已通过 Review 的组织版本，并进入正式讲义编写。"""
+
     if not project.topic_map or not (project.editorial_plan or "").strip() or not project.organization_samples:
         raise ValueError("组织方案缺少主题地图、编辑方案或讲义小样")
-
-    topics = await repo.list_topics(project_id, project.organization_version)
     samples = [topic for topic in topics if topic.is_sample]
     if not samples or any(topic.status != "passed" for topic in samples):
         raise ValueError("讲义小样尚未全部通过独立 Review")
@@ -235,8 +261,6 @@ async def confirm_organization_stage(db: AsyncSession, *, project_id: str, creat
     project.message = f"总编模型正在依次定稿 {len(topics)} 篇讲义"
     project.error_message = None
     project.updated_at = utc_now_naive()
-    await db.commit()
-    return project.organization_version
 
 
 async def _load_organization_inputs(project_id: str, organization_version: int) -> tuple[dict, list[Any]]:
@@ -372,14 +396,14 @@ async def _save_topic_map(
     organization_version: int,
     topic_map: TopicMapResult,
     note_aliases: dict[str, str],
-) -> list[Any]:
+) -> list[Any] | None:
     material_by_alias = {alias: material_id for material_id, alias in note_aliases.items()}
     sample_keys = set(topic_map.sample_topic_keys)
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)
         if project is None or project.status != "running" or project.organization_version != organization_version:
-            return []
+            return None
         project.topic_map = topic_map.model_dump()
         project.editorial_plan = topic_map.editorial_plan_markdown
         topics = await repo.replace_topics(
@@ -403,6 +427,12 @@ async def _save_topic_map(
                 for topic in topic_map.topics
             ],
         )
+        if not topics:
+            project.organization_samples = []
+            project.status = "needs_attention"
+            project.message = "总编未形成可用于成书的主题"
+            project.error_message = "全部通过 Review 的笔记均被总编判定不适合纳入主题，无法形成可信专家 Skill"
+            project.updated_at = utc_now_naive()
         return topics
 
 
@@ -673,13 +703,16 @@ def _validate_topic_research(result: TopicResearchResult, group_key: str, allowe
 
 
 def _validate_topic_map(result: TopicMapResult, known_aliases: set[str]) -> None:
-    if not result.plan_markdown.strip() or not result.editorial_plan_markdown.strip() or not result.topics:
-        raise ValueError("总编主题方案缺少可确认的规划、编辑方案或主题")
+    if not result.plan_markdown.strip() or not result.editorial_plan_markdown.strip():
+        raise ValueError("总编主题方案缺少可确认的规划或编辑方案")
     topic_keys = [topic.topic_key for topic in result.topics]
     if len(topic_keys) != len(set(topic_keys)):
         raise ValueError("总编主题标识重复")
-    if not 1 <= len(result.sample_topic_keys) <= 2 or not set(result.sample_topic_keys) <= set(topic_keys):
-        raise ValueError("总编必须从正式主题中选择 1～2 个讲义小样")
+    if result.topics:
+        if not 1 <= len(result.sample_topic_keys) <= 2 or not set(result.sample_topic_keys) <= set(topic_keys):
+            raise ValueError("总编必须从正式主题中选择 1～2 个讲义小样")
+    elif result.sample_topic_keys:
+        raise ValueError("没有正式主题时不能选择讲义小样")
 
     assigned = set()
     for topic in result.topics:
@@ -687,7 +720,12 @@ def _validate_topic_map(result: TopicMapResult, known_aliases: set[str]) -> None
         if not aliases or not aliases <= known_aliases:
             raise ValueError("正式主题引用了未知或空的笔记范围")
         assigned.update(aliases)
-    unassigned = {item.note_alias for item in result.unassigned_notes}
+    unassigned_aliases = [item.note_alias for item in result.unassigned_notes]
+    if len(unassigned_aliases) != len(set(unassigned_aliases)):
+        raise ValueError("同一笔记不能重复出现在未分配清单")
+    if any(not item.reason.strip() for item in result.unassigned_notes):
+        raise ValueError("未分配笔记必须说明不采用原因")
+    unassigned = set(unassigned_aliases)
     if assigned & unassigned:
         raise ValueError("同一笔记不能同时进入正式主题和未分配清单")
     if not unassigned <= known_aliases or assigned | unassigned != known_aliases:

@@ -481,7 +481,11 @@ V2 小样结果：
         feedback_section = f"\n\n用户对上一版组织方式的反馈：\n{feedback.strip()}" if feedback.strip() else ""
         task_instruction = """
 你是当前项目唯一的总编模型。候选研究只是输入，不是目录；由你统一决定主题边界、
-来源冲突口径、讲义顺序、导航思路和 1～2 个有代表性的讲义小样。
+来源冲突口径、讲义顺序和导航思路。每份已审笔记都必须进入至少一个正式主题，
+或在 unassigned_notes 中逐条给出不采用的具体原因，不能遗漏或只写笼统结论。
+只要还能形成正式主题，就从中选择 1～2 个有代表性的讲义小样。
+如果全部已审笔记都无法形成可信主题，可以返回空 topics 和空 sample_topic_keys，
+但必须把全部笔记逐条列入 unassigned_notes 并说明原因，不要为了满足数量强行造主题。
 """.strip()
         prompt = f"""
 

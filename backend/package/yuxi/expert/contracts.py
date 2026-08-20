@@ -165,7 +165,7 @@ class UnassignedNote(ExpertContract):
     """总编明确不放入主题地图的一份已审笔记。"""
 
     note_alias: str
-    reason: str
+    reason: str = Field(min_length=1)
 
 
 class TopicMapResult(ExpertContract):

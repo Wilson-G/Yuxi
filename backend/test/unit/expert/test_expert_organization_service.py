@@ -76,7 +76,12 @@ def _prompt_pack() -> dict[str, str]:
     }
 
 
-async def _seed_organization_project(organization_env, *, material_count: int) -> list[str]:
+async def _seed_organization_project(
+    organization_env,
+    *,
+    material_count: int,
+    auto_advance: bool = False,
+) -> list[str]:
     storage.create_project_workspace(PROJECT_ID)
     async with organization_env.factory() as db:
         repo = ExpertRepository(db)
@@ -90,6 +95,7 @@ async def _seed_organization_project(organization_env, *, material_count: int) -
             status="preparing",
         )
         project.method_version = 1
+        project.auto_advance = auto_advance
         project.learning_plan = "# 已确认的项目学习方案"
         project.prompt_pack = _prompt_pack()
         materials = []
@@ -332,6 +338,58 @@ class OrganizationModelTasks:
         )
 
 
+class MiddleUnassignedOrganizationTasks(OrganizationModelTasks):
+    """让中间别名不入选，验证后续别名和主题材料映射保持稳定。"""
+
+    async def edit_topic_map(self, **_kwargs) -> TopicMapResult:
+        return TopicMapResult(
+            plan_markdown="# 主题与讲义规划",
+            editorial_plan_markdown="# 当前编辑方案",
+            topics=[
+                {
+                    "topic_key": "diagnosis",
+                    "title": "识别局面与判断顺序",
+                    "section": "判断方法",
+                    "reader_question": "面对局面时先看什么？",
+                    "purpose": "帮助读者识别局面并按顺序判断",
+                    "boundaries": "材料不足时停止",
+                    "note_aliases": ["N001"],
+                    "order": 1,
+                },
+                {
+                    "topic_key": "action",
+                    "title": "条件成立后的行动",
+                    "section": "行动边界",
+                    "reader_question": "条件成立后怎样行动？",
+                    "purpose": "说明行动选择与代价",
+                    "boundaries": "不把个案改成通则",
+                    "note_aliases": ["N003", "N004"],
+                    "order": 2,
+                },
+            ],
+            unassigned_notes=[{"note_alias": "N002", "reason": "只有个案信息，不足以形成正式主题"}],
+            sample_topic_keys=["diagnosis"],
+            sample_selection_reason="覆盖核心判断顺序",
+        )
+
+
+class AllUnassignedOrganizationTasks(OrganizationModelTasks):
+    """让总编明确拒绝全部已审笔记，不强行生成主题或小样。"""
+
+    async def edit_topic_map(self, **_kwargs) -> TopicMapResult:
+        return TopicMapResult(
+            plan_markdown="# 无法形成可信主题",
+            editorial_plan_markdown="# 当前编辑判断",
+            topics=[],
+            unassigned_notes=[
+                {"note_alias": alias, "reason": f"{alias} 只有孤立个案，无法形成可信方法"}
+                for alias in ("N001", "N002", "N003", "N004")
+            ],
+            sample_topic_keys=[],
+            sample_selection_reason="没有正式主题可供试写",
+        )
+
+
 @pytest.mark.parametrize(
     ("groups", "message"),
     [
@@ -406,6 +464,22 @@ def test_topic_map_requires_assigned_and_unassigned_notes_to_be_disjoint() -> No
 
     with pytest.raises(ValueError, match="不能同时"):
         organization_service._validate_topic_map(overlapping, {"N001"})
+
+
+def test_topic_map_allows_all_notes_to_be_explicitly_unassigned_without_samples() -> None:
+    result = TopicMapResult(
+        plan_markdown="# 无法形成主题",
+        editorial_plan_markdown="# 编辑判断",
+        topics=[],
+        unassigned_notes=[
+            {"note_alias": "N001", "reason": "只有孤立事实"},
+            {"note_alias": "N002", "reason": "没有可迁移判断"},
+        ],
+        sample_topic_keys=[],
+        sample_selection_reason="没有主题可供试写",
+    )
+
+    organization_service._validate_topic_map(result, {"N001", "N002"})
 
 
 def test_evidence_pack_may_span_adjacent_approved_note_anchors() -> None:
@@ -635,6 +709,72 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
         "action": "pending",
     }
     assert json.loads(json.dumps(project.topic_map, ensure_ascii=False))["sample_topic_keys"] == ["diagnosis"]
+
+
+@pytest.mark.asyncio
+async def test_auto_advance_freezes_reviewed_organization_without_renumbering_unassigned_note(
+    organization_env,
+) -> None:
+    material_ids = await _seed_organization_project(
+        organization_env,
+        material_count=4,
+        auto_advance=True,
+    )
+    version = await organization_service.initialize_organization_stage(PROJECT_ID)
+
+    result = await organization_service.run_organization_stage(
+        PROJECT_ID,
+        version,
+        model_tasks=MiddleUnassignedOrganizationTasks(),
+    )
+
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        materials = await repo.list_project_materials(PROJECT_ID)
+        topics = await repo.list_topics(PROJECT_ID, version)
+
+    assert result["stage"] == "handout_compilation"
+    assert result["status"] == "running"
+    assert project is not None
+    assert project.stage == "handout_compilation"
+    assert project.status == "running"
+    assert project.organization_confirmed_at is not None
+    assert project.topic_map["unassigned_notes"] == [
+        {"note_alias": "N002", "reason": "只有个案信息，不足以形成正式主题"}
+    ]
+    assert [material.status for material in materials] == ["passed"] * 4
+    assert next(topic for topic in topics if topic.topic_key == "action").material_ids == [
+        material_ids[2],
+        material_ids[3],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_all_unassigned_notes_are_persisted_and_stop_organization(organization_env) -> None:
+    await _seed_organization_project(organization_env, material_count=4, auto_advance=True)
+    version = await organization_service.initialize_organization_stage(PROJECT_ID)
+
+    result = await organization_service.run_organization_stage(
+        PROJECT_ID,
+        version,
+        model_tasks=AllUnassignedOrganizationTasks(),
+    )
+
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(PROJECT_ID)
+        materials = await repo.list_project_materials(PROJECT_ID)
+        topics = await repo.list_topics(PROJECT_ID, version)
+
+    assert result["status"] == "needs_attention"
+    assert project is not None
+    assert project.stage == "organization"
+    assert project.status == "needs_attention"
+    assert len(project.topic_map["unassigned_notes"]) == 4
+    assert "无法形成可信专家 Skill" in project.error_message
+    assert [material.status for material in materials] == ["passed"] * 4
+    assert topics == []
 
 
 @pytest.mark.asyncio

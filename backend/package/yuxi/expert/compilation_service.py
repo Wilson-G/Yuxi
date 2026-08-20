@@ -152,6 +152,32 @@ async def get_candidate_preview(
     root = (get_project_root(project_id) / project.skill_dir).resolve()
     validate_candidate_skill(root)
     materials = await repo.list_project_materials(project_id)
+    excluded_materials = [
+        {
+            "material_id": material.material_id,
+            "title": material.title,
+            "source_path": material.source_path,
+            "reason": material.exclusion_reason or material.error_message or "Review 判定不入选",
+        }
+        for material in materials
+        if material.status in {"excluded", "no_value"}
+    ]
+    passed_materials = [material for material in materials if material.status == "passed"]
+    material_by_note_alias = {f"N{index:03d}": material for index, material in enumerate(passed_materials, start=1)}
+    for item in (project.topic_map or {}).get("unassigned_notes") or []:
+        material = material_by_note_alias.get(str(item.get("note_alias") or ""))
+        reason = str(item.get("reason") or "").strip()
+        if material is None or not reason:
+            raise ValueError("候选 Skill 的未纳入笔记记录无法映射到当前材料")
+        excluded_materials.append(
+            {
+                "material_id": material.material_id,
+                "title": material.title,
+                "source_path": material.source_path,
+                "reason": reason,
+            }
+        )
+
     return {
         "skill_md": (root / "SKILL.md").read_text(encoding="utf-8"),
         "navigation": (root / "nav" / "index.md").read_text(encoding="utf-8"),
@@ -168,16 +194,7 @@ async def get_candidate_preview(
             for line in (root / "sources.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()
         ],
-        "excluded_materials": [
-            {
-                "material_id": material.material_id,
-                "title": material.title,
-                "source_path": material.source_path,
-                "reason": material.exclusion_reason or material.error_message or "Review 判定不入选",
-            }
-            for material in materials
-            if material.status in {"excluded", "no_value"}
-        ],
+        "excluded_materials": excluded_materials,
     }
 
 
