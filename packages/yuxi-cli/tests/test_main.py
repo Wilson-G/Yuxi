@@ -34,6 +34,15 @@ def test_kb_upload_help_is_registered():
     assert "1-300" in output
 
 
+def test_kb_help_marks_legacy_compatibility():
+    result = CliRunner().invoke(app, ["kb", "--help"])
+    output = Text.from_ansi(result.output).plain
+
+    assert result.exit_code == 0
+    assert "legacy knowledge bases" in output
+    assert "compatibility mode" in output
+
+
 def test_chat_command_starts_web_chat(tmp_path, monkeypatch):
     store = ConfigStore(tmp_path / "config.toml")
     config = store.load()
@@ -77,4 +86,4 @@ def test_remote_command_prints_version_and_remote_context_first(tmp_path, monkey
     assert result.exit_code == 0
     output = Text.from_ansi(result.output).plain
     lines = [line.strip() for line in output.splitlines() if line.strip()]
-    assert lines[:3] == [f"Yuxi CLI {__version__}", "Remote: local https://example.com", "pong"]
+    assert lines[:3] == [f"ZhiForge CLI {__version__}", "Remote: local https://example.com", "pong"]

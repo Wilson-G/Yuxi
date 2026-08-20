@@ -232,6 +232,7 @@ def test_local_server_streams_chat_without_exposing_api_key():
         page_response = connection.getresponse()
         page = page_response.read().decode()
         assert page_response.status == 200
+        assert "知铸 ZhiForge Chat" in page
         assert "session-secret" in page
         assert "yxkey_" not in page
 

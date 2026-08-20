@@ -23,7 +23,7 @@ class ChatWebError(Exception):
 
 
 class ChatWebServer(ThreadingHTTPServer):
-    """仅监听本机并代理 Yuxi Agent 请求的临时 HTTP 服务。"""
+    """仅监听本机并代理知铸 Agent 请求的临时 HTTP 服务。"""
 
     daemon_threads = True
 

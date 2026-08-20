@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Yuxi Chat</title>
+    <title>知铸 ZhiForge Chat</title>
     <style>
       :root {
         color-scheme: light;
@@ -14,9 +14,9 @@
         --muted: #8a8a8a;
         --border: #d6d6d6;
         --soft: #f2f2f2;
-        --wechat: #07c160;
-        --wechat-hover: #06ad56;
-        --user-bubble: #95ec69;
+        --primary: #216b58;
+        --primary-hover: #1a5244;
+        --user-bubble: #b9d8cc;
         --error: #c63c3c;
       }
 
@@ -71,9 +71,9 @@
 
       button {
         min-width: 74px;
-        border: 1px solid var(--wechat);
+        border: 1px solid var(--primary);
         border-radius: 4px;
-        background: var(--wechat);
+        background: var(--primary);
         color: #ffffff;
         padding: 8px 15px;
         font-family: inherit;
@@ -84,8 +84,8 @@
         transition: background-color 160ms ease, border-color 160ms ease;
       }
 
-      button:hover { background: var(--wechat-hover); border-color: var(--wechat-hover); }
-      button:focus-visible { outline: 2px solid #118b50; outline-offset: 2px; }
+      button:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+      button:focus-visible { outline: 2px solid #2f8069; outline-offset: 2px; }
       button:disabled { cursor: not-allowed; opacity: 0.45; }
 
       .secondary {
@@ -136,7 +136,7 @@
         background: #576b95;
       }
 
-      .message.user .avatar { background: var(--wechat); }
+      .message.user .avatar { background: var(--primary); }
       .message.error .avatar { background: #d75a57; }
 
       .bubble {
@@ -227,7 +227,7 @@
       }
 
       textarea::placeholder { color: #a9a9a9; }
-      textarea:focus-visible { box-shadow: inset 0 -2px var(--wechat); }
+      textarea:focus-visible { box-shadow: inset 0 -2px var(--primary); }
 
       .composer-row {
         display: flex;
@@ -289,7 +289,7 @@
     <main class="shell">
       <header>
         <div>
-          <h1>Yuxi Chat</h1>
+          <h1>知铸 ZhiForge Chat</h1>
           <p class="meta">Agent <span id="agent"></span></p>
         </div>
         <button id="new-chat" class="secondary" type="button">新对话</button>
@@ -334,7 +334,7 @@
         bubble.className = "bubble";
         const label = document.createElement("span");
         label.className = "label";
-        label.textContent = role === "user" ? "You" : role === "error" ? "Error" : "Yuxi";
+        label.textContent = role === "user" ? "You" : role === "error" ? "Error" : "知铸";
         const text = document.createElement("pre");
         text.className = "content";
         text.textContent = content;

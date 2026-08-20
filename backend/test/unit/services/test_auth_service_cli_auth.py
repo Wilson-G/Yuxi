@@ -44,6 +44,7 @@ async def test_cli_auth_session_pending_then_exchange(session):
 
     assert device_code.startswith("yxcli_")
     assert auth_session.user_code
+    assert auth_session.key_name == "ZhiForge CLI"
 
     with pytest.raises(CLIAuthError) as pending:
         await exchange_cli_auth_token(db, device_code)
@@ -56,6 +57,7 @@ async def test_cli_auth_session_pending_then_exchange(session):
     token_data = await exchange_cli_auth_token(db, device_code)
 
     assert token_data["secret"].startswith("yxkey_")
+    assert token_data["api_key"]["name"] == "ZhiForge CLI"
     assert token_data["api_key"]["user_id"] == user.id
     assert token_data["user"]["uid"] == "admin"
 
