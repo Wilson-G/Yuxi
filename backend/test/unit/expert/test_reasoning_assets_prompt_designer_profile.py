@@ -25,7 +25,7 @@ PROMPT_PACK_FIELDS = (
     "navigation_author",
     "skill_author",
 )
-SOURCE_LABELS = ("原文明说", "领域补链", "专家质疑", "材料未知")
+SOURCE_LABELS = ("原文明说", "领域补链", "候选解释", "专家质疑", "材料未知")
 TEMPLATE_NAMES = {
     "interview-multi-source.md",
     "mentor-oral-teaching.md",
@@ -85,10 +85,13 @@ def test_reasoning_assets_profile_designs_all_existing_prompt_pack_fields():
 def test_reasoning_assets_profile_keeps_domain_knowledge_and_material_sources_separate():
     skill, example = _read_assets()
 
-    assert "先激活领域知识" in skill
-    assert "再用代表材料校准" in skill
+    assert "第 0 阶段的核心交付：项目领域推导模型" in skill
+    assert "compilation_brief" in skill
+    assert "先激活领域知识并形成候选推导模型" in skill
+    assert "用代表材料校准并冻结项目模型" in skill
     assert "不能写成“材料认为”" in skill
     assert "原文明说" in skill and "不代表内容正确" in skill
+    assert "候选解释" in skill and "不能单独支撑强动作" in skill
     assert "一个节点只能有一个来源标签" in skill
     assert "混在同一句时必须拆成多个节点" in skill
     assert all(label in example for label in SOURCE_LABELS)
@@ -108,12 +111,12 @@ def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodi
     assert catalog_match is not None
 
     catalog_nodes = re.findall(
-        r"^- (N\d{2}) \[([^\]]+)\]\[(原文明说|领域补链|专家质疑|材料未知)\] .+$",
+        r"^- (N\d{2}) \[([^\]]+)\]\[(原文明说|领域补链|候选解释|专家质疑|材料未知)\] .+$",
         catalog_match.group("catalog"),
         flags=re.MULTILINE,
     )
     body_nodes = re.findall(
-        r"^### (N\d{2}) \[([^\]]+)\]\[(原文明说|领域补链|专家质疑|材料未知)\]$",
+        r"^### (N\d{2}) \[([^\]]+)\]\[(原文明说|领域补链|候选解释|专家质疑|材料未知)\]$",
         example,
         flags=re.MULTILINE,
     )
@@ -123,13 +126,17 @@ def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodi
     assert len({node_id for node_id, _, _ in catalog_nodes}) == len(catalog_nodes)
     assert "材料没有反馈就不创建反馈节点" in _read_assets()[0]
     assert "没有预测就不创建预测节点" in _read_assets()[0]
+    assert "## CoT 推导示范" in example
+    assert "Input" in example and "Goal / Constraints" in example
+    assert "Domain Relation" in example and "Next Check" in example
+    assert "Update" in example and "Transfer" in example
 
 
 def test_reasoning_assets_profile_limits_evidence_to_material_statements():
     skill, example = _read_assets()
 
     assert "只锚定当前材料直接明说的内容或材料事实" in skill
-    assert "不得为 `领域补链`、`专家质疑` 或 `材料未知` 伪造原文行号" in skill
+    assert "不得为 `领域补链`、`候选解释`、`专家质疑` 或 `材料未知` 伪造原文行号" in skill
     assert "只引用支持 N01、N03、N04、N05、N07" in example
     assert "不为 N02、N06、N08、N09 伪造原文依据" in example
 
