@@ -11,6 +11,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.agents.skills.repository import SkillRepository
+from yuxi.expert.compiler_profiles import (
+    DEFAULT_COMPILER_PROFILE_ID,
+    get_expert_compiler_profile,
+    list_expert_compiler_profiles,
+)
 from yuxi.expert.contracts import MaterialNoteResult, MaterialReviewResult, ProjectPromptPack
 from yuxi.expert.materials import read_expert_material_text
 from yuxi.expert.model_tasks import ExpertModelTasks
@@ -43,6 +48,7 @@ async def create_expert_project(
     model_spec: str,
     created_by: str,
     material_unit_ids: list[str],
+    compiler_profile_id: str = DEFAULT_COMPILER_PROFILE_ID,
 ) -> Any:
     """从资料库就绪单元创建正文已经可读的专家项目。"""
 
@@ -52,6 +58,7 @@ async def create_expert_project(
     clean_description = str(description or "").strip()
     if not clean_description:
         raise ValueError("请补充专家背景与学习目标")
+    compiler_profile = get_expert_compiler_profile(compiler_profile_id)
     selected_ids = [str(unit_id or "").strip() for unit_id in material_unit_ids]
     if not selected_ids or any(not unit_id for unit_id in selected_ids):
         raise ValueError("请至少选择一份已处理材料")
@@ -77,6 +84,7 @@ async def create_expert_project(
             name=clean_name,
             description=clean_description,
             model_spec=model_spec,
+            compiler_profile_id=compiler_profile.profile_id,
             created_by=created_by,
             stage=ORIENTATION_STAGE,
             status="ready",
@@ -121,6 +129,7 @@ async def list_expert_projects(db: AsyncSession, *, created_by: str) -> list[dic
             "project_id": project.project_id,
             "name": project.name,
             "description": project.description,
+            "compiler_profile_id": project.compiler_profile_id,
             "stage": project.stage,
             "status": project.status,
             "message": project.message,
@@ -132,6 +141,12 @@ async def list_expert_projects(db: AsyncSession, *, created_by: str) -> list[dic
         }
         for project in projects
     ]
+
+
+def list_expert_compiler_profile_options() -> list[dict[str, str]]:
+    """返回创建专家项目时可选择的内置编译方法。"""
+
+    return list_expert_compiler_profiles()
 
 
 async def get_expert_project_detail(
@@ -452,7 +467,6 @@ async def run_project_orientation(
 ) -> dict[str, Any]:
     """生成当前方法版本的定向、专属 Prompt、笔记小样与 Review。"""
 
-    tasks = model_tasks or ExpertModelTasks()
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
@@ -469,6 +483,7 @@ async def run_project_orientation(
             "name": project.name,
             "description": project.description,
             "model_spec": project.model_spec,
+            "compiler_profile_id": project.compiler_profile_id,
             "feedback": project.method_feedback,
             "representative_ids": list(project.representative_material_ids or []),
             "orientation_report": project.orientation_report or "",
@@ -505,6 +520,11 @@ async def run_project_orientation(
             project_snapshot["prompt_pack"],
         )
     )
+    compiler_profile = get_expert_compiler_profile(
+        project_snapshot["compiler_profile_id"],
+        validate_assets=not has_method_candidate,
+    )
+    tasks = model_tasks or ExpertModelTasks(compiler_profile=compiler_profile)
     if has_method_candidate:
         learning_plan = project_snapshot["learning_plan"]
         prompt_pack = ProjectPromptPack.model_validate(project_snapshot["prompt_pack"])
@@ -1468,6 +1488,7 @@ __all__ = [
     "exclude_material",
     "get_expert_project_detail",
     "get_expert_material_text",
+    "list_expert_compiler_profile_options",
     "list_expert_projects",
     "mark_material_learning_attention",
     "mark_project_attention",

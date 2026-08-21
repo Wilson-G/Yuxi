@@ -91,6 +91,10 @@
       :keyboard="!creating"
       ok-text="创建项目"
       cancel-text="取消"
+      :ok-button-props="{
+        disabled:
+          compilerProfilesLoading || Boolean(compilerProfilesError) || !compilerProfiles.length
+      }"
       @ok="submitProject"
       @cancel="resetCreateForm"
     >
@@ -110,6 +114,35 @@
             :maxlength="500"
             placeholder="例如：面向亚马逊运营人员，学习广告投放的判断条件、调优顺序和适用边界"
           />
+        </a-form-item>
+
+        <a-form-item label="编译方法" name="compilerProfileId">
+          <a-skeleton
+            v-if="compilerProfilesLoading"
+            active
+            :title="false"
+            :paragraph="{ rows: 1 }"
+          />
+          <a-alert
+            v-else-if="compilerProfilesError"
+            type="error"
+            show-icon
+            :message="compilerProfilesError"
+          >
+            <template #action>
+              <a-button size="small" @click="fetchCompilerProfiles">重试</a-button>
+            </template>
+          </a-alert>
+          <template v-else>
+            <a-segmented
+              v-model:value="createForm.compilerProfileId"
+              :options="compilerProfileOptions"
+              block
+            />
+            <p v-if="selectedCompilerProfile" class="compiler-profile-description">
+              {{ selectedCompilerProfile.description }}
+            </p>
+          </template>
         </a-form-item>
 
         <a-form-item label="学习模型" name="modelSpec">
@@ -164,6 +197,8 @@ import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import { useConfigStore } from '@/stores/config'
 import {
   getExpertProjectProgress,
+  getExpertCompilerProfileLabel,
+  getExpertCompilerProfileOptions,
   getExpertStageLabel,
   getExpertStatusLabel,
   getExpertStatusTone
@@ -175,6 +210,10 @@ const router = useRouter()
 const configStore = useConfigStore()
 const projects = ref([])
 const loading = ref(false)
+const compilerProfiles = ref([])
+const compilerProfilesLoading = ref(false)
+const compilerProfilesError = ref('')
+const defaultCompilerProfileId = ref('apprenticeship')
 const searchQuery = ref('')
 const createOpen = ref(false)
 const creating = ref(false)
@@ -184,6 +223,7 @@ const materialSelectorRef = ref(null)
 const createForm = reactive({
   name: '',
   description: '',
+  compilerProfileId: 'apprenticeship',
   modelSpec: '',
   materialUnitIds: []
 })
@@ -198,6 +238,7 @@ const createRules = {
       trigger: 'blur'
     }
   ],
+  compilerProfileId: [{ required: true, message: '请选择编译方法', trigger: 'change' }],
   materialUnitIds: [
     {
       validator: () =>
@@ -208,6 +249,13 @@ const createRules = {
     }
   ]
 }
+
+const compilerProfileOptions = computed(() =>
+  getExpertCompilerProfileOptions(compilerProfiles.value)
+)
+const selectedCompilerProfile = computed(() =>
+  compilerProfiles.value.find((profile) => profile.profile_id === createForm.compilerProfileId)
+)
 
 const filteredProjects = computed(() => {
   const keyword = searchQuery.value.trim().toLowerCase()
@@ -234,6 +282,28 @@ const fetchProjects = async () => {
   }
 }
 
+/** 加载后端注册的内置专家编译方法。 */
+const fetchCompilerProfiles = async () => {
+  if (compilerProfilesLoading.value) return
+  compilerProfilesLoading.value = true
+  compilerProfilesError.value = ''
+  try {
+    const response = await expertApi.listCompilerProfiles()
+    const items = Array.isArray(response?.items) ? response.items : []
+    if (!items.length) throw new Error('当前没有可用的专家编译方法')
+    compilerProfiles.value = items
+    defaultCompilerProfileId.value = response?.default_profile_id || items[0].profile_id
+    if (!items.some((profile) => profile.profile_id === createForm.compilerProfileId)) {
+      createForm.compilerProfileId = defaultCompilerProfileId.value
+    }
+  } catch (error) {
+    compilerProfiles.value = []
+    compilerProfilesError.value = error.message || '加载编译方法失败，请重试'
+  } finally {
+    compilerProfilesLoading.value = false
+  }
+}
+
 /** 返回项目卡片使用的状态标签。 */
 const projectStatus = (project) => ({
   label: getExpertStatusLabel(project.status),
@@ -246,6 +316,10 @@ const projectStatus = (project) => ({
 /** 返回项目卡片上有直接业务含义的标签。 */
 const projectTags = (project) => {
   const tags = [{ name: getExpertStageLabel(project.stage), color: 'gray' }]
+  tags.push({
+    name: getExpertCompilerProfileLabel(compilerProfiles.value, project.compiler_profile_id),
+    color: 'gray'
+  })
   if (project.method_version > 0)
     tags.push({ name: `方法 v${project.method_version}`, color: 'gray' })
   if (project.skill_slug) tags.push({ name: '专家 Skill', color: 'green' })
@@ -265,6 +339,7 @@ const openProject = (project) => {
 
 /** 打开创建弹窗并使用当前系统默认模型。 */
 const openCreateModal = async () => {
+  if (!compilerProfiles.value.length) void fetchCompilerProfiles()
   if (!configStore.config?.default_model) {
     try {
       await configStore.refreshConfig()
@@ -287,6 +362,7 @@ const selectModel = (modelSpec) => {
 const resetCreateForm = () => {
   createForm.name = ''
   createForm.description = ''
+  createForm.compilerProfileId = defaultCompilerProfileId.value
   createForm.modelSpec = configStore.config?.default_model || ''
   createForm.materialUnitIds = []
   createFormRef.value?.clearValidate()
@@ -312,6 +388,7 @@ const submitProject = async () => {
     const response = await expertApi.create({
       name: createForm.name.trim(),
       description: createForm.description.trim(),
+      compilerProfileId: createForm.compilerProfileId,
       modelSpec: createForm.modelSpec,
       materialUnitIds: createForm.materialUnitIds
     })
@@ -328,7 +405,10 @@ const submitProject = async () => {
   }
 }
 
-onMounted(fetchProjects)
+onMounted(() => {
+  void fetchProjects()
+  void fetchCompilerProfiles()
+})
 
 defineExpose({ loading, fetchProjects })
 </script>
@@ -356,6 +436,18 @@ defineExpose({ loading, fetchProjects })
   color: var(--gray-500);
   font-size: 12px;
   line-height: 20px;
+}
+
+.compiler-profile-description {
+  max-width: 68ch;
+  margin: 7px 0 0;
+  color: var(--gray-600);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+:deep(.ant-skeleton-paragraph) {
+  margin: 0;
 }
 
 .model-settings-link {

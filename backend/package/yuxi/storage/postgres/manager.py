@@ -545,6 +545,10 @@ class PostgresManager(metaclass=SingletonMeta):
         stmts = [
             (
                 "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "compiler_profile_id VARCHAR(64) NOT NULL DEFAULT 'apprenticeship'"
+            ),
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
                 "auto_advance BOOLEAN NOT NULL DEFAULT FALSE"
             ),
             (

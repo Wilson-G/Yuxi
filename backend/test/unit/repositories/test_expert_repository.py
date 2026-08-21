@@ -154,6 +154,8 @@ async def test_project_reads_and_lists_are_scoped_by_creator(session: AsyncSessi
     assert hidden is None
     assert [project.project_id for project in listed] == ["project-own"]
     assert own_project.auto_advance is False
+    assert own_project.compiler_profile_id == "apprenticeship"
+    assert own_project.to_dict()["compiler_profile_id"] == "apprenticeship"
     assert own_project.to_dict()["auto_advance"] is False
     assert own_project.to_dict()["representative_material_ids"] == []
     assert own_project.to_dict()["prompt_pack"] == {}
@@ -192,6 +194,8 @@ async def test_project_update_saves_method_confirmation_fields(session: AsyncSes
     assert updated.editorial_plan == "# 当前编辑方案"
     with pytest.raises(ValueError, match="created_by"):
         await repository.update_project("project-1", created_by="user-2")
+    with pytest.raises(ValueError, match="compiler_profile_id"):
+        await repository.update_project("project-1", compiler_profile_id="reasoning_assets")
 
 
 @pytest.mark.asyncio

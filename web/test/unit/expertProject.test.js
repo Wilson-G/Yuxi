@@ -11,6 +11,8 @@ import {
   groupExpertTopics,
   getExcludedExpertMaterials,
   getExpertMaterialProgress,
+  getExpertCompilerProfileLabel,
+  getExpertCompilerProfileOptions,
   getExpertProjectProgress,
   getExpertStageIndex,
   getExpertTopicProgress,
@@ -69,6 +71,20 @@ test('项目生命周期动作遵循后端暂停、卸载和删除条件', () =>
   assert.equal(canDeleteExpertProject({ status: 'needs_attention' }), true)
   assert.equal(canDeleteExpertProject({ status: 'running' }), false)
   assert.equal(canDeleteExpertProject({ status: 'enabled' }), false)
+})
+
+test('编译方法选项使用后端显示名并保留未知历史 ID', () => {
+  const profiles = [
+    { profile_id: 'apprenticeship', display_name: '教材笔记法' },
+    { profile_id: 'reasoning_assets', display_name: '领域推导资产法' }
+  ]
+
+  assert.deepEqual(getExpertCompilerProfileOptions(profiles), [
+    { label: '教材笔记法', value: 'apprenticeship' },
+    { label: '领域推导资产法', value: 'reasoning_assets' }
+  ])
+  assert.equal(getExpertCompilerProfileLabel(profiles, 'reasoning_assets'), '领域推导资产法')
+  assert.equal(getExpertCompilerProfileLabel(profiles, 'legacy-method'), 'legacy-method')
 })
 
 test('材料和讲义进度按真实终态计算', () => {

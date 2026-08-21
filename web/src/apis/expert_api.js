@@ -2,13 +2,23 @@ import { apiAdminDelete, apiAdminGet, apiAdminPost } from './base'
 
 const BASE_URL = '/api/expert-projects'
 
+/** 读取创建专家项目时可选择的内置编译方法。 */
+export const listExpertCompilerProfiles = async () => apiAdminGet(`${BASE_URL}/compiler-profiles`)
+
 /** 从资料库已经就绪的自然材料单元创建专家项目。 */
-export const createExpertProject = async ({ name, description, modelSpec = '', materialUnitIds }) =>
+export const createExpertProject = async ({
+  name,
+  description,
+  modelSpec = '',
+  materialUnitIds,
+  compilerProfileId = ''
+}) =>
   apiAdminPost(BASE_URL, {
     name,
     description,
     model_spec: modelSpec,
-    material_unit_ids: materialUnitIds
+    material_unit_ids: materialUnitIds,
+    ...(compilerProfileId ? { compiler_profile_id: compilerProfileId } : {})
   })
 
 /** 列出当前用户创建的专家项目。 */
@@ -103,6 +113,7 @@ export const deleteExpertProject = async (projectId) =>
 
 export const expertApi = {
   create: createExpertProject,
+  listCompilerProfiles: listExpertCompilerProfiles,
   list: listExpertProjects,
   get: getExpertProject,
   getMaterialText: getExpertMaterialText,

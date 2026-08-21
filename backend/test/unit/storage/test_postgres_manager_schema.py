@@ -156,6 +156,17 @@ async def test_ensure_business_schema_adds_auto_advance_with_false_default():
 
 
 @pytest.mark.asyncio
+async def test_ensure_business_schema_adds_default_compiler_profile():
+    async with _recording_manager() as (manager, connection):
+        await manager.ensure_business_schema()
+
+    statements = "\n".join(connection.statements)
+    assert (
+        "expert_projects ADD COLUMN IF NOT EXISTS compiler_profile_id VARCHAR(64) NOT NULL DEFAULT 'apprenticeship'"
+    ) in statements
+
+
+@pytest.mark.asyncio
 async def test_ensure_business_schema_removes_unbound_api_keys_before_requiring_user_id():
     async with _recording_manager() as (manager, connection):
         await manager.ensure_business_schema()

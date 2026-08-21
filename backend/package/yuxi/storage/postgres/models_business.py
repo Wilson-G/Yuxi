@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from yuxi.expert.compiler_profiles import DEFAULT_COMPILER_PROFILE_ID
 from yuxi.storage.minio.client import normalize_public_minio_url
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
@@ -290,6 +291,13 @@ class ExpertProject(Base):
     name = Column(String(255), nullable=False, comment="项目名称")
     description = Column(Text, nullable=False, default="", comment="项目说明")
     model_spec = Column(String(512), nullable=False, comment="项目使用的模型规格")
+    compiler_profile_id = Column(
+        String(64),
+        nullable=False,
+        default=DEFAULT_COMPILER_PROFILE_ID,
+        server_default=DEFAULT_COMPILER_PROFILE_ID,
+        comment="创建时固定的专家编译方法 ID",
+    )
     stage = Column(String(32), nullable=False, default="orientation", index=True, comment="当前业务阶段")
     status = Column(String(32), nullable=False, default="pending", index=True, comment="当前阶段状态")
     created_by = Column(String(64), nullable=False, index=True, comment="项目创建人 UID")
@@ -370,6 +378,7 @@ class ExpertProject(Base):
             "name": self.name,
             "description": self.description,
             "model_spec": self.model_spec,
+            "compiler_profile_id": self.compiler_profile_id,
             "stage": self.stage,
             "status": self.status,
             "created_by": self.created_by,

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.expert.compiler_profiles import DEFAULT_COMPILER_PROFILE_ID
 from yuxi.storage.postgres.models_business import (
     ExpertMaterial,
     ExpertProject,
@@ -30,6 +31,7 @@ class ExpertRepository:
         description: str,
         model_spec: str,
         created_by: str,
+        compiler_profile_id: str = DEFAULT_COMPILER_PROFILE_ID,
         stage: str = "orientation",
         status: str = "pending",
     ) -> ExpertProject:
@@ -40,6 +42,7 @@ class ExpertRepository:
             name=name,
             description=description,
             model_spec=model_spec,
+            compiler_profile_id=compiler_profile_id,
             stage=stage,
             status=status,
             created_by=created_by,
@@ -93,7 +96,11 @@ class ExpertRepository:
         project = await self.get_project(project_id)
         if project is None:
             return None
-        self._apply_changes(project, changes, immutable={"project_id", "created_by", "created_at", "updated_at"})
+        self._apply_changes(
+            project,
+            changes,
+            immutable={"project_id", "created_by", "compiler_profile_id", "created_at", "updated_at"},
+        )
         await self.db.flush()
         return project
 

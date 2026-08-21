@@ -93,6 +93,7 @@ async def _create_project(
     count: int,
     stage: str = service.ORIENTATION_STAGE,
     status: str = "preparing",
+    compiler_profile_id: str = "apprenticeship",
 ):
     project_id = uuid.uuid4().hex
     project_root = storage.create_project_workspace(project_id)
@@ -104,6 +105,7 @@ async def _create_project(
             description="学习材料中的判断条件与边界",
             model_spec="provider:model",
             created_by="user-1",
+            compiler_profile_id=compiler_profile_id,
             stage=stage,
             status=status,
         )
@@ -499,6 +501,60 @@ async def test_create_project_uses_ready_units_without_raw_or_text_copies(
 
 
 @pytest.mark.asyncio
+async def test_same_material_units_create_independent_projects_with_fixed_profiles(expert_env) -> None:
+    unit_ids = await _create_ready_library_units(expert_env)
+
+    async with expert_env.factory() as db:
+        default_project = await service.create_expert_project(
+            db,
+            name="教材笔记项目",
+            description="使用教材笔记法学习同一批材料",
+            model_spec="provider:model",
+            created_by="user-1",
+            material_unit_ids=unit_ids,
+        )
+        reasoning_project = await service.create_expert_project(
+            db,
+            name="领域推导项目",
+            description="使用领域推导资产法学习同一批材料",
+            model_spec="provider:model",
+            created_by="user-1",
+            material_unit_ids=unit_ids,
+            compiler_profile_id="reasoning_assets",
+        )
+
+    assert default_project.project_id != reasoning_project.project_id
+    assert default_project.compiler_profile_id == "apprenticeship"
+    assert reasoning_project.compiler_profile_id == "reasoning_assets"
+    async with expert_env.factory() as db:
+        default_materials = await ExpertRepository(db).list_project_materials(default_project.project_id)
+        reasoning_materials = await ExpertRepository(db).list_project_materials(reasoning_project.project_id)
+    assert [item.material_unit_id for item in default_materials] == unit_ids
+    assert [item.material_unit_id for item in reasoning_materials] == unit_ids
+    assert {item.material_id for item in default_materials}.isdisjoint(item.material_id for item in reasoning_materials)
+
+
+@pytest.mark.asyncio
+async def test_create_project_rejects_unknown_compiler_profile_without_partial_project(expert_env) -> None:
+    unit_ids = await _create_ready_library_units(expert_env)
+
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="未知专家编译方法"):
+            await service.create_expert_project(
+                db,
+                name="未知方法项目",
+                description="不能创建无法恢复的专家项目",
+                model_spec="provider:model",
+                created_by="user-1",
+                material_unit_ids=unit_ids,
+                compiler_profile_id="unknown",
+            )
+
+    async with expert_env.factory() as db:
+        assert await ExpertRepository(db).list_projects() == []
+
+
+@pytest.mark.asyncio
 async def test_create_project_requires_expert_context(expert_env) -> None:
     """创建项目时必须提供模型定向所需的专家背景。"""
 
@@ -597,6 +653,39 @@ async def test_create_project_requires_configured_model_context_length(
     assert str(exc_info.value) == (
         "专家项目模型缺少上下文长度配置，请前往「智能体 > 模型供应商 > 管理模型 > 配置」补充"
     )
+
+
+@pytest.mark.asyncio
+async def test_orientation_loads_compiler_profile_from_project_fact(
+    expert_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id, _ = await _create_project(
+        expert_env,
+        count=2,
+        compiler_profile_id="reasoning_assets",
+    )
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    tasks = OrientationModelTasks()
+    loaded_profiles: list[str] = []
+
+    def build_tasks(*_args, compiler_profile, **_kwargs):
+        loaded_profiles.append(compiler_profile.profile_id)
+        return tasks
+
+    monkeypatch.setattr(service, "ExpertModelTasks", build_tasks)
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+
+    result = await service.run_project_orientation(project_id, method_version)
+
+    assert result["status"] == "awaiting_confirmation"
+    assert loaded_profiles == ["reasoning_assets"]
 
 
 @pytest.mark.asyncio

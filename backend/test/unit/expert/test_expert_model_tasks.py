@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from yuxi.expert import model_tasks
+from yuxi.expert import compiler_profiles, model_tasks
 from yuxi.expert.contracts import (
     HandoutReviewResult,
     MaterialNoteResult,
@@ -50,7 +50,7 @@ class RecordingModelLoader:
 
 
 @pytest.fixture
-def asset_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def compiler_profile(tmp_path: Path) -> compiler_profiles.ExpertCompilerProfile:
     """提供可精确识别的中央方法、模板和示例。"""
 
     root = tmp_path / "project_prompt_designer"
@@ -69,8 +69,14 @@ def asset_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "EXAMPLE-FIRST\nEXAMPLE-LAST",
         encoding="utf-8",
     )
-    monkeypatch.setattr(model_tasks, "PROMPT_DESIGNER_ROOT", root)
-    return root
+    return compiler_profiles.ExpertCompilerProfile(
+        profile_id="test-profile",
+        display_name="测试方法",
+        description="测试中央资产",
+        skill_path=root / "SKILL.md",
+        structure_example_path=root / "examples" / "apprentice-stage-prompt-pack.md",
+        templates_dir=root / "templates",
+    )
 
 
 def _prompt(call: dict[str, Any]) -> str:
@@ -258,8 +264,9 @@ async def test_other_models_keep_plain_messages_without_cache_parameters(
 
 
 @pytest.mark.asyncio
-async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_method_assets(asset_root: Path) -> None:
-    del asset_root
+async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_method_assets(
+    compiler_profile: compiler_profiles.ExpertCompilerProfile,
+) -> None:
     model = RecordingStructuredModel(
         [
             {
@@ -278,7 +285,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
         ]
     )
     loader = RecordingModelLoader(model)
-    tasks = model_tasks.ExpertModelTasks(loader)
+    tasks = model_tasks.ExpertModelTasks(loader, compiler_profile=compiler_profile)
     samples = [
         {
             "alias": "M001",
@@ -843,7 +850,45 @@ async def test_method_calibration_only_receives_current_method_and_sample_notes_
     assert "SOURCE-FIRST" not in prompt
     assert "不得写进任何单篇 Prompt" in prompt
     assert "不要要求判断材料是否来自同一位老师或说话人" in prompt
-    assert "作者明确提出的领域知识" in _system_prompt(model.calls[0])
+    assert "作者明确提出的领域知识" not in _system_prompt(model.calls[0])
+    assert "Review 是问题证据，不是新的领域内容来源" in _system_prompt(model.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_note_grouping_only_mentions_asset_nodes_for_reasoning_profile() -> None:
+    grouping = {
+        "groups": [
+            {
+                "group_key": "group-1",
+                "title": "判断范围",
+                "rationale": "相近路标",
+                "note_aliases": ["N001"],
+            }
+        ],
+        "unresolved": [],
+    }
+    model = RecordingStructuredModel([grouping, grouping])
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+
+    await tasks.plan_note_groups(
+        model_spec="provider:model",
+        learning_plan="学习方案",
+        stage_prompt="主题研究 Prompt",
+        note_catalog="N001 | Labels：判断条件",
+    )
+    await tasks.plan_note_groups(
+        model_spec="provider:model",
+        learning_plan="学习方案",
+        stage_prompt="主题研究 Prompt",
+        note_catalog="N001 | Labels：判断条件 | 资产节点：N01 判断链",
+        include_asset_nodes=True,
+    )
+
+    default_system = _system_prompt(model.calls[0])
+    reasoning_system = _system_prompt(model.calls[1])
+    assert "只根据笔记目录中的 routing_labels 形成" in default_system
+    assert "资产节点目录" not in default_system
+    assert "只根据笔记目录中的 routing_labels 和资产节点目录形成" in reasoning_system
 
 
 @pytest.mark.asyncio

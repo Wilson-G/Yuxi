@@ -52,6 +52,16 @@ export const getExpertStageIndex = (stage) => {
 export const getExpertStageLabel = (stage) =>
   EXPERT_STAGE_ITEMS.find((item) => item.key === stage)?.label || '专家项目'
 
+/** 返回后端注册的专家编译方法选项，供创建表单使用。 */
+export const getExpertCompilerProfileOptions = (profiles = []) =>
+  profiles.map((profile) => ({ label: profile.display_name, value: profile.profile_id }))
+
+/** 返回项目所选编译方法的用户显示名。 */
+export const getExpertCompilerProfileLabel = (profiles = [], profileId) =>
+  profiles.find((profile) => profile.profile_id === profileId)?.display_name ||
+  profileId ||
+  '编译方法'
+
 /** 返回项目状态的用户可读名称。 */
 export const getExpertStatusLabel = (status) => PROJECT_STATUS_LABELS[status] || status || '未知'
 

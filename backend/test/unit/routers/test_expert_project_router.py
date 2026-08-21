@@ -11,6 +11,65 @@ from httpx import ASGITransport, AsyncClient
 import server.routers.expert_project_router as router
 
 
+@pytest.mark.asyncio
+async def test_compiler_profile_list_returns_default_and_opt_in_methods() -> None:
+    response = await router.list_expert_compiler_profiles_route()
+
+    assert response["default_profile_id"] == "apprenticeship"
+    assert [(item["profile_id"], item["display_name"]) for item in response["items"]] == [
+        ("apprenticeship", "教材笔记法"),
+        ("reasoning_assets", "领域推导资产法"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_profile_id"),
+    [
+        (
+            router.CreateExpertProjectRequest(
+                name="默认方法项目",
+                description="验证旧 API 默认行为",
+                model_spec="provider:model",
+                material_unit_ids=["unit-1"],
+            ),
+            "apprenticeship",
+        ),
+        (
+            router.CreateExpertProjectRequest(
+                name="领域推导项目",
+                description="验证显式方法选择",
+                model_spec="provider:model",
+                compiler_profile_id="reasoning_assets",
+                material_unit_ids=["unit-1"],
+            ),
+            "reasoning_assets",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_create_route_passes_default_or_explicit_compiler_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: router.CreateExpertProjectRequest,
+    expected_profile_id: str,
+) -> None:
+    received: list[str] = []
+
+    async def create_project(_db, **kwargs):
+        received.append(kwargs["compiler_profile_id"])
+        return SimpleNamespace(to_dict=lambda: {"project_id": "project-1", **kwargs})
+
+    monkeypatch.setattr(router, "create_expert_project", create_project)
+
+    response = await router.create_expert_project_route(
+        payload,
+        current_user=SimpleNamespace(uid="admin-1"),
+        db=object(),
+    )
+
+    assert response["item"]["compiler_profile_id"] == expected_profile_id
+    assert received == [expected_profile_id]
+
+
 @pytest.mark.parametrize(
     ("request_kwargs", "expected_auto_advance"),
     [

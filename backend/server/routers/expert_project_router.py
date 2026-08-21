@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
 from yuxi.agents.models import resolve_chat_model_spec
 from yuxi.config.options import system_options
+from yuxi.expert.compiler_profiles import DEFAULT_COMPILER_PROFILE_ID
 from yuxi.expert.service import (
     confirm_project_method,
     create_expert_project,
@@ -17,6 +18,7 @@ from yuxi.expert.service import (
     get_expert_material_text,
     get_expert_project_detail,
     list_expert_projects,
+    list_expert_compiler_profile_options,
     pause_expert_project,
     retry_material_learning,
     retry_material_preparation,
@@ -62,6 +64,7 @@ class CreateExpertProjectRequest(BaseModel):
     name: str = Field(min_length=1)
     description: str
     model_spec: str = ""
+    compiler_profile_id: str = DEFAULT_COMPILER_PROFILE_ID
     material_unit_ids: list[str] = Field(min_length=1)
 
 
@@ -98,6 +101,19 @@ async def list_expert_projects_route(
     """列出当前用户的专家项目。"""
 
     return {"items": await list_expert_projects(db, created_by=str(current_user.uid))}
+
+
+@expert_projects.get("/compiler-profiles")
+async def list_expert_compiler_profiles_route():
+    """列出当前可供创建项目选择的内置编译方法。"""
+
+    try:
+        return {
+            "items": list_expert_compiler_profile_options(),
+            "default_profile_id": DEFAULT_COMPILER_PROFILE_ID,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @expert_projects.get("/{project_id}")
@@ -180,6 +196,7 @@ async def create_expert_project_route(
             name=payload.name,
             description=payload.description,
             model_spec=requested_model,
+            compiler_profile_id=payload.compiler_profile_id,
             created_by=str(current_user.uid),
             material_unit_ids=payload.material_unit_ids,
         )

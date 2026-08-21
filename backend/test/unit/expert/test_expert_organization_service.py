@@ -170,6 +170,55 @@ def test_note_catalog_uses_only_source_and_routing_labels() -> None:
     assert material.title not in catalog
 
 
+def test_reasoning_assets_note_catalog_extracts_only_asset_node_list_items() -> None:
+    material = SimpleNamespace(
+        material_id="material-1",
+        source_path="series/source-1.md",
+        note_contract={"routing_labels": ["判断条件"]},
+        note="""# 笔记
+
+## 资产节点目录
+- N01 [事实][原文明说] 材料明确给出的定义
+2. N02 [机制][领域补链] 用于解释事实的候选机制
+这行不是列表，不应透传
+
+### 节点正文
+- N03 [边界][材料未知] 材料没有说明
+
+## 其他部分
+- 不应进入目录
+""",
+    )
+
+    catalog = organization_service._build_note_catalog(
+        [material],
+        {material.material_id: "N001"},
+        include_asset_nodes=True,
+    )
+
+    assert catalog == (
+        "N001 | 来源：series/source-1.md | Labels：判断条件 | "
+        "资产节点：N01 [事实][原文明说] 材料明确给出的定义；"
+        "N02 [机制][领域补链] 用于解释事实的候选机制；"
+        "N03 [边界][材料未知] 材料没有说明"
+    )
+    assert "这行不是列表" not in catalog
+    assert "不应进入目录" not in catalog
+
+
+def test_default_note_catalog_ignores_asset_node_section() -> None:
+    material = SimpleNamespace(
+        material_id="material-1",
+        source_path="series/source-1.md",
+        note_contract={"routing_labels": ["判断条件"]},
+        note="## 资产节点目录\n- N01 节点",
+    )
+
+    catalog = organization_service._build_note_catalog([material], {material.material_id: "N001"})
+
+    assert catalog == "N001 | 来源：series/source-1.md | Labels：判断条件"
+
+
 class OrganizationModelTasks:
     """记录并发候选研究，并完成一篇经过一次修订的小样。"""
 

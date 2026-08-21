@@ -20,6 +20,7 @@
       </div>
 
       <div v-if="project" class="project-topbar-actions">
+        <span class="status-badge">{{ compilerProfileName }}</span>
         <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
           {{ getExpertStatusLabel(project.status) }}
         </span>
@@ -1204,6 +1205,7 @@ import {
   formatExpertFinalReview,
   getExcludedExpertMaterials,
   getExpertMaterialProgress,
+  getExpertCompilerProfileLabel,
   getExpertMaterialStatusLabel,
   getExpertProjectProgress,
   getExpertStageIndex,
@@ -1221,6 +1223,7 @@ const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => String(route.params.projectId || ''))
 const project = ref(null)
+const compilerProfiles = ref([])
 const projectContentRef = ref(null)
 const loading = ref(false)
 const loadError = ref('')
@@ -1258,6 +1261,9 @@ const isReviewingHistory = computed(
   () => Boolean(reviewStage.value) && reviewStage.value !== project.value?.stage
 )
 const overallProgress = computed(() => Math.round(getExpertProjectProgress(project.value || {})))
+const compilerProfileName = computed(() => {
+  return getExpertCompilerProfileLabel(compilerProfiles.value, project.value?.compiler_profile_id)
+})
 const materialProgress = computed(() => getExpertMaterialProgress(project.value?.materials || []))
 const topicStatusSummary = computed(() => getExpertTopicStatusSummary(project.value?.topics || []))
 const topicChapterCount = computed(() => groupExpertTopics(project.value?.topics || []).length)
@@ -1422,6 +1428,16 @@ const loadProject = async ({ silent = false } = {}) => {
   } finally {
     if (!silent) loading.value = false
     projectRequestInFlight = false
+  }
+}
+
+/** 读取项目方法的用户显示名，不影响项目主流程加载。 */
+const loadCompilerProfiles = async () => {
+  try {
+    const response = await expertApi.listCompilerProfiles()
+    compilerProfiles.value = Array.isArray(response?.items) ? response.items : []
+  } catch {
+    compilerProfiles.value = []
   }
 }
 
@@ -1833,7 +1849,10 @@ watch(
   { immediate: true }
 )
 
-onMounted(loadProject)
+onMounted(() => {
+  void loadProject()
+  void loadCompilerProfiles()
+})
 onBeforeUnmount(() => {
   if (pollingTimer) clearInterval(pollingTimer)
 })

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, TypeVar
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,6 +12,11 @@ from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import BaseModel, ValidationError
 
 from yuxi.agents.models import load_chat_model
+from yuxi.expert.compiler_profiles import (
+    DEFAULT_COMPILER_PROFILE_ID,
+    ExpertCompilerProfile,
+    get_expert_compiler_profile,
+)
 from yuxi.expert.contracts import (
     BookReviewResult,
     HandoutDraftResult,
@@ -35,14 +39,7 @@ from yuxi.expert.contracts import (
 from yuxi.models.providers.cache import model_cache
 from yuxi.utils.logging_config import logger
 
-PROMPT_DESIGNER_ROOT = Path(__file__).parent / "prompt_designer"
 ContractT = TypeVar("ContractT", bound=BaseModel)
-
-
-def _read_prompt_designer_skill() -> str:
-    """读取项目 Prompt 设计的中央方法，避免各任务复制规则。"""
-
-    return (PROMPT_DESIGNER_ROOT / "SKILL.md").read_text(encoding="utf-8")
 
 
 ARTIFACT_HUMANIZER_ZH_GUIDANCE = """
@@ -72,9 +69,11 @@ class ExpertModelTasks:
         model_loader: Callable[..., Any] = load_chat_model,
         *,
         prompt_cache_namespace: str | None = None,
+        compiler_profile: ExpertCompilerProfile | None = None,
     ):
         self._model_loader = model_loader
         self._prompt_cache_namespace = prompt_cache_namespace
+        self._compiler_profile = compiler_profile
 
     async def orient_project(
         self,
@@ -88,9 +87,10 @@ class ExpertModelTasks:
     ) -> ProjectOrientationResult:
         """根据目录和用户选定的完整样本形成项目定向报告。"""
 
+        compiler_profile = self._get_compiler_profile()
         templates = "\n\n".join(
             f"## {path.name}\n{path.read_text(encoding='utf-8').strip()}"
-            for path in sorted((PROMPT_DESIGNER_ROOT / "templates").glob("*.md"))
+            for path in sorted(compiler_profile.templates_dir.glob("*.md"))
         )
         sample_text = _format_samples(samples)
         feedback_section = f"\n\n用户对上一版的反馈：\n{feedback.strip()}" if feedback.strip() else ""
@@ -113,7 +113,7 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             ProjectOrientationResult,
-            system=_stage_system(_read_prompt_designer_skill()),
+            system=_stage_system(compiler_profile.skill_path.read_text(encoding="utf-8")),
             prompt=prompt,
         )
 
@@ -128,8 +128,9 @@ class ExpertModelTasks:
     ) -> ProjectMethodResult:
         """由总编模型生成项目学习方案、编译底稿和完整阶段 Prompt。"""
 
-        selected_template = (PROMPT_DESIGNER_ROOT / "templates" / orientation.template_name).read_text(encoding="utf-8")
-        example = (PROMPT_DESIGNER_ROOT / "examples" / "apprentice-stage-prompt-pack.md").read_text(encoding="utf-8")
+        compiler_profile = self._get_compiler_profile()
+        selected_template = (compiler_profile.templates_dir / orientation.template_name).read_text(encoding="utf-8")
+        example = compiler_profile.structure_example_path.read_text(encoding="utf-8")
         prompt = f"""
 你是“{project_name}”专家作品的总编模型。请依据项目定向报告，把中央方法改写成只属于当前项目的完整编译方法。
 
@@ -161,7 +162,7 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             ProjectMethodResult,
-            system=_stage_system(_read_prompt_designer_skill()),
+            system=_stage_system(compiler_profile.skill_path.read_text(encoding="utf-8")),
             prompt=prompt,
         )
 
@@ -210,10 +211,7 @@ class ExpertModelTasks:
         return await self._invoke_structured(
             model_spec,
             MethodCalibrationResult,
-            system=_stage_system(
-                _read_prompt_designer_skill(),
-                "你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。",
-            ),
+            system=_stage_system("你只做一次项目方法收敛。Review 是问题证据，不是新的领域内容来源。"),
             prompt=prompt,
         )
 
@@ -411,11 +409,17 @@ V2 小样结果：
         learning_plan: str,
         stage_prompt: str,
         note_catalog: str,
+        include_asset_nodes: bool = False,
     ) -> PlanningGroupsResult:
         """让模型依据 Labels 形成有意义的规划范围。"""
 
-        task_instruction = """
-当前先不要决定正式主题。请只根据笔记目录中的 routing_labels 形成后续可以完整阅读的范围。
+        grouping_rule = (
+            "当前先不要决定正式主题。请只根据笔记目录中的 routing_labels 和资产节点目录形成后续可以完整阅读的范围。"
+            if include_asset_nodes
+            else "当前先不要决定正式主题。请只根据笔记目录中的 routing_labels 形成后续可以完整阅读的范围。"
+        )
+        task_instruction = f"""
+{grouping_rule}
 来源路径只用于定位材料，不能据此推断老师、说话人或归属关系，
 形成后续可以完整阅读其范围内全部笔记的有意义规划分组。
 不能按文件顺序、固定数量、字符数或 token 数切批，也不能只取一部分笔记。
@@ -874,6 +878,11 @@ V2 小样结果：
                     raise
 
         raise AssertionError("JSONL 输出重试没有返回结果")
+
+    def _get_compiler_profile(self) -> ExpertCompilerProfile:
+        """返回定向与方法生成使用的中央资产。"""
+
+        return self._compiler_profile or get_expert_compiler_profile(DEFAULT_COMPILER_PROFILE_ID)
 
     def _build_structured_request(
         self,

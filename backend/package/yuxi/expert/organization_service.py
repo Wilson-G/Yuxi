@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.expert.compiler_profiles import get_expert_compiler_profile
 from yuxi.expert.contracts import (
     HandoutDraftResult,
     HandoutReviewResult,
@@ -82,11 +83,21 @@ async def run_organization_stage(
     note_aliases = {material.material_id: f"N{index:03d}" for index, material in enumerate(materials, start=1)}
 
     if not snapshot["planning_groups"]:
+        compiler_profile = get_expert_compiler_profile(
+            snapshot["compiler_profile_id"],
+            validate_assets=False,
+        )
+        include_asset_nodes = compiler_profile.includes_asset_node_catalog
         grouping = await tasks.plan_note_groups(
             model_spec=snapshot["model_spec"],
             learning_plan=snapshot["learning_plan"],
             stage_prompt=snapshot["prompt_pack"].topic_researcher,
-            note_catalog=_build_note_catalog(materials, note_aliases),
+            note_catalog=_build_note_catalog(
+                materials,
+                note_aliases,
+                include_asset_nodes=include_asset_nodes,
+            ),
+            include_asset_nodes=include_asset_nodes,
         )
         _validate_planning_groups(grouping, set(note_aliases.values()))
         await _save_planning_groups(project_id, organization_version, grouping, note_aliases)
@@ -281,6 +292,7 @@ async def _load_organization_inputs(project_id: str, organization_version: int) 
             raise ValueError("没有通过 Review 的笔记可用于主题组织")
         snapshot = {
             "model_spec": project.model_spec,
+            "compiler_profile_id": project.compiler_profile_id,
             "learning_plan": project.learning_plan or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "planning_groups": list(project.planning_groups or []),
@@ -773,15 +785,47 @@ def validate_handout_review(review: HandoutReviewResult) -> None:
         raise ValueError("讲义 Review 要求修订但没有给出具体问题")
 
 
-def _build_note_catalog(materials: list[Any], aliases: dict[str, str]) -> str:
+def _build_note_catalog(
+    materials: list[Any],
+    aliases: dict[str, str],
+    *,
+    include_asset_nodes: bool = False,
+) -> str:
+    """组装全局笔记目录，并按编译方法透传确定性资产节点。"""
+
     rows = []
     for material in materials:
         routing_labels = (material.note_contract or {}).get("routing_labels") or []
-        rows.append(
+        row = (
             f"{aliases[material.material_id]} | 来源：{material.source_path} | "
             f"Labels：{'；'.join(routing_labels) or '未提供'}"
         )
+        if include_asset_nodes:
+            asset_nodes = extract_asset_node_catalog(material.note or "")
+            row += f" | 资产节点：{'；'.join(asset_nodes) or '未提供'}"
+        rows.append(row)
     return "\n".join(rows)
+
+
+def extract_asset_node_catalog(note_markdown: str) -> list[str]:
+    """提取二级“资产节点目录”区块中的 Markdown 列表项。"""
+
+    nodes: list[str] = []
+    in_asset_catalog = False
+    for raw_line in str(note_markdown or "").splitlines():
+        line = raw_line.strip()
+        if not in_asset_catalog:
+            in_asset_catalog = line == "## 资产节点目录"
+            continue
+        if line.startswith("# ") or line.startswith("## "):
+            break
+        if line.startswith(("- ", "* ", "+ ")):
+            nodes.append(line[2:].strip())
+            continue
+        marker, separator, content = line.partition(" ")
+        if separator and marker[:-1].isdigit() and marker[-1:] in {".", ")"}:
+            nodes.append(content.strip())
+    return nodes
 
 
 def format_full_notes(materials: list[Any], aliases: dict[str, str]) -> str:
@@ -903,6 +947,7 @@ def _serialize_sample_topic(topic: Any) -> dict[str, Any]:
 __all__ = [
     "confirm_organization_stage",
     "format_full_notes",
+    "extract_asset_node_catalog",
     "format_handout_notes_with_evidence",
     "format_topic_definition",
     "initialize_organization_stage",
