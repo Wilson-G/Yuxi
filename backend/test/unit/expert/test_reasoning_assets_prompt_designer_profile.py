@@ -101,6 +101,46 @@ def test_reasoning_assets_profile_keeps_domain_knowledge_and_material_sources_se
     assert "八字" not in skill
 
 
+def test_reasoning_assets_profile_builds_expert_observer_identity_and_embeds_domain_model():
+    skill, example = _read_assets()
+    author = skill.split("### `note_author`", maxsplit=1)[1].split("### `note_reviewer`", maxsplit=1)[0]
+    reviewer = skill.split("### `note_reviewer`", maxsplit=1)[1].split("### `note_reviser`", maxsplit=1)[0]
+
+    # Author 的中心身份是观察另一位专家：先重建实际路径，再与领域合理路径对比。
+    assert "编译的基本姿势是观察另一位专家" in skill
+    assert "观察另一位专家" in author
+    assert "重建这位专家实际走过的推导路径" in author
+    assert "领域上合理的分析路径对比" in author
+    assert "五类来源标签是这次对比的输出" in author
+    assert "材料没有反馈就明确写没有" in author
+
+    # 运行时看不到编译底稿，因此领域推导模型全文必须内嵌进阶段 Prompt。
+    assert "编译底稿、中央 SKILL 和项目定向报告对下游任务不可见" in skill
+    assert "必须完整写进 `note_author`、`note_reviewer`、\n`note_reviser` 的 Prompt 本身" in skill
+    assert "下游任务实际拿不到模型" in skill
+
+    # 领域推导模型按判断局面组织成链，四层分层明确，样本不得提前变成通用方法。
+    assert "按判断局面组织，不按知识类别组织" in skill
+    assert "名词式清单不合格" in skill
+    assert "`## 项目领域推导模型`" in skill
+    for layer in ("领域基础", "样本观察", "项目假设", "材料缺口"):
+        assert layer in skill
+    assert "待全部材料验证" in skill
+    assert "不得把样本观察或项目假设呈现为已确认的通用方法" in skill
+
+    # Reviewer 检查 CoT 连续性和路径重建；小样验收完整链。
+    assert "每一步由前一步触发" in reviewer
+    assert "检查项清单" in reviewer
+    assert "重建了这位专家的实际判断路径" in reviewer
+    assert "至少还原了一条完整链" in skill
+    assert "反馈验证了哪一步" in skill
+
+    # 示例必须展示完整 Prompt 骨架，而不是只留职责摘要。
+    assert "完整 `note_author` Prompt 的结构骨架" in example
+    assert "全文内嵌，不能只写“依据模型”" in example
+    assert "`note_reviser` 同样必须内嵌" in example
+
+
 def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodies():
     _, example = _read_assets()
     catalog_match = re.search(

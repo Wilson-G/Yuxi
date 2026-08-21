@@ -21,20 +21,20 @@ from yuxi.expert.contracts import (
     BookReviewResult,
     HandoutDraftResult,
     HandoutReviewResult,
-    MethodCalibrationAssessment,
-    MethodCalibrationResult,
     MaterialAutoResolutionResult,
     MaterialNoteResult,
     MaterialReviewResult,
+    MethodCalibrationAssessment,
+    MethodCalibrationResult,
     NavigationResult,
     PlanningGroupsResult,
-    ProjectPromptPack,
     ProjectMethodResult,
     ProjectOrientationResult,
+    ProjectPromptPack,
+    SkillBodyResult,
     TopicEvidencePack,
     TopicMapResult,
     TopicResearchResult,
-    SkillBodyResult,
 )
 from yuxi.models.providers.cache import model_cache
 from yuxi.utils.logging_config import logger
@@ -103,7 +103,7 @@ class ExpertModelTasks:
 材料目录与用户可见信息：
 {material_catalog}
 
-用户明确选择的代表性材料如下。必须完整阅读这些正文，不得用外部知识补齐：
+用户明确选择的代表性材料如下。必须完整阅读这些正文；材料内容不得用外部知识补齐或改写：
 {sample_text}
 
 可选的材料类型方法起点如下。请选择最贴合当前材料的一种，并在报告中说明材料如何传授判断、必要的来源差异、保真风险，以及最终读者需要怎样的专家：
@@ -146,16 +146,18 @@ class ExpertModelTasks:
 当前材料类型模板只提供提问方向，不能直接复制：
 {selected_template}
 
-下面的通用示例只展示 Prompt 的教材化结构、阶段交接和必要材料纪律，不携带领域术语、判断顺序或章节结构：
+下面的通用示例只展示 Prompt 的阶段结构、阶段交接和必要材料纪律，不携带领域术语、判断顺序或章节结构：
 {example}
 
 请交付人可读的项目学习方案、自然连贯的项目专属编译底稿，
 以及响应合同要求的全部阶段 Prompt。每份 Prompt 都要能在系统注入当前完整业务输入后直接工作，
 不能写成通用规则加项目补丁，也不要出现任务 ID、存储路径、队列、哈希或发布实现。
+运行时任务只能看到当前阶段 Prompt、学习方案和当前输入，看不到编译底稿和本示例；
+阶段 Prompt 需要的领域框架和格式要求必须写进 Prompt 本身。
 三个交付物必须按中央方法分层：学习方案面向用户确认，定向依据供用户展开查看，
 编译底稿和 Prompt 包只承担内部编译职责。学习方案和定向依据不得把内部角色、阶段交接
 或编译过程写给用户。讲义相关 Prompt 必须把材料中的判断动作和明确术语、经验口径
-编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
+编成可学习的方法，并保持中央方法要求的来源强度，不能把讲义写成材料审计报告。
 若上方代表材料不足 4 份，选择全部 M... 别名；否则选择 4～5 个 M... 别名作为 method_sample_aliases，用于试跑这套 Prompt。
 选择覆盖不同表达或判断方式的材料，不要因样本内容预设后续单篇的主题。
 """.strip()

@@ -333,6 +333,11 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     assert "method_sample_aliases" in method_prompt
     assert "不足 4 份" in method_prompt
     assert "三个交付物必须按中央方法分层" in method_prompt
+    # 保真边界只限定材料内容，不压制领域知识激活；运行时不可见底稿，框架必须写进 Prompt 本身。
+    assert "材料内容不得用外部知识补齐或改写" in orientation_prompt
+    assert "看不到编译底稿和本示例" in method_prompt
+    assert "必须写进 Prompt 本身" in method_prompt
+    assert "保持中央方法要求的来源强度" in method_prompt
     assert method.learning_plan_markdown == "已确认前的项目学习方案"
     assert loader.calls == [
         ("provider:model", {"temperature": 0}),
