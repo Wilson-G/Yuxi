@@ -54,3 +54,11 @@ export const buildMentionResourceItems = (mention = {}) => {
       .filter(Boolean)
   }
 }
+
+/** 按类型和值查找可插入输入框的提及项。 */
+export const findMentionResourceItem = (mention, type, value) => {
+  const groups = buildMentionResourceItems(mention)
+  return Object.values(groups)
+    .flat()
+    .find((item) => item.type === type && item.value === value)
+}

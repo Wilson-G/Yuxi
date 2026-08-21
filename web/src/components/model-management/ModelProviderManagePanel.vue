@@ -1288,6 +1288,21 @@ defineExpose({
           </label>
         </div>
 
+        <label v-if="editingModel.type === 'chat'" class="form-label full-width">
+          <span>上下文长度（tokens）</span>
+          <a-input-number
+            v-model:value="editingModel.context_length"
+            class="context-length-input"
+            :min="1"
+            :precision="0"
+            :step="1000"
+            placeholder="例如 128000"
+          />
+          <small class="form-help">
+            资料库和专家项目会用它确认完整材料是否能放入模型上下文。请填写供应商为该模型标注的实际值。
+          </small>
+        </label>
+
         <label class="form-label full-width">
           <span>模型请求参数 JSON</span>
           <a-textarea
@@ -1328,6 +1343,10 @@ defineExpose({
     border: none;
     background: transparent;
   }
+}
+
+.context-length-input {
+  width: 100%;
 }
 
 .provider-avatar {

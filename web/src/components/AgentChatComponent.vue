@@ -788,6 +788,7 @@ import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import { enrichTaskToolCalls, parseToolCallArgs } from '@/components/ToolCallingResult/toolRegistry'
 import { getConversationDisplayItems } from '@/utils/messageGrouping'
 import { makeChildThreadId } from '@/utils/subagentThread'
+import { findMentionResourceItem } from '@/utils/mention_resource_items'
 import {
   isRunInterruptedConflict,
   isThreadWaitingForUserAction,
@@ -3268,9 +3269,19 @@ const buildExportPayload = () => {
   return payload
 }
 
+/** 把当前智能体可用的 Skill 放入新对话输入框。 */
+const selectSkillForDraft = (slug) => {
+  if (currentChatId.value) return false
+  const item = findMentionResourceItem(mentionConfig.value, 'skill', slug)
+  if (!item) return false
+  agentInputAreaRef.value?.insertMention(item)
+  return true
+}
+
 defineExpose({
   getExportPayload: buildExportPayload,
-  selectThreadFromRoute
+  selectThreadFromRoute,
+  selectSkillForDraft
 })
 
 const handleAgentStateRefresh = async (threadId = null) => {

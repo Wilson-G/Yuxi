@@ -28,10 +28,12 @@ export const createMaterialUploadQueue = ({ upload, concurrency = 4, onChange = 
       item.status = 'uploading'
       activeCount += 1
       notify()
-      Promise.resolve(upload(item.file, item.relativePath, (progress) => {
-        item.progress = Math.max(0, Math.min(100, Number(progress) || 0))
-        notify()
-      }))
+      Promise.resolve(
+        upload(item.file, item.relativePath, (progress) => {
+          item.progress = Math.max(0, Math.min(100, Number(progress) || 0))
+          notify()
+        })
+      )
         .then((response) => {
           item.status = 'success'
           item.progress = 100
@@ -102,6 +104,13 @@ export const getMaterialStatusTone = (status) => {
 
 /** 资料库接口只返回 ready 单元；前端仍按事实字段收紧选择范围。 */
 export const getReadyMaterialUnits = (units = []) => units.filter((unit) => unit.status === 'ready')
+
+/** 全选或取消当前资料库的材料单元，并保留其他资料库已有选择。 */
+export const setLibraryMaterialUnitSelection = (selectedIds = [], units = [], checked) => {
+  const libraryUnitIds = new Set(units.map((unit) => unit.unit_id).filter(Boolean))
+  if (checked) return [...new Set([...selectedIds, ...libraryUnitIds])]
+  return selectedIds.filter((unitId) => !libraryUnitIds.has(unitId))
+}
 
 export const formatMaterialFileSize = (size) => {
   const bytes = Number(size || 0)

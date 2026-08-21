@@ -9,6 +9,14 @@
         class="library-select"
       />
       <a-input v-model:value="searchQuery" allow-clear placeholder="搜索标题或来源路径" />
+      <a-checkbox
+        v-model:checked="allLibraryUnitsSelected"
+        :indeterminate="someLibraryUnitsSelected"
+        :disabled="loadingUnits || units.length === 0"
+        class="select-all-control"
+      >
+        全选当前资料库（{{ units.length }} 份）
+      </a-checkbox>
       <span class="selection-summary">已选 {{ selectedIds.length }} 份</span>
     </div>
 
@@ -21,7 +29,8 @@
       :loading="loadingUnits"
       :pagination="{ pageSize: 8, hideOnSinglePage: true, size: 'small' }"
       :row-selection="rowSelection"
-      :scroll="{ x: 620 }"
+      :scroll="{ x: 720, y: 260 }"
+      table-layout="fixed"
       size="small"
       class="unit-table"
     >
@@ -52,7 +61,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { materialLibraryApi } from '@/apis/material_library_api'
-import { getReadyMaterialUnits } from '@/utils/materialLibrary'
+import { getReadyMaterialUnits, setLibraryMaterialUnitSelection } from '@/utils/materialLibrary'
 
 defineEmits(['open-library'])
 const selectedIds = defineModel({ type: Array, default: () => [] })
@@ -65,9 +74,15 @@ const loadError = ref('')
 const searchQuery = ref('')
 
 const columns = [
-  { title: '材料单元', key: 'title', dataIndex: 'title' },
-  { title: '来源文件', key: 'source_filename', dataIndex: 'source_filename', width: 180 },
-  { title: '来源行', key: 'range', width: 110 }
+  { title: '材料单元', key: 'title', dataIndex: 'title', width: 360 },
+  {
+    title: '来源文件',
+    key: 'source_filename',
+    dataIndex: 'source_filename',
+    width: 220,
+    ellipsis: true
+  },
+  { title: '来源行', key: 'range', width: 90 }
 ]
 
 const libraryOptions = computed(() =>
@@ -83,6 +98,19 @@ const filteredUnits = computed(() => {
       .toLowerCase()
       .includes(keyword)
   )
+})
+const allLibraryUnitsSelected = computed({
+  get: () =>
+    units.value.length > 0 && units.value.every((unit) => selectedIds.value.includes(unit.unit_id)),
+  set: (checked) => {
+    selectedIds.value = setLibraryMaterialUnitSelection(selectedIds.value, units.value, checked)
+  }
+})
+const someLibraryUnitsSelected = computed(() => {
+  const selectedCount = units.value.filter((unit) =>
+    selectedIds.value.includes(unit.unit_id)
+  ).length
+  return selectedCount > 0 && selectedCount < units.value.length
 })
 const rowSelection = computed(() => ({
   selectedRowKeys: selectedIds.value,
@@ -140,7 +168,7 @@ defineExpose({ load })
 
 .selector-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(220px, 1fr) auto auto;
   align-items: center;
   gap: 8px;
 }
@@ -151,6 +179,12 @@ defineExpose({ load })
 
 .selection-summary {
   color: var(--gray-600);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.select-all-control {
+  color: var(--gray-700);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -185,6 +219,14 @@ defineExpose({ load })
   gap: 4px;
   min-height: 120px;
   color: var(--gray-500);
+}
+
+:deep(.unit-table .ant-table-tbody > tr.ant-table-row-selected > td) {
+  background: var(--main-50);
+}
+
+:deep(.unit-table .ant-table-tbody > tr.ant-table-row-selected:hover > td) {
+  background: var(--main-100);
 }
 
 @media (max-width: 700px) {

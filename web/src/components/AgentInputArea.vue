@@ -193,6 +193,7 @@ const handleKeyDown = (e) => {
 
 defineExpose({
   focus: () => inputRef.value?.focus(),
+  insertMention: (item) => inputRef.value?.insertMention(item),
   closeOptions: () => inputRef.value?.closeOptions(),
   restoreImage
 })

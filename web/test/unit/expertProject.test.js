@@ -8,15 +8,50 @@ import {
   canPreviewExpertMaterial,
   canReviseExpertOrganization,
   formatExpertFinalReview,
+  groupExpertTopics,
   getExcludedExpertMaterials,
   getExpertMaterialProgress,
   getExpertProjectProgress,
   getExpertStageIndex,
   getExpertTopicProgress,
+  getExpertTopicStatusSummary,
   isInitialExpertMethodConfirmation,
   isExpertMethodPreparationRunning,
   shouldPollExpertProject
 } from '../../src/utils/expertProject.js'
+
+test('主题按首次出现的章节顺序分组并保留组内顺序', () => {
+  const topics = [
+    { topic_id: 'a', section: '第一章', position: 1 },
+    { topic_id: 'b', section: '第二章', position: 2 },
+    { topic_id: 'c', section: '第一章', position: 3 },
+    { topic_id: 'd', section: '', position: 4 }
+  ]
+
+  assert.deepEqual(
+    groupExpertTopics(topics).map((group) => ({
+      section: group.section,
+      topicIds: group.topics.map((topic) => topic.topic_id)
+    })),
+    [
+      { section: '第一章', topicIds: ['a', 'c'] },
+      { section: '第二章', topicIds: ['b'] },
+      { section: '其他主题', topicIds: ['d'] }
+    ]
+  )
+})
+
+test('讲义状态摘要使用数量而不是第二个百分比', () => {
+  assert.deepEqual(
+    getExpertTopicStatusSummary([
+      { status: 'passed' },
+      { status: 'writing' },
+      { status: 'evidence_ready' },
+      { status: 'needs_attention' }
+    ]),
+    { total: 4, passed: 1, active: 2, attention: 1 }
+  )
+})
 
 test('专家项目只在后台推进状态轮询', () => {
   assert.equal(shouldPollExpertProject({ status: 'preparing' }), true)

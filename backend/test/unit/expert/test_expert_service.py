@@ -208,13 +208,13 @@ class OrientationModelTasks:
             source_risks=["转写不确定"],
         )
 
-    async def design_project_method(self, **_kwargs) -> ProjectMethodResult:
+    async def design_project_method(self, *, samples: list[dict[str, str]], **_kwargs) -> ProjectMethodResult:
         self.call_counts["method"] += 1
         return ProjectMethodResult(
             learning_plan_markdown="# 项目学习方案",
             compilation_brief_markdown="# 项目专属编译底稿",
             prompt_pack=_prompt_pack(),
-            method_sample_aliases=["M001", "M002"],
+            method_sample_aliases=[sample["alias"] for sample in samples[:5]],
         )
 
     async def write_material_note(self, *, material_alias: str, title: str, **_kwargs) -> MaterialNoteResult:
@@ -331,18 +331,19 @@ class RepairableResidualTasks(CalibrationModelTasks):
 
 
 class ParallelOrientationSampleTasks(OrientationModelTasks):
-    """让两个小样在笔记调用处相互等待，验证它们可以并发启动。"""
+    """让多个小样在笔记调用处相互等待，验证它们可以并发启动。"""
 
-    def __init__(self):
+    def __init__(self, expected_sample_count: int):
         super().__init__()
+        self.expected_sample_count = expected_sample_count
         self.started_titles: set[str] = set()
-        self.both_started = asyncio.Event()
+        self.all_started = asyncio.Event()
         self.release = asyncio.Event()
 
     async def write_material_note(self, *, title: str, **kwargs) -> MaterialNoteResult:
         self.started_titles.add(title)
-        if len(self.started_titles) == 2:
-            self.both_started.set()
+        if len(self.started_titles) == self.expected_sample_count:
+            self.all_started.set()
         await self.release.wait()
         return await super().write_material_note(title=title, **kwargs)
 
@@ -477,7 +478,7 @@ async def test_create_project_uses_ready_units_without_raw_or_text_copies(
         project = await service.create_expert_project(
             db,
             name="提交边界项目",
-            description="",
+            description="学习材料中的判断条件与边界",
             model_spec="provider:model",
             created_by="user-1",
             material_unit_ids=unit_ids,
@@ -498,6 +499,24 @@ async def test_create_project_uses_ready_units_without_raw_or_text_copies(
 
 
 @pytest.mark.asyncio
+async def test_create_project_requires_expert_context(expert_env) -> None:
+    """创建项目时必须提供模型定向所需的专家背景。"""
+
+    unit_ids = await _create_ready_library_units(expert_env)
+
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="请补充专家背景与学习目标"):
+            await service.create_expert_project(
+                db,
+                name="缺少上下文项目",
+                description="  ",
+                model_spec="provider:model",
+                created_by="user-1",
+                material_unit_ids=unit_ids,
+            )
+
+
+@pytest.mark.asyncio
 async def test_create_project_rejects_duplicate_or_unready_units_without_partial_project(expert_env) -> None:
     [ready_unit, _] = await _create_ready_library_units(expert_env)
     async with expert_env.factory() as db:
@@ -505,7 +524,7 @@ async def test_create_project_rejects_duplicate_or_unready_units_without_partial
             await service.create_expert_project(
                 db,
                 name="重复材料项目",
-                description="",
+                description="学习材料中的判断条件与边界",
                 model_spec="provider:model",
                 created_by="user-1",
                 material_unit_ids=[ready_unit, ready_unit],
@@ -514,7 +533,7 @@ async def test_create_project_rejects_duplicate_or_unready_units_without_partial
             await service.create_expert_project(
                 db,
                 name="未就绪材料项目",
-                description="",
+                description="学习材料中的判断条件与边界",
                 model_spec="provider:model",
                 created_by="user-1",
                 material_unit_ids=["not-ready"],
@@ -541,7 +560,7 @@ async def test_create_project_commit_failure_removes_project_and_output_workspac
                 await service.create_expert_project(
                     db,
                     name="事务失败项目",
-                    description="",
+                    description="学习材料中的判断条件与边界",
                     model_spec="provider:model",
                     created_by="user-1",
                     material_unit_ids=unit_ids,
@@ -566,15 +585,18 @@ async def test_create_project_requires_configured_model_context_length(
     )
 
     async with expert_env.factory() as db:
-        with pytest.raises(ValueError, match="缺少上下文长度配置"):
+        with pytest.raises(ValueError) as exc_info:
             await service.create_expert_project(
                 db,
                 name="缺少上下文配置",
-                description="",
+                description="学习材料中的判断条件与边界",
                 model_spec="provider:model",
                 created_by="user-1",
                 material_unit_ids=["unit-1"],
             )
+    assert str(exc_info.value) == (
+        "专家项目模型缺少上下文长度配置，请前往「智能体 > 模型供应商 > 管理模型 > 配置」补充"
+    )
 
 
 @pytest.mark.asyncio
@@ -619,7 +641,7 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     async with expert_env.factory() as db:
-        with pytest.raises(ValueError, match="请选择 1～20 份代表性材料"):
+        with pytest.raises(ValueError, match="可用材料少于 4 份时必须全部选择"):
             await service.start_project_orientation(
                 db,
                 project_id=project_id,
@@ -630,7 +652,7 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
             db,
             project_id=project_id,
             created_by="user-1",
-            representative_material_ids=material_ids[:2],
+            representative_material_ids=material_ids,
         )
         with pytest.raises(ValueError, match="没有等待确认"):
             await service.confirm_project_method(db, project_id=project_id, created_by="user-1")
@@ -645,36 +667,31 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         )
 
     async with expert_env.factory() as db:
-        project = await ExpertRepository(db).get_project(project_id)
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
         assert project is not None
         assert project.status == "running"
         assert project.orientation_report == "# 项目定向报告"
         assert project.learning_plan == "# 项目学习方案"
         assert project.compilation_brief == "# 项目专属编译底稿"
         assert project.prompt_pack == _prompt_pack().model_dump()
-        assert [sample["material_id"] for sample in project.method_samples] == material_ids[:1]
-    assert model_tasks.call_counts == {
-        "orientation": 1,
-        "method": 1,
-        "note:01-material": 1,
-        "review:01-material": 1,
-        "note:02-material": 1,
-        "review:02-material": 1,
-    }
+        persisted_ids = {sample["material_id"] for sample in project.method_samples}
+        persisted_titles = {material.title for material in materials if material.material_id in persisted_ids}
+        assert "02-material" not in persisted_titles
 
     result = await service.run_project_orientation(
         project_id,
         method_version,
         model_tasks=model_tasks,
     )
-    assert model_tasks.call_counts == {
-        "orientation": 1,
-        "method": 1,
-        "note:01-material": 1,
-        "review:01-material": 1,
-        "note:02-material": 2,
-        "review:02-material": 2,
-    }
+    assert model_tasks.call_counts["orientation"] == 1
+    assert model_tasks.call_counts["method"] == 1
+    assert model_tasks.call_counts["note:02-material"] == 2
+    assert model_tasks.call_counts["review:02-material"] == 2
+    for title in persisted_titles:
+        assert model_tasks.call_counts[f"note:{title}"] == 1
+        assert model_tasks.call_counts[f"review:{title}"] == 1
 
     async with expert_env.factory() as db:
         repo = ExpertRepository(db)
@@ -686,10 +703,10 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         assert project.learning_plan == "# 项目学习方案"
         assert project.compilation_brief == "# 项目专属编译底稿"
         assert project.prompt_pack == _prompt_pack().model_dump()
-        assert len(project.method_samples) == 2
+        assert len(project.method_samples) == 3
         assert all(sample["status"] == "passed" for sample in project.method_samples)
         assert all(sample["final_review"]["decision"] == "pass" for sample in project.method_samples)
-        assert [material.material_id for material in materials if material.is_representative] == material_ids[:2]
+        assert [material.material_id for material in materials if material.is_representative] == material_ids
 
     assert result == {
         "project_id": project_id,
@@ -704,7 +721,7 @@ async def test_orientation_accepts_twenty_representative_materials(expert_env) -
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     async with expert_env.factory() as db:
-        with pytest.raises(ValueError, match="请选择 1～20 份代表性材料"):
+        with pytest.raises(ValueError, match="请选择 4～20 份代表性材料"):
             await service.start_project_orientation(
                 db,
                 project_id=project_id,
@@ -726,8 +743,33 @@ async def test_orientation_accepts_twenty_representative_materials(expert_env) -
 
 
 @pytest.mark.asyncio
+async def test_orientation_requires_four_representative_materials_when_available(expert_env) -> None:
+    """可用材料达到四份时，不能只用少量材料完成项目定向。"""
+
+    project_id, _ = await _create_project(expert_env, count=5)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="请选择 4～20 份代表性材料"):
+            await service.start_project_orientation(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+                representative_material_ids=material_ids[:3],
+            )
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids[:4],
+        )
+
+    assert method_version == 1
+
+
+@pytest.mark.asyncio
 async def test_orientation_runs_independent_samples_concurrently(expert_env) -> None:
-    project_id, _ = await _create_project(expert_env, count=2)
+    project_id, _ = await _create_project(expert_env, count=4)
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     async with expert_env.factory() as db:
@@ -738,10 +780,10 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
             representative_material_ids=material_ids,
         )
 
-    tasks = ParallelOrientationSampleTasks()
+    tasks = ParallelOrientationSampleTasks(expected_sample_count=4)
     runner = asyncio.create_task(service.run_project_orientation(project_id, method_version, model_tasks=tasks))
-    await asyncio.wait_for(tasks.both_started.wait(), timeout=1)
-    assert tasks.started_titles == {"01-material", "02-material"}
+    await asyncio.wait_for(tasks.all_started.wait(), timeout=1)
+    assert tasks.started_titles == {"01-material", "02-material", "03-material", "04-material"}
 
     tasks.release.set()
     result = await runner
@@ -754,6 +796,10 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
         "review:01-material": 1,
         "note:02-material": 1,
         "review:02-material": 1,
+        "note:03-material": 1,
+        "review:03-material": 1,
+        "note:04-material": 1,
+        "review:04-material": 1,
     }
 
 

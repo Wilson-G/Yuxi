@@ -273,7 +273,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
                 "learning_plan_markdown": "已确认前的项目学习方案",
                 "compilation_brief_markdown": "项目专属编译底稿",
                 "prompt_pack": _prompt_pack(),
-                "method_sample_aliases": ["M001"],
+                "method_sample_aliases": ["M001", "M002", "M003", "M004"],
             },
         ]
     )
@@ -285,7 +285,10 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
             "title": "代表材料",
             "source": "老师甲",
             "text": "SAMPLE-FIRST\nSAMPLE-MIDDLE\nSAMPLE-LAST",
-        }
+        },
+        {"alias": "M002", "title": "代表材料二", "source": "老师乙", "text": "SECOND-SAMPLE"},
+        {"alias": "M003", "title": "代表材料三", "source": "老师丙", "text": "THIRD-SAMPLE"},
+        {"alias": "M004", "title": "代表材料四", "source": "老师丁", "text": "FOURTH-SAMPLE"},
     ]
     catalog = "M001 | 代表材料 | 老师甲\nM002 | 未选择材料 | 老师乙"
 
@@ -321,6 +324,7 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     assert "EXAMPLE-FIRST\nEXAMPLE-LAST" in method_prompt
     assert "L1: SAMPLE-FIRST\nL2: SAMPLE-MIDDLE\nL3: SAMPLE-LAST" in method_prompt
     assert "method_sample_aliases" in method_prompt
+    assert "不足 4 份" in method_prompt
     assert "三个交付物必须按中央方法分层" in method_prompt
     assert method.learning_plan_markdown == "已确认前的项目学习方案"
     assert loader.calls == [

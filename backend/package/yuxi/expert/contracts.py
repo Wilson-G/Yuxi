@@ -50,7 +50,7 @@ class ProjectMethodResult(ExpertContract):
     learning_plan_markdown: str
     compilation_brief_markdown: str
     prompt_pack: ProjectPromptPack
-    method_sample_aliases: list[str] = Field(min_length=1, max_length=2)
+    method_sample_aliases: list[str] = Field(min_length=1, max_length=5)
 
 
 class MethodCalibrationResult(ExpertContract):

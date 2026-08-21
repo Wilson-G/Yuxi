@@ -83,7 +83,9 @@
     <a-modal
       v-model:open="createOpen"
       title="创建专家项目"
-      width="720px"
+      width="840px"
+      :style="{ maxWidth: 'calc(100vw - 32px)' }"
+      :body-style="{ maxHeight: 'calc(100vh - 210px)', overflowY: 'auto' }"
       :confirm-loading="creating"
       :mask-closable="!creating"
       :keyboard="!creating"
@@ -97,12 +99,16 @@
           <a-input v-model:value="createForm.name" placeholder="输入项目名称" :maxlength="120" />
         </a-form-item>
 
-        <a-form-item label="项目说明" name="description">
+        <a-form-item
+          label="专家背景与学习目标"
+          name="description"
+          extra="这段信息会作为项目定向的上下文，帮助模型判断材料范围、学习重点和最终使用场景。"
+        >
           <a-textarea
             v-model:value="createForm.description"
             :rows="3"
             :maxlength="500"
-            placeholder="说明材料来源、希望重点学习的内容，以及主要使用者"
+            placeholder="例如：面向亚马逊运营人员，学习广告投放的判断条件、调优顺序和适用边界"
           />
         </a-form-item>
 
@@ -113,6 +119,16 @@
             placeholder="使用系统默认模型"
             @select-model="selectModel"
           />
+          <div class="model-settings-help">
+            <span>创建前请确认模型已设置上下文长度。</span>
+            <RouterLink
+              :to="{ path: '/agent-manage', query: { tab: 'providers' } }"
+              class="model-settings-link"
+            >
+              <Settings2 :size="13" />
+              打开模型供应商配置
+            </RouterLink>
+          </div>
         </a-form-item>
 
         <a-form-item label="项目材料" name="materialUnitIds">
@@ -137,7 +153,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { ArrowRight, BookOpenCheck, LibraryBig, Plus, RefreshCw } from 'lucide-vue-next'
+import { ArrowRight, BookOpenCheck, LibraryBig, Plus, RefreshCw, Settings2 } from 'lucide-vue-next'
 
 import { expertApi } from '@/apis/expert_api'
 import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
@@ -174,6 +190,14 @@ const createForm = reactive({
 
 const createRules = {
   name: [{ required: true, whitespace: true, message: '请输入项目名称', trigger: 'blur' }],
+  description: [
+    {
+      required: true,
+      whitespace: true,
+      message: '请补充专家背景与学习目标，模型会据此定向学习材料',
+      trigger: 'blur'
+    }
+  ],
   materialUnitIds: [
     {
       validator: () =>
@@ -321,6 +345,24 @@ defineExpose({ loading, fetchProjects })
   min-height: 280px;
   align-items: center;
   justify-content: center;
+}
+
+.model-settings-help {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.model-settings-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--main-color);
 }
 
 .project-progress {

@@ -155,7 +155,7 @@ class ExpertModelTasks:
 编译底稿和 Prompt 包只承担内部编译职责。学习方案和定向依据不得把内部角色、阶段交接
 或编译过程写给用户。讲义相关 Prompt 必须把材料中的判断动作和明确术语、经验口径
 编成可学习的方法；来源说明只在它会改变方法时出现，不能把讲义写成材料审计报告。
-从上方代表材料中选择 1～2 个 M... 别名作为 method_sample_aliases，用于试跑这套 Prompt；
+若上方代表材料不足 4 份，选择全部 M... 别名；否则选择 4～5 个 M... 别名作为 method_sample_aliases，用于试跑这套 Prompt。
 选择覆盖不同表达或判断方式的材料，不要因样本内容预设后续单篇的主题。
 """.strip()
         return await self._invoke_structured(

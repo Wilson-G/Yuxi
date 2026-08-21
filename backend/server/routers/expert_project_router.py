@@ -60,7 +60,7 @@ class CreateExpertProjectRequest(BaseModel):
     """新项目基础信息和已就绪资料库单元。"""
 
     name: str = Field(min_length=1)
-    description: str = ""
+    description: str
     model_spec: str = ""
     material_unit_ids: list[str] = Field(min_length=1)
 

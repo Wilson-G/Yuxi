@@ -28,6 +28,9 @@ from yuxi.utils.datetime_utils import utc_now_naive
 
 MATERIAL_PARSE_CONCURRENCY = int(os.getenv("EXPERT_MATERIAL_PARSE_CONCURRENCY", "8"))
 MAX_MATERIAL_REVISIONS = 2
+MIN_REPRESENTATIVE_MATERIALS = 4
+MAX_REPRESENTATIVE_MATERIALS = 20
+MAX_METHOD_SAMPLES = 5
 ORIENTATION_STAGE = "orientation"
 MATERIAL_LEARNING_STAGE = "material_learning"
 
@@ -46,6 +49,9 @@ async def create_expert_project(
     clean_name = str(name or "").strip()
     if not clean_name:
         raise ValueError("专家项目名称不能为空")
+    clean_description = str(description or "").strip()
+    if not clean_description:
+        raise ValueError("请补充专家背景与学习目标")
     selected_ids = [str(unit_id or "").strip() for unit_id in material_unit_ids]
     if not selected_ids or any(not unit_id for unit_id in selected_ids):
         raise ValueError("请至少选择一份已处理材料")
@@ -55,7 +61,7 @@ async def create_expert_project(
     if model_info is None or model_info.model_type != "chat":
         raise ValueError(f"专家项目模型不可用: {model_spec}")
     if not int(model_info.context_length or 0):
-        raise ValueError("专家项目模型缺少上下文长度配置，请先在模型管理中补充")
+        raise ValueError("专家项目模型缺少上下文长度配置，请前往「智能体 > 模型供应商 > 管理模型 > 配置」补充")
 
     material_rows = await MaterialLibraryRepository(db).list_ready_material_units_by_ids(selected_ids)
     material_by_id = {unit.unit_id: (unit, source_file) for unit, source_file in material_rows}
@@ -69,7 +75,7 @@ async def create_expert_project(
         project = await repo.create_project(
             project_id=project_id,
             name=clean_name,
-            description=str(description or "").strip(),
+            description=clean_description,
             model_spec=model_spec,
             created_by=created_by,
             stage=ORIENTATION_STAGE,
@@ -386,8 +392,6 @@ async def start_project_orientation(
     """固定用户明确选择的样本并创建一个新的项目方法版本。"""
 
     selected_ids = list(dict.fromkeys(representative_material_ids))
-    if not 1 <= len(selected_ids) <= 20:
-        raise ValueError("请选择 1～20 份代表性材料")
 
     repo = ExpertRepository(db)
     project = await repo.lock_project(project_id)
@@ -401,6 +405,16 @@ async def start_project_orientation(
         raise ValueError("当前项目状态不能开始项目定向")
 
     materials = await repo.list_project_materials(project_id)
+    ready_materials = [item for item in materials if item.status == "ready"]
+    required_count = min(MIN_REPRESENTATIVE_MATERIALS, len(ready_materials))
+    if not required_count <= len(selected_ids) <= MAX_REPRESENTATIVE_MATERIALS:
+        if len(ready_materials) < MIN_REPRESENTATIVE_MATERIALS:
+            raise ValueError("可用材料少于 4 份时必须全部选择")
+        raise ValueError("请选择 4～20 份代表性材料")
+    if len(ready_materials) < MIN_REPRESENTATIVE_MATERIALS and set(selected_ids) != {
+        item.material_id for item in ready_materials
+    }:
+        raise ValueError("可用材料少于 4 份时必须全部选择")
     by_id = {item.material_id: item for item in materials}
     if any(material_id not in by_id or by_id[material_id].status != "ready" for material_id in selected_ids):
         raise ValueError("代表性材料必须已经转换为可靠正文")
@@ -515,8 +529,15 @@ async def run_project_orientation(
         _validate_method_contract(method.learning_plan_markdown, method.compilation_brief_markdown, method.prompt_pack)
         selected_aliases = set(method.method_sample_aliases)
         available_aliases = {sample["alias"] for sample in samples}
-        if not selected_aliases <= available_aliases or not 1 <= len(selected_aliases) <= 2:
-            raise ValueError("项目方法没有从代表材料中选择 1～2 份试跑小样")
+        required_sample_count = min(MIN_REPRESENTATIVE_MATERIALS, len(samples))
+        maximum_sample_count = min(MAX_METHOD_SAMPLES, len(samples))
+        if (
+            not selected_aliases <= available_aliases
+            or not required_sample_count <= len(selected_aliases) <= maximum_sample_count
+        ):
+            if len(samples) < MIN_REPRESENTATIVE_MATERIALS:
+                raise ValueError("项目方法必须使用全部代表材料试跑小样")
+            raise ValueError("项目方法没有从代表材料中选择 4～5 份试跑小样")
         sample_material_ids = [
             material.material_id
             for material, sample in zip(representative_materials, samples, strict=True)

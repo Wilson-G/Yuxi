@@ -3,12 +3,7 @@ import { apiAdminDelete, apiAdminGet, apiAdminPost } from './base'
 const BASE_URL = '/api/expert-projects'
 
 /** 从资料库已经就绪的自然材料单元创建专家项目。 */
-export const createExpertProject = async ({
-  name,
-  description = '',
-  modelSpec = '',
-  materialUnitIds
-}) =>
+export const createExpertProject = async ({ name, description, modelSpec = '', materialUnitIds }) =>
   apiAdminPost(BASE_URL, {
     name,
     description,

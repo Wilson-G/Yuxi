@@ -5,7 +5,8 @@ import {
   createMaterialUploadQueue,
   getMaterialFileStatus,
   getMaterialFileStatusLabel,
-  getReadyMaterialUnits
+  getReadyMaterialUnits,
+  setLibraryMaterialUnitSelection
 } from '../../src/utils/materialLibrary.js'
 
 const flushPromises = () => new Promise((resolve) => globalThis.setTimeout(resolve, 0))
@@ -95,7 +96,10 @@ test('处理投递失败的已上传文件保留返回事实且不会重新上�
 })
 
 test('文件状态区分正文就绪和材料单元就绪', () => {
-  assert.equal(getMaterialFileStatus({ status: 'processing', unit_status: 'pending' }), 'processing')
+  assert.equal(
+    getMaterialFileStatus({ status: 'processing', unit_status: 'pending' }),
+    'processing'
+  )
   assert.equal(getMaterialFileStatus({ status: 'ready', unit_status: 'processing' }), 'processing')
   assert.equal(
     getMaterialFileStatusLabel({ status: 'ready', unit_status: 'needs_attention' }),
@@ -110,4 +114,18 @@ test('专家项目选择只接收 ready 材料单元', () => {
     { unit_id: 'failed', status: 'needs_attention' }
   ]
   assert.deepEqual(getReadyMaterialUnits(units), [{ unit_id: 'ready', status: 'ready' }])
+})
+
+test('跨分页全选当前资料库且不影响其他资料库选择', () => {
+  const units = [{ unit_id: 'current-1' }, { unit_id: 'current-2' }]
+
+  assert.deepEqual(setLibraryMaterialUnitSelection(['other-1'], units, true), [
+    'other-1',
+    'current-1',
+    'current-2'
+  ])
+  assert.deepEqual(
+    setLibraryMaterialUnitSelection(['other-1', 'current-1', 'current-2'], units, false),
+    ['other-1']
+  )
 })

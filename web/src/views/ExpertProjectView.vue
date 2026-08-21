@@ -85,224 +85,113 @@
     </ResourceEmptyState>
 
     <template v-else-if="project">
-      <nav class="stage-strip" aria-label="专家学习主流程">
-        <ol class="stage-list">
-          <li
-            v-for="(stage, index) in EXPERT_STAGE_ITEMS"
-            :key="stage.key"
-            :class="{
-              active: index === displayedStageIndex,
-              current: index === currentStageIndex,
-              completed: index < currentStageIndex,
-              reviewable: index <= currentStageIndex,
-              attention: index === currentStageIndex && project.status === 'needs_attention'
-            }"
+      <div class="project-shell">
+        <aside class="project-outline" aria-label="专家项目大纲">
+          <button
+            type="button"
+            class="mobile-outline-toggle"
+            :aria-expanded="mobileOutlineOpen"
+            @click="mobileOutlineOpen = !mobileOutlineOpen"
           >
-            <button
-              type="button"
-              class="stage-step"
-              :disabled="index > currentStageIndex"
-              :aria-pressed="index === displayedStageIndex"
-              @click="selectStage(stage.key, index)"
-            >
-              <span class="stage-marker">
-                <Check v-if="index < currentStageIndex" :size="13" />
-                <span v-else>{{ index + 1 }}</span>
-              </span>
-              <span>{{ stage.label }}</span>
-            </button>
-          </li>
-        </ol>
-      </nav>
-
-      <div class="project-summary-band">
-        <div class="summary-progress">
-          <div>
-            <strong>{{ getExpertStageLabel(project.stage) }}</strong>
-            <span>{{ currentStageMessage }}</span>
-          </div>
-          <span>{{ overallProgress }}%</span>
-        </div>
-        <a-progress :percent="overallProgress" :show-info="false" :stroke-width="5" />
-        <div v-if="showProjectError" class="actionable-error" role="alert">
-          <CircleAlert :size="16" />
-          <span>{{ project.error_message }}</span>
-        </div>
-      </div>
-
-      <main class="project-content">
-        <a-alert
-          v-if="project.status === 'paused'"
-          type="warning"
-          show-icon
-          class="paused-alert"
-          message="项目已暂停"
-          description="后台恢复扫描不会继续投递这个项目。恢复后，系统会从当前项目事实继续必要工作。"
-        >
-          <template #action>
-            <a-button size="small" :loading="actionKey === 'resume'" @click="resumeProject">
-              恢复项目
-            </a-button>
-          </template>
-        </a-alert>
-        <section v-if="isReviewingHistory" class="project-section stage-history-section">
-          <div class="history-toolbar">
-            <div>
-              <span class="section-kicker">阶段回看</span>
-              <h2>{{ getExpertStageLabel(reviewStage) }}</h2>
-              <p>这里展示该阶段已保存的产物，不会改变当前项目进度。</p>
-            </div>
-            <a-button type="text" @click="returnToCurrentStage">
-              回到当前进度
-              <ArrowRight :size="14" />
-            </a-button>
-          </div>
-
-          <template v-if="reviewStage === 'orientation'">
-            <div v-if="project.learning_plan" class="document-block">
-              <h3>学习方案</h3>
-              <MarkdownPreview :content="project.learning_plan" compact />
-            </div>
-            <details v-if="project.orientation_report" class="disclosure-block">
-              <summary>查看定向依据</summary>
-              <MarkdownPreview :content="project.orientation_report" compact />
-            </details>
-            <div v-if="project.method_samples?.length" class="artifact-list stage-history-list">
-              <article
-                v-for="sample in project.method_samples"
-                :key="sample.material_id"
-                class="artifact-row"
+            <span>
+              <strong
+                >第 {{ displayedStageIndex + 1 }} / {{ EXPERT_STAGE_ITEMS.length }} 阶段</strong
               >
-                <header>
-                  <div>
-                    <strong>{{ sample.title }}</strong>
-                    <span>{{ sample.source }}</span>
-                  </div>
-                  <span class="status-badge" :class="`tone-${getExpertStatusTone(sample.status)}`">
-                    {{ getExpertMaterialStatusLabel(sample.status) }}
-                  </span>
-                </header>
-                <details>
-                  <summary>查看笔记与 Review</summary>
-                  <MarkdownPreview :content="sampleNote(sample)" compact />
-                  <p class="review-summary">
-                    {{ sampleReview(sample)?.summary || '暂无 Review 摘要' }}
-                  </p>
-                </details>
-              </article>
-            </div>
-          </template>
+              <small>{{ getExpertStageLabel(reviewStage || project.stage) }}</small>
+            </span>
+            <ChevronDown :size="16" :class="{ rotated: mobileOutlineOpen }" />
+          </button>
 
-          <template v-else-if="reviewStage === 'material_learning'">
-            <div class="count-strip history-count-strip">
-              <span>全部 {{ project.material_summary?.total || project.materials.length }}</span>
-              <span>通过 {{ materialStatusCount('passed') }}</span>
-              <span>不入选 {{ materialStatusCount('no_value') }}</span>
-              <span>需要处理 {{ materialStatusCount('needs_attention') }}</span>
-            </div>
-            <div class="material-list section-list">
-              <article
-                v-for="material in project.materials"
-                :key="material.material_id"
-                class="material-row learning-row"
-              >
-                <div class="material-copy">
-                  <strong>{{ material.title }}</strong>
-                  <span>{{ material.source_path }}</span>
-                </div>
-                <span class="status-badge" :class="`tone-${getExpertStatusTone(material.status)}`">
-                  {{ getExpertMaterialStatusLabel(material.status) }}
-                </span>
-                <details v-if="material.note || material.review" class="row-details">
-                  <summary>查看笔记与 Review</summary>
-                  <MarkdownPreview v-if="material.note" :content="material.note" compact />
-                  <p v-if="material.review" class="review-summary">
-                    Review：{{ material.review.summary || '暂无摘要' }}
-                  </p>
-                </details>
-              </article>
-            </div>
-          </template>
-
-          <template v-else-if="reviewStage === 'organization'">
-            <div v-if="project.topic_map?.plan_markdown" class="document-block">
-              <h3>主题与讲义规划</h3>
-              <MarkdownPreview :content="project.topic_map.plan_markdown" compact />
-            </div>
-            <details v-if="project.editorial_plan" class="disclosure-block">
-              <summary>当前编辑方案</summary>
-              <MarkdownPreview :content="project.editorial_plan" compact />
-            </details>
-            <div class="topic-list stage-history-list">
-              <article v-for="topic in project.topics" :key="topic.topic_id" class="topic-row">
-                <div class="topic-position">{{ topic.position }}</div>
-                <div class="topic-copy">
-                  <span>{{ topic.section }}</span>
-                  <strong>{{ topic.title }}</strong>
-                  <p>{{ topic.reader_question }}</p>
-                </div>
-                <span v-if="topic.is_sample" class="sample-label">讲义小样</span>
-              </article>
-            </div>
-          </template>
-
-          <template v-else-if="reviewStage === 'handout_compilation'">
-            <ExpertTopicReader
-              v-model="selectedTopicId"
-              :topics="project.topics || []"
-              empty-text="这个项目没有保存正式讲义。"
-            />
-            <details v-if="project.final_review" class="disclosure-block history-final-review">
-              <summary>查看全书检查结果</summary>
-              <MarkdownPreview :content="finalReviewMarkdown" compact />
-            </details>
-          </template>
-        </section>
-
-        <section v-else-if="project.status === 'paused'" class="project-section paused-section">
-          <Pause :size="22" />
-          <div>
-            <h2>当前阶段已停止后台推进</h2>
-            <p>{{ project.message || '项目已暂停，等待显式恢复。' }}</p>
-          </div>
-        </section>
-
-        <template v-else>
-          <template v-if="project.stage === 'orientation'">
-            <section
-              v-if="hasMethodArtifacts && project.status !== 'running'"
-              class="project-section"
-            >
-              <div class="section-heading">
-                <div>
-                  <span class="section-kicker">方法版本 {{ project.method_version }}</span>
-                  <h2>这样学习这批材料，对不对？</h2>
-                  <p>确认后，当前学习方向会固定并用于后续逐份学习。</p>
-                </div>
-                <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
-                  {{ getExpertStatusLabel(project.status) }}
-                </span>
+          <div class="project-outline-body" :class="{ open: mobileOutlineOpen }">
+            <div class="outline-status" aria-live="polite">
+              <span>当前进度</span>
+              <strong>{{ getExpertStageLabel(project.stage) }}</strong>
+              <p>{{ currentStageMessage }}</p>
+              <div class="outline-progress-label">
+                <span>项目总进度</span>
+                <strong>{{ overallProgress }}%</strong>
               </div>
+              <a-progress :percent="overallProgress" :show-info="false" :stroke-width="5" />
+            </div>
 
-              <div class="document-block">
+            <nav aria-label="专家学习主流程">
+              <ol class="stage-list">
+                <li
+                  v-for="(stage, index) in EXPERT_STAGE_ITEMS"
+                  :key="stage.key"
+                  :class="{
+                    active: index === displayedStageIndex,
+                    current: index === currentStageIndex,
+                    completed: index < currentStageIndex,
+                    reviewable: index <= currentStageIndex,
+                    attention: index === currentStageIndex && project.status === 'needs_attention'
+                  }"
+                >
+                  <button
+                    type="button"
+                    class="stage-step"
+                    :disabled="index > currentStageIndex"
+                    :aria-current="index === displayedStageIndex ? 'step' : undefined"
+                    @click="selectStage(stage.key, index)"
+                  >
+                    <span class="stage-marker">
+                      <Check v-if="index < currentStageIndex" :size="13" />
+                      <span v-else>{{ index + 1 }}</span>
+                    </span>
+                    <span class="stage-copy">
+                      <strong>{{ stage.label }}</strong>
+                      <small>{{ stageSummary(stage.key) }}</small>
+                    </span>
+                  </button>
+                </li>
+              </ol>
+            </nav>
+          </div>
+        </aside>
+
+        <main ref="projectContentRef" class="project-content">
+          <div v-if="showProjectError" class="actionable-error" role="alert">
+            <CircleAlert :size="16" />
+            <span>{{ project.error_message }}</span>
+          </div>
+          <a-alert
+            v-if="project.status === 'paused'"
+            type="warning"
+            show-icon
+            class="paused-alert"
+            message="项目已暂停"
+            description="后台恢复扫描不会继续投递这个项目。恢复后，系统会从当前项目事实继续必要工作。"
+          >
+            <template #action>
+              <a-button size="small" :loading="actionKey === 'resume'" @click="resumeProject">
+                恢复项目
+              </a-button>
+            </template>
+          </a-alert>
+          <section v-if="isReviewingHistory" class="project-section stage-history-section">
+            <div class="history-toolbar">
+              <div>
+                <h2>{{ getExpertStageLabel(reviewStage) }} · 阶段回看</h2>
+                <p>这里展示该阶段已保存的产物，不会改变当前项目进度。</p>
+              </div>
+              <a-button type="text" @click="returnToCurrentStage">
+                回到当前进度
+                <ArrowRight :size="14" />
+              </a-button>
+            </div>
+
+            <template v-if="reviewStage === 'orientation'">
+              <div v-if="project.learning_plan" class="document-block">
                 <h3>学习方案</h3>
-                <MarkdownPreview :content="project.learning_plan || ''" compact />
+                <MarkdownPreview :content="project.learning_plan" compact />
               </div>
-
               <details v-if="project.orientation_report" class="disclosure-block">
                 <summary>查看定向依据</summary>
                 <MarkdownPreview :content="project.orientation_report" compact />
               </details>
-
-              <div class="subsection-heading">
-                <div>
-                  <h3>真实材料笔记小样</h3>
-                  <p>每份小样都经过独立 Review；具体意见默认收起。</p>
-                </div>
-              </div>
-              <div class="artifact-list">
+              <div v-if="project.method_samples?.length" class="artifact-list stage-history-list">
                 <article
-                  v-for="sample in project.method_samples || []"
+                  v-for="sample in project.method_samples"
                   :key="sample.material_id"
                   class="artifact-row"
                 >
@@ -318,196 +207,42 @@
                       {{ getExpertMaterialStatusLabel(sample.status) }}
                     </span>
                   </header>
-                  <MarkdownPreview :content="sampleNote(sample)" compact />
-                  <details class="review-disclosure">
-                    <summary>查看 Review</summary>
+                  <details>
+                    <summary>查看笔记与 Review</summary>
+                    <MarkdownPreview :content="sampleNote(sample)" compact />
                     <p class="review-summary">
                       {{ sampleReview(sample)?.summary || '暂无 Review 摘要' }}
                     </p>
-                    <ul v-if="sampleReview(sample)?.issues?.length" class="issue-list">
-                      <li v-for="(issue, index) in sampleReview(sample).issues" :key="index">
-                        <strong>{{ issue.problem }}</strong>
-                        <span>{{ issue.revision_direction }}</span>
-                      </li>
-                    </ul>
                   </details>
                 </article>
               </div>
-
-              <details class="disclosure-block prompt-disclosure">
+              <details v-if="hasPromptPack" class="disclosure-block prompt-disclosure">
                 <summary>查看阶段指令（高级检查）</summary>
                 <div class="prompt-list">
-                  <details v-for="(prompt, key) in project.prompt_pack || {}" :key="key">
+                  <details v-for="(prompt, key) in project.prompt_pack" :key="key">
                     <summary>{{ promptLabel(key) }}</summary>
                     <pre>{{ prompt }}</pre>
                   </details>
                 </div>
               </details>
+            </template>
 
-              <div class="decision-panel method-decision-panel">
-                <div v-if="isInitialMethodConfirmation" class="auto-advance-choice">
-                  <div>
-                    <strong>自动推进到候选 Skill</strong>
-                    <span v-if="autoAdvanceEnabled">
-                      开启后，本次确认就是候选 Skill
-                      成书前最后一次确认。系统会自动完成方法校准、逐份学习、组织和成书，但不会自动启用
-                      Skill。
-                    </span>
-                    <span v-else>
-                      关闭后，方法校准、材料问题和组织方式仍会等待你查看、调整和确认。
-                    </span>
-                  </div>
-                  <a-switch
-                    v-model:checked="autoAdvanceEnabled"
-                    aria-label="自动推进到候选 Skill"
-                    :disabled="Boolean(actionKey)"
-                  />
-                </div>
-                <a-textarea
-                  v-if="project.status === 'awaiting_confirmation'"
-                  v-model:value="methodFeedback"
-                  :rows="3"
-                  placeholder="如果方向还需要调整，请写明哪里没有贴合材料、希望怎样改变学习方法"
-                />
-                <div class="decision-actions">
-                  <a-button
-                    v-if="project.status === 'needs_attention'"
-                    :loading="actionKey === 'retry-method'"
-                    :disabled="Boolean(actionKey)"
-                    @click="retryMethod"
-                  >
-                    <RotateCcw :size="14" />
-                    重新试跑当前方法
-                  </a-button>
-                  <a-button
-                    v-if="project.status === 'awaiting_confirmation'"
-                    :loading="actionKey === 'revise-method'"
-                    :disabled="Boolean(actionKey) || !methodFeedback.trim()"
-                    @click="reviseMethod"
-                  >
-                    <RotateCcw :size="14" />
-                    按意见调整学习方向
-                  </a-button>
-                  <a-button
-                    v-if="project.status === 'awaiting_confirmation'"
-                    type="primary"
-                    :loading="actionKey === 'confirm-method'"
-                    :disabled="Boolean(actionKey)"
-                    @click="confirmMethod"
-                  >
-                    <Check :size="14" />
-                    {{ methodConfirmButtonLabel }}
-                  </a-button>
-                </div>
+            <template v-else-if="reviewStage === 'material_learning'">
+              <div class="count-strip history-count-strip">
+                <span>全部 {{ project.material_summary?.total || project.materials.length }}</span>
+                <span>通过 {{ materialStatusCount('passed') }}</span>
+                <span>不入选 {{ materialStatusCount('no_value') }}</span>
+                <span>需要处理 {{ materialStatusCount('needs_attention') }}</span>
               </div>
-            </section>
-
-            <section
-              v-else-if="isExpertMethodPreparationRunning(project)"
-              class="project-section processing-section"
-            >
-              <LoaderCircle :size="22" class="spin" />
-              <div>
-                <h2>正在形成项目学习方案并试跑小样</h2>
-                <p>{{ project.message }}</p>
-              </div>
-            </section>
-
-            <section v-else-if="canChooseRepresentatives" class="project-section">
-              <div class="section-heading">
-                <div>
-                  <span class="section-kicker">项目定向</span>
-                  <h2>选择 1～20 份代表性材料</h2>
-                  <p>系统会完整阅读所选材料，用它们试跑项目专属学习方法。选择由你明确完成。</p>
-                </div>
-                <span class="selection-count"
-                  >已选 {{ selectedRepresentativeIds.length }} /
-                  {{ maxRepresentativeMaterials }}</span
-                >
-              </div>
-
-              <div class="material-list">
-                <div
-                  v-for="material in selectableMaterials"
-                  :key="material.material_id"
-                  class="material-row selectable"
-                  :class="{ selected: selectedRepresentativeIds.includes(material.material_id) }"
-                  role="checkbox"
-                  tabindex="0"
-                  :aria-checked="selectedRepresentativeIds.includes(material.material_id)"
-                  @click="toggleRepresentative(material.material_id)"
-                  @keydown.enter.prevent="toggleRepresentative(material.material_id)"
-                  @keydown.space.prevent="toggleRepresentative(material.material_id)"
-                >
-                  <a-checkbox
-                    :checked="selectedRepresentativeIds.includes(material.material_id)"
-                    tabindex="-1"
-                    aria-hidden="true"
-                  />
-                  <div class="material-copy">
-                    <strong>{{ material.title }}</strong>
-                    <span>{{ material.source_path }} · {{ material.line_count }} 行</span>
-                  </div>
-                  <a-button
-                    v-if="canPreviewExpertMaterial(material)"
-                    type="text"
-                    size="small"
-                    @click.stop="openMaterialPreview(material)"
-                  >
-                    <Eye :size="14" />
-                    正文
-                  </a-button>
-                </div>
-              </div>
-
-              <div class="decision-panel">
-                <a-textarea
-                  v-model:value="methodFeedback"
-                  :rows="2"
-                  placeholder="可补充希望重点继承的判断方式或需要保留的材料边界"
-                />
-                <div class="decision-actions">
-                  <a-button
-                    type="primary"
-                    :disabled="selectedRepresentativeIds.length < 1 || Boolean(actionKey)"
-                    :loading="actionKey === 'orientation'"
-                    @click="startOrientation"
-                  >
-                    <Compass :size="14" />
-                    {{
-                      project.status === 'needs_attention'
-                        ? '重新生成学习方案与小样'
-                        : '生成学习方案与小样'
-                    }}
-                  </a-button>
-                </div>
-              </div>
-            </section>
-
-            <section v-else class="project-section">
-              <div class="section-heading">
-                <div>
-                  <span class="section-kicker">材料准备</span>
-                  <h2>把材料转换为可靠正文</h2>
-                  <p>准备完成后，由你从可见材料清单中选择代表样本。</p>
-                </div>
-                <span>{{ materialProgress }}%</span>
-              </div>
-              <a-progress :percent="materialProgress" :show-info="false" :stroke-width="6" />
-
               <div class="material-list section-list">
-                <div
+                <article
                   v-for="material in project.materials"
                   :key="material.material_id"
-                  class="material-row"
+                  class="material-row learning-row"
                 >
-                  <FileText :size="16" />
                   <div class="material-copy">
                     <strong>{{ material.title }}</strong>
                     <span>{{ material.source_path }}</span>
-                    <span v-if="material.error_message" class="row-error">{{
-                      material.error_message
-                    }}</span>
                   </div>
                   <span
                     class="status-badge"
@@ -515,246 +250,14 @@
                   >
                     {{ getExpertMaterialStatusLabel(material.status) }}
                   </span>
-                  <div v-if="material.status === 'needs_attention'" class="row-actions">
-                    <a-button
-                      size="small"
-                      :loading="actionKey === `retry-conversion:${material.material_id}`"
-                      :disabled="Boolean(actionKey)"
-                      @click="retryMaterialConversion(material)"
-                    >
-                      重试转换
-                    </a-button>
-                    <a-button
-                      size="small"
-                      danger
-                      :disabled="Boolean(actionKey) || !canExcludeMaterial(material)"
-                      :title="excludeButtonTitle(material)"
-                      @click="openExclude(material)"
-                    >
-                      排除
-                    </a-button>
-                  </div>
-                </div>
-              </div>
-            </section>
-          </template>
-
-          <section v-else-if="project.stage === 'material_learning'" class="project-section">
-            <div class="section-heading">
-              <div>
-                <span class="section-kicker">逐份学习与 Review</span>
-                <h2>批量学习材料</h2>
-                <p v-if="project.auto_advance">
-                  每份材料会在后台完成笔记、Review
-                  和有限自动修订；系统会判断采用或不入选。只有材料无法继续读取或执行，或没有材料通过
-                  Review 时，项目才会停下并说明原因。
-                </p>
-                <p v-else>
-                  每份材料在后台完成笔记、Review
-                  和最多两次自动修订；仍未通过的材料会保留具体意见，等待人工处理。
-                </p>
-              </div>
-              <span>{{ materialProgress }}%</span>
-            </div>
-            <a-progress :percent="materialProgress" :show-info="false" :stroke-width="6" />
-
-            <div class="count-strip">
-              <button
-                v-for="option in materialFilterOptions"
-                :key="option.key"
-                type="button"
-                class="material-filter"
-                :class="{
-                  active: materialFilter === option.key,
-                  attention: option.key === 'needs_attention' && materialStatusCount(option.key) > 0
-                }"
-                :aria-pressed="materialFilter === option.key"
-                @click="materialFilter = option.key"
-              >
-                {{ option.label }} {{ materialStatusCount(option.key) }}
-              </button>
-            </div>
-
-            <div class="stage-next-step">
-              <span>下一步</span>
-              <strong
-                >全部材料通过、不入选或完成必要处理后，系统自动生成主题方案与讲义小样。</strong
-              >
-            </div>
-
-            <div v-if="filteredMaterials.length" class="material-list section-list">
-              <article
-                v-for="material in filteredMaterials"
-                :key="material.material_id"
-                class="material-row learning-row"
-              >
-                <div class="material-copy">
-                  <strong>{{ material.title }}</strong>
-                  <span>{{ material.source_path }}</span>
-                  <span v-if="material.error_message" class="row-error">{{
-                    material.error_message
-                  }}</span>
-                  <span v-if="material.exclusion_reason" class="row-muted">
-                    排除原因：{{ material.exclusion_reason }}
-                  </span>
-                </div>
-                <span class="status-badge" :class="`tone-${getExpertStatusTone(material.status)}`">
-                  {{ getExpertMaterialStatusLabel(material.status) }}
-                </span>
-                <div class="row-actions">
-                  <a-button
-                    v-if="canPreviewExpertMaterial(material)"
-                    type="text"
-                    size="small"
-                    @click="openMaterialPreview(material)"
-                  >
-                    <Eye :size="14" />
-                    正文
-                  </a-button>
-                  <a-button
-                    v-if="material.status === 'needs_attention'"
-                    size="small"
-                    :loading="actionKey === `retry-learning:${material.material_id}`"
-                    :disabled="Boolean(actionKey)"
-                    @click="retryMaterialLearning(material)"
-                  >
-                    重跑学习
-                  </a-button>
-                  <a-button
-                    v-if="material.status === 'needs_attention'"
-                    size="small"
-                    danger
-                    :disabled="Boolean(actionKey) || !canExcludeMaterial(material)"
-                    :title="excludeButtonTitle(material)"
-                    @click="openExclude(material)"
-                  >
-                    明确排除
-                  </a-button>
-                </div>
-                <details v-if="material.note || material.review" class="row-details">
-                  <summary>查看笔记与 Review</summary>
-                  <MarkdownPreview v-if="material.note" :content="material.note" compact />
-                  <div v-if="material.review" class="review-box">
-                    <strong>Review：{{ material.review.summary || '暂无摘要' }}</strong>
-                    <ul v-if="material.review.issues?.length" class="issue-list">
+                  <details v-if="material.note || material.review" class="row-details">
+                    <summary>查看笔记与 Review</summary>
+                    <MarkdownPreview v-if="material.note" :content="material.note" compact />
+                    <p v-if="material.review" class="review-summary">
+                      Review：{{ material.review.summary || '暂无摘要' }}
+                    </p>
+                    <ul v-if="material.review?.issues?.length" class="issue-list">
                       <li v-for="(issue, index) in material.review.issues" :key="index">
-                        <strong>{{ issue.problem }}</strong>
-                        <span>{{ issue.revision_direction }}</span>
-                      </li>
-                    </ul>
-                  </div>
-                </details>
-              </article>
-            </div>
-            <a-empty v-else class="filtered-material-empty" description="当前筛选没有材料" />
-          </section>
-
-          <template v-else-if="project.stage === 'organization'">
-            <section v-if="project.topic_map?.topics?.length" class="project-section">
-              <div class="section-heading">
-                <div>
-                  <span class="section-kicker">组织版本 {{ project.organization_version }}</span>
-                  <h2>
-                    {{
-                      project.status === 'running'
-                        ? '正在生成主题方案和讲义小样'
-                        : '这样组织和表达已经学到的知识，对不对？'
-                    }}
-                  </h2>
-                  <p>
-                    {{
-                      project.status === 'running'
-                        ? project.message
-                        : '确认后，主题地图、编辑方案和讲义小样会固定并进入批量讲义编写。'
-                    }}
-                  </p>
-                </div>
-                <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
-                  {{ getExpertStatusLabel(project.status) }}
-                </span>
-              </div>
-
-              <div class="document-block">
-                <h3>主题与讲义规划</h3>
-                <MarkdownPreview :content="project.topic_map.plan_markdown || ''" compact />
-              </div>
-
-              <details v-if="project.editorial_plan" class="disclosure-block">
-                <summary>当前编辑方案</summary>
-                <MarkdownPreview :content="project.editorial_plan" compact />
-              </details>
-
-              <div class="subsection-heading">
-                <div>
-                  <h3>主题关系与覆盖范围</h3>
-                  <p>{{ project.topic_map.sample_selection_reason }}</p>
-                </div>
-              </div>
-              <div class="topic-list">
-                <article v-for="topic in project.topics" :key="topic.topic_id" class="topic-row">
-                  <div class="topic-position">{{ topic.position }}</div>
-                  <div class="topic-copy">
-                    <span>{{ topic.section }}</span>
-                    <strong>{{ topic.title }}</strong>
-                    <p>{{ topic.reader_question }}</p>
-                    <details>
-                      <summary>查看主题边界</summary>
-                      <p>{{ topic.boundaries }}</p>
-                    </details>
-                  </div>
-                  <span v-if="topic.is_sample" class="sample-label">讲义小样</span>
-                </article>
-              </div>
-
-              <div
-                v-if="excludedMaterials.length || project.topic_map.unassigned_notes?.length"
-                class="excluded-band"
-              >
-                <h3>本轮未纳入</h3>
-                <ul>
-                  <li v-for="material in excludedMaterials" :key="material.material_id">
-                    <strong>{{ material.title }}</strong>
-                    <span>{{
-                      material.exclusion_reason || material.error_message || 'Review 判定不入选'
-                    }}</span>
-                  </li>
-                  <li
-                    v-for="item in project.topic_map.unassigned_notes || []"
-                    :key="item.note_alias"
-                  >
-                    <strong>{{ item.note_alias }}</strong>
-                    <span>{{ item.reason }}</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div class="subsection-heading">
-                <div>
-                  <h3>讲义小样</h3>
-                  <p>总编模型定稿，Reviewer 只给出具体问题。</p>
-                </div>
-              </div>
-              <div class="artifact-list">
-                <article
-                  v-for="sample in project.organization_samples || []"
-                  :key="sample.topic_id"
-                  class="artifact-row"
-                >
-                  <header>
-                    <strong>{{ sample.title }}</strong>
-                    <span
-                      class="status-badge"
-                      :class="`tone-${getExpertStatusTone(sample.status)}`"
-                    >
-                      {{ getExpertMaterialStatusLabel(sample.status) }}
-                    </span>
-                  </header>
-                  <MarkdownPreview :content="sample.handout || ''" compact />
-                  <details class="review-disclosure">
-                    <summary>查看 Review</summary>
-                    <p class="review-summary">{{ sample.review?.summary || '暂无 Review 摘要' }}</p>
-                    <ul v-if="sample.review?.issues?.length" class="issue-list">
-                      <li v-for="(issue, index) in sample.review.issues" :key="index">
                         <strong>{{ issue.problem }}</strong>
                         <span>{{ issue.revision_direction }}</span>
                       </li>
@@ -762,222 +265,870 @@
                   </details>
                 </article>
               </div>
+            </template>
 
-              <div v-if="canReviseExpertOrganization(project.status)" class="decision-panel">
-                <a-textarea
-                  v-model:value="organizationFeedback"
-                  :rows="3"
-                  placeholder="需要调整时，说明主题边界、覆盖关系或讲义表达应如何变化"
-                />
-                <div class="decision-actions">
-                  <a-button
-                    :loading="actionKey === 'revise-organization'"
-                    :disabled="Boolean(actionKey)"
-                    @click="reviseOrganization"
-                  >
-                    <RotateCcw :size="14" />
-                    按意见重新生成
-                  </a-button>
-                  <a-button
-                    v-if="project.status === 'awaiting_confirmation'"
-                    type="primary"
-                    :loading="actionKey === 'confirm-organization'"
-                    :disabled="Boolean(actionKey)"
-                    @click="confirmOrganization"
-                  >
-                    <Check :size="14" />
-                    确认组织方式
-                  </a-button>
+            <template v-else-if="reviewStage === 'organization'">
+              <div v-if="project.topic_map?.plan_markdown" class="document-block">
+                <h3>主题与讲义规划</h3>
+                <MarkdownPreview :content="project.topic_map.plan_markdown" compact />
+              </div>
+              <details v-if="project.editorial_plan" class="disclosure-block">
+                <summary>当前编辑方案</summary>
+                <MarkdownPreview :content="project.editorial_plan" compact />
+              </details>
+              <ExpertTopicOutline
+                class="stage-history-list"
+                :topics="project.topics || []"
+                show-boundaries
+              />
+            </template>
+
+            <template v-else-if="reviewStage === 'handout_compilation'">
+              <ExpertTopicReader
+                v-model="selectedTopicId"
+                :topics="project.topics || []"
+                empty-text="这个项目没有保存正式讲义。"
+              />
+              <details v-if="project.final_review" class="disclosure-block history-final-review">
+                <summary>查看全书检查结果</summary>
+                <MarkdownPreview :content="finalReviewMarkdown" compact />
+              </details>
+            </template>
+          </section>
+
+          <section v-else-if="project.status === 'paused'" class="project-section paused-section">
+            <Pause :size="22" />
+            <div>
+              <h2>当前阶段已停止后台推进</h2>
+              <p>{{ project.message || '项目已暂停，等待显式恢复。' }}</p>
+            </div>
+          </section>
+
+          <template v-else>
+            <template v-if="project.stage === 'orientation'">
+              <section v-if="hasMethodArtifacts" class="project-section">
+                <div class="section-heading">
+                  <div>
+                    <h2>
+                      {{
+                        project.status === 'running'
+                          ? `正在校准学习方法 v${project.method_version}`
+                          : `学习方法 v${project.method_version}：这样学对不对？`
+                      }}
+                    </h2>
+                    <p>
+                      {{
+                        project.status === 'running'
+                          ? '下方保留当前已保存的学习方案、阶段指令和小样；后台进度仍以顶部状态为准。'
+                          : '确认后，当前学习方向会固定并用于后续逐份学习。'
+                      }}
+                    </p>
+                  </div>
+                  <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
+                    {{ getExpertStatusLabel(project.status) }}
+                  </span>
                 </div>
+
+                <section
+                  v-if="['awaiting_confirmation', 'needs_attention'].includes(project.status)"
+                  class="decision-summary"
+                  aria-labelledby="method-decision-title"
+                >
+                  <div>
+                    <h3 id="method-decision-title">确认前请核对</h3>
+                    <ul>
+                      <li>学习目标是否贴合这批材料真正教授的判断方法</li>
+                      <li>材料边界、来源差异和不能补写的内容是否清楚</li>
+                      <li>真实小样是否证明这套方法能够稳定产出可用笔记</li>
+                    </ul>
+                  </div>
+                  <strong>
+                    {{
+                      autoAdvanceEnabled && isInitialMethodConfirmation
+                        ? '确认后自动推进到候选成品'
+                        : '确认后进入后续学习'
+                    }}
+                  </strong>
+                </section>
+
+                <div
+                  v-if="['awaiting_confirmation', 'needs_attention'].includes(project.status)"
+                  class="decision-panel method-decision-panel"
+                >
+                  <div v-if="isInitialMethodConfirmation" class="auto-advance-choice">
+                    <div>
+                      <strong>自动推进到候选 Skill</strong>
+                      <span v-if="autoAdvanceEnabled">
+                        本次确认后，系统自动完成方法校准、逐份学习、组织和成书；候选 Skill
+                        仍需预览后手动启用。
+                      </span>
+                      <span v-else> 方法校准、材料问题和组织方式仍会等待你查看、调整和确认。 </span>
+                    </div>
+                    <a-switch
+                      v-model:checked="autoAdvanceEnabled"
+                      aria-label="自动推进到候选 Skill"
+                      :disabled="Boolean(actionKey)"
+                    />
+                  </div>
+                  <label v-if="project.status === 'awaiting_confirmation'" class="decision-field">
+                    <span>调整意见</span>
+                    <a-textarea
+                      v-model:value="methodFeedback"
+                      :rows="3"
+                      placeholder="写明哪里没有贴合材料，以及希望怎样改变学习方法"
+                    />
+                  </label>
+                  <div class="decision-actions">
+                    <a-button
+                      v-if="project.status === 'needs_attention'"
+                      :loading="actionKey === 'retry-method'"
+                      :disabled="Boolean(actionKey)"
+                      @click="retryMethod"
+                    >
+                      <RotateCcw :size="14" />
+                      重新试跑当前方法
+                    </a-button>
+                    <a-button
+                      v-if="project.status === 'awaiting_confirmation'"
+                      :loading="actionKey === 'revise-method'"
+                      :disabled="Boolean(actionKey) || !methodFeedback.trim()"
+                      @click="reviseMethod"
+                    >
+                      <RotateCcw :size="14" />
+                      按意见调整学习方向
+                    </a-button>
+                    <a-button
+                      v-if="project.status === 'awaiting_confirmation'"
+                      type="primary"
+                      :loading="actionKey === 'confirm-method'"
+                      :disabled="Boolean(actionKey)"
+                      @click="confirmMethod"
+                    >
+                      <Check :size="14" />
+                      {{ methodConfirmButtonLabel }}
+                    </a-button>
+                  </div>
+                </div>
+
+                <div class="document-block">
+                  <h3>学习方案</h3>
+                  <MarkdownPreview :content="project.learning_plan || ''" compact />
+                </div>
+
+                <details v-if="project.orientation_report" class="disclosure-block">
+                  <summary>查看定向依据</summary>
+                  <MarkdownPreview :content="project.orientation_report" compact />
+                </details>
+
+                <div class="subsection-heading">
+                  <div>
+                    <h3>真实材料笔记小样</h3>
+                    <p>每份小样都经过独立 Review；具体意见默认收起。</p>
+                  </div>
+                </div>
+                <div class="artifact-list">
+                  <article
+                    v-for="sample in project.method_samples || []"
+                    :key="sample.material_id"
+                    class="artifact-row"
+                  >
+                    <header>
+                      <div>
+                        <strong>{{ sample.title }}</strong>
+                        <span>{{ sample.source }}</span>
+                      </div>
+                      <span
+                        class="status-badge"
+                        :class="`tone-${getExpertStatusTone(sample.status)}`"
+                      >
+                        {{ getExpertMaterialStatusLabel(sample.status) }}
+                      </span>
+                    </header>
+                    <MarkdownPreview :content="sampleNote(sample)" compact />
+                    <details class="review-disclosure">
+                      <summary>查看 Review</summary>
+                      <p class="review-summary">
+                        {{ sampleReview(sample)?.summary || '暂无 Review 摘要' }}
+                      </p>
+                      <ul v-if="sampleReview(sample)?.issues?.length" class="issue-list">
+                        <li v-for="(issue, index) in sampleReview(sample).issues" :key="index">
+                          <strong>{{ issue.problem }}</strong>
+                          <span>{{ issue.revision_direction }}</span>
+                        </li>
+                      </ul>
+                    </details>
+                  </article>
+                </div>
+
+                <details v-if="hasPromptPack" class="disclosure-block prompt-disclosure">
+                  <summary>查看阶段指令（高级检查）</summary>
+                  <div class="prompt-list">
+                    <details v-for="(prompt, key) in project.prompt_pack || {}" :key="key">
+                      <summary>{{ promptLabel(key) }}</summary>
+                      <pre>{{ prompt }}</pre>
+                    </details>
+                  </div>
+                </details>
+              </section>
+
+              <section
+                v-else-if="isExpertMethodPreparationRunning(project)"
+                class="project-section processing-section"
+              >
+                <LoaderCircle :size="22" class="spin" />
+                <div>
+                  <h2>正在形成项目学习方案并试跑小样</h2>
+                  <p>{{ project.message }}</p>
+                </div>
+              </section>
+
+              <section v-else-if="canChooseRepresentatives" class="project-section">
+                <div class="section-heading">
+                  <div>
+                    <h2>选择代表性材料</h2>
+                    <p>
+                      系统会完整阅读所选材料，用它们试跑项目专属学习方法。{{
+                        representativeSelectionHint
+                      }}
+                    </p>
+                  </div>
+                  <span class="selection-count">{{ representativeSelectionCount }}</span>
+                </div>
+
+                <div class="material-list">
+                  <div
+                    v-for="material in selectableMaterials"
+                    :key="material.material_id"
+                    class="material-row selectable"
+                    :class="{ selected: selectedRepresentativeIds.includes(material.material_id) }"
+                    role="checkbox"
+                    tabindex="0"
+                    :aria-checked="selectedRepresentativeIds.includes(material.material_id)"
+                    @click="toggleRepresentative(material.material_id)"
+                    @keydown.enter.prevent="toggleRepresentative(material.material_id)"
+                    @keydown.space.prevent="toggleRepresentative(material.material_id)"
+                  >
+                    <a-checkbox
+                      :checked="selectedRepresentativeIds.includes(material.material_id)"
+                      tabindex="-1"
+                      aria-hidden="true"
+                    />
+                    <div class="material-copy">
+                      <strong>{{ material.title }}</strong>
+                      <span>{{ material.source_path }} · {{ material.line_count }} 行</span>
+                    </div>
+                    <a-button
+                      v-if="canPreviewExpertMaterial(material)"
+                      type="text"
+                      size="small"
+                      @click.stop="openMaterialPreview(material)"
+                    >
+                      <Eye :size="14" />
+                      正文
+                    </a-button>
+                  </div>
+                </div>
+
+                <div class="decision-panel">
+                  <a-textarea
+                    v-model:value="methodFeedback"
+                    :rows="2"
+                    placeholder="可补充希望重点继承的判断方式或需要保留的材料边界"
+                  />
+                  <div class="decision-actions">
+                    <a-button
+                      type="primary"
+                      :disabled="
+                        selectedRepresentativeIds.length < minRepresentativeMaterials ||
+                        Boolean(actionKey)
+                      "
+                      :loading="actionKey === 'orientation'"
+                      @click="startOrientation"
+                    >
+                      <Compass :size="14" />
+                      {{
+                        project.status === 'needs_attention'
+                          ? '重新生成学习方案与小样'
+                          : '生成学习方案与小样'
+                      }}
+                    </a-button>
+                  </div>
+                </div>
+              </section>
+
+              <section v-else class="project-section">
+                <div class="section-heading">
+                  <div>
+                    <h2>把材料转换为可靠正文</h2>
+                    <p>准备完成后，由你从可见材料清单中选择代表样本。</p>
+                  </div>
+                  <span>{{ materialProgress }}%</span>
+                </div>
+                <a-progress :percent="materialProgress" :show-info="false" :stroke-width="6" />
+
+                <div class="material-list section-list">
+                  <div
+                    v-for="material in project.materials"
+                    :key="material.material_id"
+                    class="material-row"
+                  >
+                    <FileText :size="16" />
+                    <div class="material-copy">
+                      <strong>{{ material.title }}</strong>
+                      <span>{{ material.source_path }}</span>
+                      <span v-if="material.error_message" class="row-error">{{
+                        material.error_message
+                      }}</span>
+                    </div>
+                    <span
+                      class="status-badge"
+                      :class="`tone-${getExpertStatusTone(material.status)}`"
+                    >
+                      {{ getExpertMaterialStatusLabel(material.status) }}
+                    </span>
+                    <div v-if="material.status === 'needs_attention'" class="row-actions">
+                      <a-button
+                        size="small"
+                        :loading="actionKey === `retry-conversion:${material.material_id}`"
+                        :disabled="Boolean(actionKey)"
+                        @click="retryMaterialConversion(material)"
+                      >
+                        重试转换
+                      </a-button>
+                      <a-button
+                        size="small"
+                        danger
+                        :disabled="Boolean(actionKey) || !canExcludeMaterial(material)"
+                        :title="excludeButtonTitle(material)"
+                        @click="openExclude(material)"
+                      >
+                        排除
+                      </a-button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </template>
+
+            <section v-else-if="project.stage === 'material_learning'" class="project-section">
+              <div class="section-heading">
+                <div>
+                  <h2>批量学习材料</h2>
+                  <p v-if="project.auto_advance">
+                    每份材料会在后台完成笔记、Review
+                    和有限自动修订；系统会判断采用或不入选。只有材料无法继续读取或执行，或没有材料通过
+                    Review 时，项目才会停下并说明原因。
+                  </p>
+                  <p v-else>
+                    每份材料在后台完成笔记、Review
+                    和最多两次自动修订；仍未通过的材料会保留具体意见，等待人工处理。
+                  </p>
+                </div>
+                <span>{{ materialProgress }}%</span>
+              </div>
+              <a-progress :percent="materialProgress" :show-info="false" :stroke-width="6" />
+
+              <div class="count-strip">
+                <button
+                  v-for="option in materialFilterOptions"
+                  :key="option.key"
+                  type="button"
+                  class="material-filter"
+                  :class="{
+                    active: materialFilter === option.key,
+                    attention:
+                      option.key === 'needs_attention' && materialStatusCount(option.key) > 0
+                  }"
+                  :aria-pressed="materialFilter === option.key"
+                  @click="materialFilter = option.key"
+                >
+                  {{ option.label }} {{ materialStatusCount(option.key) }}
+                </button>
+              </div>
+
+              <div class="stage-next-step">
+                <span>下一步</span>
+                <strong
+                  >全部材料通过、不入选或完成必要处理后，系统自动生成主题方案与讲义小样。</strong
+                >
+              </div>
+
+              <div v-if="filteredMaterials.length" class="material-list section-list">
+                <article
+                  v-for="material in filteredMaterials"
+                  :key="material.material_id"
+                  class="material-row learning-row"
+                >
+                  <div class="material-copy">
+                    <strong>{{ material.title }}</strong>
+                    <span>{{ material.source_path }}</span>
+                    <span v-if="material.error_message" class="row-error">{{
+                      material.error_message
+                    }}</span>
+                    <span v-if="material.exclusion_reason" class="row-muted">
+                      排除原因：{{ material.exclusion_reason }}
+                    </span>
+                  </div>
+                  <span
+                    class="status-badge"
+                    :class="`tone-${getExpertStatusTone(material.status)}`"
+                  >
+                    {{ getExpertMaterialStatusLabel(material.status) }}
+                  </span>
+                  <div class="row-actions">
+                    <a-button
+                      v-if="canPreviewExpertMaterial(material)"
+                      type="text"
+                      size="small"
+                      @click="openMaterialPreview(material)"
+                    >
+                      <Eye :size="14" />
+                      正文
+                    </a-button>
+                    <a-button
+                      v-if="material.status === 'needs_attention'"
+                      size="small"
+                      :loading="actionKey === `retry-learning:${material.material_id}`"
+                      :disabled="Boolean(actionKey)"
+                      @click="retryMaterialLearning(material)"
+                    >
+                      重跑学习
+                    </a-button>
+                    <a-button
+                      v-if="material.status === 'needs_attention'"
+                      size="small"
+                      danger
+                      :disabled="Boolean(actionKey) || !canExcludeMaterial(material)"
+                      :title="excludeButtonTitle(material)"
+                      @click="openExclude(material)"
+                    >
+                      明确排除
+                    </a-button>
+                  </div>
+                  <details v-if="material.note || material.review" class="row-details">
+                    <summary>查看笔记与 Review</summary>
+                    <MarkdownPreview v-if="material.note" :content="material.note" compact />
+                    <div v-if="material.review" class="review-box">
+                      <strong>Review：{{ material.review.summary || '暂无摘要' }}</strong>
+                      <ul v-if="material.review.issues?.length" class="issue-list">
+                        <li v-for="(issue, index) in material.review.issues" :key="index">
+                          <strong>{{ issue.problem }}</strong>
+                          <span>{{ issue.revision_direction }}</span>
+                        </li>
+                      </ul>
+                    </div>
+                  </details>
+                </article>
+              </div>
+              <a-empty v-else class="filtered-material-empty" description="当前筛选没有材料" />
+            </section>
+
+            <template v-else-if="project.stage === 'organization'">
+              <section v-if="project.topic_map?.topics?.length" class="project-section">
+                <div class="section-heading">
+                  <div>
+                    <h2>
+                      {{
+                        project.status === 'running'
+                          ? `正在生成组织版本 ${project.organization_version}`
+                          : `组织版本 ${project.organization_version}：这样编排对不对？`
+                      }}
+                    </h2>
+                    <p>
+                      {{
+                        project.status === 'running'
+                          ? project.message
+                          : '确认后，主题地图、编辑方案和讲义小样会固定并进入批量讲义编写。'
+                      }}
+                    </p>
+                  </div>
+                  <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
+                    {{ getExpertStatusLabel(project.status) }}
+                  </span>
+                </div>
+
+                <section
+                  v-if="canReviseExpertOrganization(project.status)"
+                  class="decision-summary"
+                  aria-labelledby="organization-decision-title"
+                >
+                  <div>
+                    <h3 id="organization-decision-title">确认前请核对</h3>
+                    <ul>
+                      <li>章节顺序是否符合读者解决真实问题的判断顺序</li>
+                      <li>主题之间是否重复、遗漏，边界是否足够明确</li>
+                      <li>讲义小样是否体现已经确认的编辑方法和表达方式</li>
+                    </ul>
+                  </div>
+                  <strong>确认后固定当前组织版本并开始成书</strong>
+                </section>
+
+                <div v-if="canReviseExpertOrganization(project.status)" class="decision-panel">
+                  <label class="decision-field">
+                    <span>组织调整意见</span>
+                    <a-textarea
+                      v-model:value="organizationFeedback"
+                      :rows="3"
+                      placeholder="写明需要调整的章节顺序、主题边界、覆盖关系或讲义表达"
+                    />
+                  </label>
+                  <div class="decision-actions">
+                    <a-button
+                      :loading="actionKey === 'revise-organization'"
+                      :disabled="Boolean(actionKey) || !organizationFeedback.trim()"
+                      @click="reviseOrganization"
+                    >
+                      <RotateCcw :size="14" />
+                      按意见重新生成
+                    </a-button>
+                    <a-button
+                      v-if="project.status === 'awaiting_confirmation'"
+                      type="primary"
+                      :loading="actionKey === 'confirm-organization'"
+                      :disabled="Boolean(actionKey)"
+                      @click="confirmOrganization"
+                    >
+                      <Check :size="14" />
+                      确认组织方式
+                    </a-button>
+                  </div>
+                </div>
+
+                <div class="document-block">
+                  <h3>主题与讲义规划</h3>
+                  <MarkdownPreview :content="project.topic_map.plan_markdown || ''" compact />
+                </div>
+
+                <details v-if="project.editorial_plan" class="disclosure-block">
+                  <summary>当前编辑方案</summary>
+                  <MarkdownPreview :content="project.editorial_plan" compact />
+                </details>
+
+                <div class="subsection-heading">
+                  <div>
+                    <h3>章节大纲与覆盖范围</h3>
+                    <p>{{ project.topic_map.sample_selection_reason }}</p>
+                  </div>
+                </div>
+                <ExpertTopicOutline :topics="project.topics || []" show-boundaries />
+
+                <div
+                  v-if="excludedMaterials.length || project.topic_map.unassigned_notes?.length"
+                  class="excluded-band"
+                >
+                  <h3>本轮未纳入</h3>
+                  <ul>
+                    <li v-for="material in excludedMaterials" :key="material.material_id">
+                      <strong>{{ material.title }}</strong>
+                      <span>{{
+                        material.exclusion_reason || material.error_message || 'Review 判定不入选'
+                      }}</span>
+                    </li>
+                    <li
+                      v-for="item in project.topic_map.unassigned_notes || []"
+                      :key="item.note_alias"
+                    >
+                      <strong>{{ item.note_alias }}</strong>
+                      <span>{{ item.reason }}</span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div class="subsection-heading">
+                  <div>
+                    <h3>讲义小样</h3>
+                    <p>总编模型定稿，Reviewer 只给出具体问题。</p>
+                  </div>
+                </div>
+                <div class="artifact-list">
+                  <article
+                    v-for="sample in project.organization_samples || []"
+                    :key="sample.topic_id"
+                    class="artifact-row"
+                  >
+                    <header>
+                      <strong>{{ sample.title }}</strong>
+                      <span
+                        class="status-badge"
+                        :class="`tone-${getExpertStatusTone(sample.status)}`"
+                      >
+                        {{ getExpertMaterialStatusLabel(sample.status) }}
+                      </span>
+                    </header>
+                    <MarkdownPreview :content="sample.handout || ''" compact />
+                    <details class="review-disclosure">
+                      <summary>查看 Review</summary>
+                      <p class="review-summary">
+                        {{ sample.review?.summary || '暂无 Review 摘要' }}
+                      </p>
+                      <ul v-if="sample.review?.issues?.length" class="issue-list">
+                        <li v-for="(issue, index) in sample.review.issues" :key="index">
+                          <strong>{{ issue.problem }}</strong>
+                          <span>{{ issue.revision_direction }}</span>
+                        </li>
+                      </ul>
+                    </details>
+                  </article>
+                </div>
+              </section>
+
+              <section
+                v-else-if="project.status === 'needs_attention'"
+                class="project-section organization-attention"
+              >
+                <div class="section-heading">
+                  <div>
+                    <h2>主题方案尚未形成</h2>
+                    <p>{{ project.error_message || project.message }}</p>
+                  </div>
+                </div>
+                <div class="decision-panel">
+                  <a-textarea
+                    v-model:value="organizationFeedback"
+                    :rows="3"
+                    placeholder="说明应怎样调整主题范围、会改变判断的来源差异或组织方式"
+                  />
+                  <div class="decision-actions">
+                    <a-button
+                      type="primary"
+                      :loading="actionKey === 'revise-organization'"
+                      :disabled="Boolean(actionKey)"
+                      @click="reviseOrganization"
+                    >
+                      <RotateCcw :size="14" />
+                      按意见重新生成
+                    </a-button>
+                  </div>
+                </div>
+              </section>
+
+              <section v-else class="project-section processing-section">
+                <LoaderCircle :size="22" class="spin" />
+                <div>
+                  <h2>总编模型正在形成主题方案</h2>
+                  <p>{{ project.message }}</p>
+                </div>
+              </section>
+            </template>
+
+            <section v-else-if="project.stage === 'handout_compilation'" class="project-section">
+              <div class="section-heading">
+                <div>
+                  <h2>批量编写讲义并完成全书收口</h2>
+                  <p>
+                    证据准备可以并行；正式讲义、关键修订和最终回答口径由项目内总编模型统一完成。
+                  </p>
+                </div>
+                <span class="status-badge" :class="`tone-${getExpertStatusTone(project.status)}`">
+                  {{ getExpertStatusLabel(project.status) }}
+                </span>
+              </div>
+
+              <div class="stage-facts" aria-live="polite">
+                <span
+                  ><strong>{{ topicStatusSummary.total }}</strong> 篇讲义</span
+                >
+                <span
+                  ><strong>{{ topicStatusSummary.passed }}</strong> 篇已通过</span
+                >
+                <span v-if="topicStatusSummary.active">
+                  <strong>{{ topicStatusSummary.active }}</strong> 篇进行中
+                </span>
+                <span v-if="topicStatusSummary.attention" class="attention">
+                  <strong>{{ topicStatusSummary.attention }}</strong> 篇需要处理
+                </span>
+              </div>
+
+              <ExpertTopicReader
+                v-model="selectedTopicId"
+                class="section-list"
+                :topics="project.topics || []"
+                allow-retry
+                :retrying-topic-id="
+                  actionKey.startsWith('retry-topic:') ? actionKey.slice('retry-topic:'.length) : ''
+                "
+                @retry="retryTopic"
+              />
+
+              <details v-if="project.final_review" class="disclosure-block">
+                <summary>查看全书一致性结论</summary>
+                <MarkdownPreview :content="finalReviewMarkdown" compact />
+              </details>
+
+              <div v-if="showCompilationRetry" class="decision-panel compact-decision">
+                <span>{{ project.error_message || '全书收口需要重新执行。' }}</span>
+                <a-button
+                  type="primary"
+                  :loading="actionKey === 'retry-compilation'"
+                  :disabled="Boolean(actionKey)"
+                  @click="retryCompilation"
+                >
+                  <RotateCcw :size="14" />
+                  按意见继续收口
+                </a-button>
               </div>
             </section>
 
             <section
-              v-else-if="project.status === 'needs_attention'"
-              class="project-section organization-attention"
+              v-else-if="project.stage === 'release'"
+              class="project-section release-section"
             >
-              <div class="section-heading">
+              <div class="section-heading release-heading">
                 <div>
-                  <span class="section-kicker">需要处理</span>
-                  <h2>主题方案尚未形成</h2>
-                  <p>{{ project.error_message || project.message }}</p>
+                  <h2>
+                    {{ project.status === 'enabled' ? '专家 Skill 已启用' : '预览成品并手动启用' }}
+                  </h2>
+                  <p>运行时只读取下方讲义、导航和精选证据，不访问项目内部原始材料。</p>
                 </div>
-              </div>
-              <div class="decision-panel">
-                <a-textarea
-                  v-model:value="organizationFeedback"
-                  :rows="3"
-                  placeholder="说明应怎样调整主题范围、会改变判断的来源差异或组织方式"
-                />
-                <div class="decision-actions">
+                <div class="release-actions">
                   <a-button
-                    type="primary"
-                    :loading="actionKey === 'revise-organization'"
-                    :disabled="Boolean(actionKey)"
-                    @click="reviseOrganization"
+                    v-if="project.status === 'enabled' && project.skill_slug"
+                    @click="openInstalledSkill"
                   >
-                    <RotateCcw :size="14" />
-                    按意见重新生成
+                    查看已启用 Skill
+                    <ArrowRight :size="14" />
+                  </a-button>
+                  <a-button
+                    v-if="project.status === 'enabled' && project.skill_slug"
+                    type="primary"
+                    @click="startSkillChat"
+                  >
+                    <MessageSquare :size="14" />
+                    开始对话
+                  </a-button>
+                  <a-button
+                    v-if="project.status === 'ready'"
+                    type="primary"
+                    :loading="actionKey === 'activate'"
+                    :disabled="Boolean(actionKey) || previewLoading || !preview"
+                    @click="activateProject"
+                  >
+                    <Power :size="14" />
+                    启用专家 Skill
                   </a-button>
                 </div>
               </div>
-            </section>
 
-            <section v-else class="project-section processing-section">
-              <LoaderCircle :size="22" class="spin" />
-              <div>
-                <h2>总编模型正在形成主题方案</h2>
-                <p>{{ project.message }}</p>
+              <div v-if="previewLoading" class="preview-loading"><a-spin /></div>
+              <a-alert v-else-if="previewError" type="error" show-icon :message="previewError">
+                <template #action
+                  ><a-button size="small" @click="loadPreview">重试</a-button></template
+                >
+              </a-alert>
+
+              <div v-else-if="preview" class="release-readiness" aria-label="候选成品摘要">
+                <span
+                  ><strong>{{ preview.handouts?.length || 0 }}</strong> 篇讲义</span
+                >
+                <span
+                  ><strong>{{ preview.references?.length || 0 }}</strong> 条精选证据</span
+                >
+                <span
+                  ><strong>{{ preview.sources?.length || 0 }}</strong> 条来源映射</span
+                >
+                <span :class="{ attention: preview.excluded_materials?.length }">
+                  <strong>{{ preview.excluded_materials?.length || 0 }}</strong> 份未纳入
+                </span>
               </div>
+
+              <a-tabs
+                v-if="preview && !previewError"
+                v-model:activeKey="previewTab"
+                class="preview-tabs"
+              >
+                <a-tab-pane key="capability" tab="专家能力">
+                  <a-segmented
+                    v-model:value="capabilityPreviewSection"
+                    :options="capabilityPreviewOptions"
+                    class="preview-segmented"
+                  />
+
+                  <div
+                    v-if="capabilityPreviewSection === 'skill'"
+                    class="document-block preview-document primary-preview-document"
+                  >
+                    <MarkdownPreview :content="preview.skill_md || ''" compact />
+                  </div>
+                  <div
+                    v-else-if="capabilityPreviewSection === 'navigation'"
+                    class="document-block preview-document primary-preview-document"
+                  >
+                    <MarkdownPreview :content="preview.navigation || ''" compact />
+                  </div>
+                  <a-collapse v-else class="preview-collapse">
+                    <a-collapse-panel
+                      v-for="(item, index) in preview.handouts || []"
+                      :key="item.path"
+                    >
+                      <template #header>
+                        <span class="preview-item-title">
+                          <strong>{{ previewHandoutTitle(item, index) }}</strong>
+                          <small>{{ displayFileName(item.path) }}</small>
+                        </span>
+                      </template>
+                      <MarkdownPreview :content="item.content || ''" compact />
+                    </a-collapse-panel>
+                  </a-collapse>
+                </a-tab-pane>
+
+                <a-tab-pane key="evidence" tab="依据与边界">
+                  <a-segmented
+                    v-model:value="evidencePreviewSection"
+                    :options="evidencePreviewOptions"
+                    class="preview-segmented"
+                  />
+
+                  <a-collapse
+                    v-if="evidencePreviewSection === 'references'"
+                    class="preview-collapse"
+                  >
+                    <a-collapse-panel
+                      v-for="item in preview.references || []"
+                      :key="item.path"
+                      :header="displayFileName(item.path)"
+                    >
+                      <MarkdownPreview :content="item.content || ''" compact />
+                    </a-collapse-panel>
+                  </a-collapse>
+                  <div v-else class="source-list">
+                    <div
+                      v-for="source in preview.sources || []"
+                      :key="source.evidence_id"
+                      class="source-row"
+                    >
+                      <strong>{{ source.source_title }}</strong>
+                      <p>{{ (source.supports || []).join('；') }}</p>
+                      <span>
+                        {{ source.evidence_id }} · {{ source.source_path }} · L{{
+                          source.start_line
+                        }}–L{{ source.end_line }}
+                      </span>
+                    </div>
+                  </div>
+                </a-tab-pane>
+
+                <a-tab-pane
+                  key="excluded"
+                  :tab="`未纳入 ${preview.excluded_materials?.length || 0}`"
+                >
+                  <div v-if="preview.excluded_materials?.length" class="source-list">
+                    <div
+                      v-for="material in preview.excluded_materials"
+                      :key="material.material_id"
+                      class="source-row"
+                    >
+                      <strong>{{ material.title }}</strong>
+                      <span>{{ material.source_path }}</span>
+                      <p>{{ material.reason }}</p>
+                    </div>
+                  </div>
+                  <a-empty v-else description="本项目没有未纳入材料" />
+                </a-tab-pane>
+              </a-tabs>
             </section>
           </template>
-
-          <section v-else-if="project.stage === 'handout_compilation'" class="project-section">
-            <div class="section-heading">
-              <div>
-                <span class="section-kicker">总编成书</span>
-                <h2>批量编写讲义并完成全书收口</h2>
-                <p>证据准备可以并行；正式讲义、关键修订和最终回答口径由项目内总编模型统一完成。</p>
-              </div>
-              <span>{{ topicProgress }}%</span>
-            </div>
-            <a-progress :percent="topicProgress" :show-info="false" :stroke-width="6" />
-
-            <ExpertTopicReader
-              v-model="selectedTopicId"
-              class="section-list"
-              :topics="project.topics || []"
-              allow-retry
-              :retrying-topic-id="
-                actionKey.startsWith('retry-topic:') ? actionKey.slice('retry-topic:'.length) : ''
-              "
-              @retry="retryTopic"
-            />
-
-            <details v-if="project.final_review" class="disclosure-block">
-              <summary>查看全书一致性结论</summary>
-              <MarkdownPreview :content="finalReviewMarkdown" compact />
-            </details>
-
-            <div v-if="showCompilationRetry" class="decision-panel compact-decision">
-              <span>{{ project.error_message || '全书收口需要重新执行。' }}</span>
-              <a-button
-                type="primary"
-                :loading="actionKey === 'retry-compilation'"
-                :disabled="Boolean(actionKey)"
-                @click="retryCompilation"
-              >
-                <RotateCcw :size="14" />
-                按意见继续收口
-              </a-button>
-            </div>
-          </section>
-
-          <section v-else-if="project.stage === 'release'" class="project-section release-section">
-            <div class="section-heading release-heading">
-              <div>
-                <span class="section-kicker">专家 Skill 成品</span>
-                <h2>
-                  {{ project.status === 'enabled' ? '专家 Skill 已启用' : '预览成品并手动启用' }}
-                </h2>
-                <p>运行时只读取下方讲义、导航和精选证据，不访问项目内部原始材料。</p>
-              </div>
-              <div class="release-actions">
-                <a-button
-                  v-if="project.status === 'enabled' && project.skill_slug"
-                  @click="openInstalledSkill"
-                >
-                  查看已启用 Skill
-                  <ArrowRight :size="14" />
-                </a-button>
-                <a-button
-                  v-if="project.status === 'ready'"
-                  type="primary"
-                  :loading="actionKey === 'activate'"
-                  :disabled="Boolean(actionKey) || previewLoading || !preview"
-                  @click="activateProject"
-                >
-                  <Power :size="14" />
-                  启用专家 Skill
-                </a-button>
-              </div>
-            </div>
-
-            <div v-if="previewLoading" class="preview-loading"><a-spin /></div>
-            <a-alert v-else-if="previewError" type="error" show-icon :message="previewError">
-              <template #action
-                ><a-button size="small" @click="loadPreview">重试</a-button></template
-              >
-            </a-alert>
-
-            <a-tabs v-else-if="preview" v-model:activeKey="previewTab" class="preview-tabs">
-              <a-tab-pane key="skill" tab="专家说明">
-                <div class="document-block preview-document primary-preview-document">
-                  <MarkdownPreview :content="preview.skill_md || ''" compact />
-                </div>
-              </a-tab-pane>
-              <a-tab-pane key="navigation" tab="使用导航">
-                <div class="document-block preview-document primary-preview-document">
-                  <MarkdownPreview :content="preview.navigation || ''" compact />
-                </div>
-              </a-tab-pane>
-              <a-tab-pane key="handouts" :tab="`讲义 ${preview.handouts?.length || 0}`">
-                <a-collapse class="preview-collapse">
-                  <a-collapse-panel
-                    v-for="item in preview.handouts || []"
-                    :key="item.path"
-                    :header="displayFileName(item.path)"
-                  >
-                    <MarkdownPreview :content="item.content || ''" compact />
-                  </a-collapse-panel>
-                </a-collapse>
-              </a-tab-pane>
-              <a-tab-pane key="references" :tab="`精选证据 ${preview.references?.length || 0}`">
-                <a-collapse class="preview-collapse">
-                  <a-collapse-panel
-                    v-for="item in preview.references || []"
-                    :key="item.path"
-                    :header="displayFileName(item.path)"
-                  >
-                    <MarkdownPreview :content="item.content || ''" compact />
-                  </a-collapse-panel>
-                </a-collapse>
-              </a-tab-pane>
-              <a-tab-pane key="sources" :tab="`来源 ${preview.sources?.length || 0}`">
-                <div class="source-list">
-                  <div
-                    v-for="source in preview.sources || []"
-                    :key="source.evidence_id"
-                    class="source-row"
-                  >
-                    <strong>{{ source.evidence_id }} · {{ source.source_title }}</strong>
-                    <span
-                      >{{ source.source_path }} · L{{ source.start_line }}–L{{
-                        source.end_line
-                      }}</span
-                    >
-                    <p>{{ (source.supports || []).join('；') }}</p>
-                  </div>
-                </div>
-              </a-tab-pane>
-              <a-tab-pane key="excluded" :tab="`未纳入 ${preview.excluded_materials?.length || 0}`">
-                <div v-if="preview.excluded_materials?.length" class="source-list">
-                  <div
-                    v-for="material in preview.excluded_materials"
-                    :key="material.material_id"
-                    class="source-row"
-                  >
-                    <strong>{{ material.title }}</strong>
-                    <span>{{ material.source_path }}</span>
-                    <p>{{ material.reason }}</p>
-                  </div>
-                </div>
-                <a-empty v-else description="本项目没有未纳入材料" />
-              </a-tab-pane>
-            </a-tabs>
-          </section>
-        </template>
-      </main>
+        </main>
+      </div>
     </template>
 
     <a-modal
@@ -1014,18 +1165,20 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, Modal } from 'ant-design-vue'
 import {
   ArrowLeft,
   ArrowRight,
   Check,
+  ChevronDown,
   CircleAlert,
   Compass,
   Eye,
   FileText,
   LoaderCircle,
+  MessageSquare,
   MoreHorizontal,
   PackageMinus,
   Pause,
@@ -1039,6 +1192,7 @@ import {
 import { expertApi } from '@/apis/expert_api'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import ExpertTopicReader from '@/components/extensions/ExpertTopicReader.vue'
+import ExpertTopicOutline from '@/components/extensions/ExpertTopicOutline.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
 import {
   EXPERT_STAGE_ITEMS,
@@ -1056,7 +1210,8 @@ import {
   getExpertStageLabel,
   getExpertStatusLabel,
   getExpertStatusTone,
-  getExpertTopicProgress,
+  getExpertTopicStatusSummary,
+  groupExpertTopics,
   isInitialExpertMethodConfirmation,
   isExpertMethodPreparationRunning,
   shouldPollExpertProject
@@ -1066,6 +1221,7 @@ const route = useRoute()
 const router = useRouter()
 const projectId = computed(() => String(route.params.projectId || ''))
 const project = ref(null)
+const projectContentRef = ref(null)
 const loading = ref(false)
 const loadError = ref('')
 const actionKey = ref('')
@@ -1078,7 +1234,10 @@ const organizationFeedback = ref('')
 const preview = ref(null)
 const previewLoading = ref(false)
 const previewError = ref('')
-const previewTab = ref('skill')
+const previewTab = ref('capability')
+const capabilityPreviewSection = ref('skill')
+const evidencePreviewSection = ref('references')
+const mobileOutlineOpen = ref(false)
 const materialPreviewOpen = ref(false)
 const materialPreviewLoading = ref(false)
 const materialPreview = ref(null)
@@ -1100,7 +1259,8 @@ const isReviewingHistory = computed(
 )
 const overallProgress = computed(() => Math.round(getExpertProjectProgress(project.value || {})))
 const materialProgress = computed(() => getExpertMaterialProgress(project.value?.materials || []))
-const topicProgress = computed(() => getExpertTopicProgress(project.value?.topics || []))
+const topicStatusSummary = computed(() => getExpertTopicStatusSummary(project.value?.topics || []))
+const topicChapterCount = computed(() => groupExpertTopics(project.value?.topics || []).length)
 const currentStageMessage = computed(() => {
   const currentProject = project.value
   if (!currentProject) return ''
@@ -1122,6 +1282,15 @@ const materialFilterOptions = [
   { key: 'review_revise', label: '自动修订' },
   { key: 'needs_attention', label: '需要处理' }
 ]
+const capabilityPreviewOptions = [
+  { label: '专家说明', value: 'skill' },
+  { label: '使用导航', value: 'navigation' },
+  { label: '讲义', value: 'handouts' }
+]
+const evidencePreviewOptions = [
+  { label: '精选证据', value: 'references' },
+  { label: '来源映射', value: 'sources' }
+]
 const filteredMaterials = computed(() => {
   const materials = project.value?.materials || []
   if (materialFilter.value === 'all') return materials
@@ -1130,6 +1299,7 @@ const filteredMaterials = computed(() => {
 const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
+const hasPromptPack = computed(() => Object.keys(project.value?.prompt_pack || {}).length > 0)
 const isInitialMethodConfirmation = computed(() => isInitialExpertMethodConfirmation(project.value))
 const methodConfirmButtonLabel = computed(() => {
   if (!isInitialMethodConfirmation.value) return '确认并开始学习'
@@ -1137,6 +1307,17 @@ const methodConfirmButtonLabel = computed(() => {
 })
 const selectableMaterials = computed(() =>
   (project.value?.materials || []).filter((material) => material.status === 'ready')
+)
+const minRepresentativeMaterials = computed(() => Math.min(4, selectableMaterials.value.length))
+const representativeSelectionHint = computed(() =>
+  selectableMaterials.value.length < 4
+    ? `当前只有 ${selectableMaterials.value.length} 份可用材料，需要全部选择。`
+    : '请选择 4～20 份材料，尽量覆盖不同方向。'
+)
+const representativeSelectionCount = computed(() =>
+  selectableMaterials.value.length < 4
+    ? `已选 ${selectedRepresentativeIds.value.length} / ${maxRepresentativeMaterials}（需全选）`
+    : `已选 ${selectedRepresentativeIds.value.length} / ${maxRepresentativeMaterials}（至少 4 份）`
 )
 const canChooseRepresentatives = computed(
   () =>
@@ -1159,15 +1340,41 @@ const deleteProjectLabel = computed(() => {
   return '删除专家项目'
 })
 
-/** 切换已完成阶段的只读回看，不修改项目当前阶段。 */
-const selectStage = (stage, index) => {
+/** 切换已完成阶段的只读回看，并从阶段顶部开始阅读。 */
+const selectStage = async (stage, index) => {
   if (index > currentStageIndex.value) return
   reviewStage.value = stage === project.value?.stage ? '' : stage
+  mobileOutlineOpen.value = false
+  await nextTick()
+  projectContentRef.value?.scrollTo({ top: 0 })
 }
 
 /** 返回后台当前正在推进的阶段。 */
-const returnToCurrentStage = () => {
+const returnToCurrentStage = async () => {
   reviewStage.value = ''
+  await nextTick()
+  projectContentRef.value?.scrollTo({ top: 0 })
+}
+
+/** 返回项目大纲中每个阶段最有用的事实摘要。 */
+const stageSummary = (stage) => {
+  if (stage === 'orientation') {
+    if (!project.value.method_version) return '等待选择代表材料'
+    return `方法 v${project.value.method_version} · ${project.value.method_samples?.length || 0} 份小样`
+  }
+  if (stage === 'material_learning') {
+    const total = project.value.materials?.length || 0
+    return `${materialStatusCount('passed')} / ${total} 份通过`
+  }
+  if (stage === 'organization') {
+    return `${topicChapterCount.value} 章 · ${project.value.topics?.length || 0} 个主题`
+  }
+  if (stage === 'handout_compilation') {
+    return `${topicStatusSummary.value.passed} / ${topicStatusSummary.value.total} 篇通过`
+  }
+  if (project.value.status === 'enabled') return '专家 Skill 已启用'
+  if (project.value.stage === 'release') return '候选成品待确认'
+  return '完成后预览并启用'
 }
 
 const promptLabels = {
@@ -1272,7 +1479,7 @@ const canExcludeMaterial = (material) =>
 const excludeButtonTitle = (material) =>
   canExcludeMaterial(material) ? '' : '项目至少需要保留一份可学习材料'
 
-/** 切换代表材料，同时严格限制为 1～20 份。 */
+/** 切换代表材料，并保持项目定向所需的上限。 */
 const toggleRepresentative = (materialId) => {
   representativeTouched.value = true
   if (selectedRepresentativeIds.value.includes(materialId)) {
@@ -1290,8 +1497,8 @@ const toggleRepresentative = (materialId) => {
 
 /** 使用用户明确选择的样本生成项目方法和真实小样。 */
 const startOrientation = async () => {
-  if (!selectedRepresentativeIds.value.length) {
-    message.warning('请选择 1～20 份代表性材料')
+  if (selectedRepresentativeIds.value.length < minRepresentativeMaterials.value) {
+    message.warning(representativeSelectionHint.value)
     return
   }
   const completed = await runAction(
@@ -1587,11 +1794,26 @@ const openInstalledSkill = () => {
   })
 }
 
+/** 新建对话并预先选中当前项目发布的专家 Skill。 */
+const startSkillChat = () => {
+  router.push({ name: 'AgentComp', query: { skill: project.value.skill_slug } })
+}
+
 /** 只展示发布物中的用户可读文件名。 */
 const displayFileName = (path) =>
   String(path || '')
     .split('/')
     .pop() || path
+
+/** 用组织阶段的用户标题替代成品目录中的内部文件名。 */
+const previewHandoutTitle = (item, index) => {
+  const fileName = displayFileName(item.path)
+  const position = Number(fileName.match(/^(\d+)-/)?.[1])
+  const topic = Number.isFinite(position)
+    ? project.value?.topics?.find((candidate) => Number(candidate.position) === position)
+    : project.value?.topics?.[index]
+  return topic?.title || fileName
+}
 
 /** 返回专家项目列表。 */
 const goBack = () => router.push({ path: '/extensions', query: { tab: 'expert-projects' } })
@@ -1683,7 +1905,6 @@ onBeforeUnmount(() => {
 .project-topbar-actions,
 .section-heading,
 .subsection-heading,
-.summary-progress,
 .decision-actions,
 .release-actions {
   display: flex;
@@ -1724,39 +1945,82 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.stage-strip {
-  width: 100%;
-  max-width: 100%;
+.project-shell {
+  display: grid;
   min-width: 0;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--gray-150);
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 252px minmax(0, 1fr);
+}
+
+.project-outline {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--gray-150);
   background: var(--gray-25);
+  scrollbar-color: var(--gray-200) transparent;
+  scrollbar-width: thin;
+}
+
+.mobile-outline-toggle {
+  display: none;
+}
+
+.outline-status {
+  padding: 22px 20px 18px;
+  border-bottom: 1px solid var(--gray-150);
+
+  > span {
+    color: var(--gray-500);
+    font-size: 12px;
+  }
+
+  > strong {
+    display: block;
+    margin-top: 5px;
+    color: var(--gray-900);
+    font-size: 16px;
+    font-weight: 650;
+  }
+
+  > p {
+    margin: 6px 0 18px;
+    color: var(--gray-600);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+}
+
+.outline-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--gray-600);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  strong {
+    color: var(--gray-900);
+  }
 }
 
 .stage-list {
-  display: grid;
-  width: min(100%, 1080px);
-  min-width: 720px;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  margin: 0 auto;
-  padding: 0 var(--page-padding);
+  margin: 0;
+  padding: 12px 10px 24px;
   list-style: none;
 
   li {
     position: relative;
-    display: flex;
-    min-height: 52px;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
     color: var(--gray-500);
-    font-size: 12px;
 
     &::after {
       position: absolute;
-      right: -12%;
-      width: 24%;
-      height: 1px;
+      top: 42px;
+      bottom: -12px;
+      left: 21px;
+      width: 1px;
       background: var(--gray-200);
       content: '';
     }
@@ -1767,7 +2031,6 @@ onBeforeUnmount(() => {
 
     &.active {
       color: var(--gray-900);
-      font-weight: 600;
     }
 
     &.completed {
@@ -1781,17 +2044,21 @@ onBeforeUnmount(() => {
 }
 
 .stage-step {
-  display: inline-flex;
+  display: grid;
+  width: 100%;
   min-width: 0;
-  min-height: 52px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+  min-height: 62px;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 10px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   cursor: default;
   font: inherit;
+  text-align: left;
 
   &:disabled {
     cursor: default;
@@ -1801,13 +2068,17 @@ onBeforeUnmount(() => {
     cursor: pointer;
 
     &:hover {
-      color: var(--main-700);
+      background: var(--gray-50);
     }
 
     &:focus-visible {
       outline: 2px solid var(--main-500);
-      outline-offset: -3px;
+      outline-offset: -2px;
     }
+  }
+
+  .active & {
+    background: var(--main-30);
   }
 }
 
@@ -1815,7 +2086,6 @@ onBeforeUnmount(() => {
   display: inline-flex;
   width: 24px;
   height: 24px;
-  flex: 0 0 24px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--gray-200);
@@ -1841,39 +2111,24 @@ onBeforeUnmount(() => {
   }
 }
 
-.stage-list li.active .stage-marker {
-  border-color: var(--main-700);
-  background: var(--main-700);
-  color: var(--gray-0);
-}
-
-.project-summary-band {
-  width: 100%;
-  max-width: 100%;
+.stage-copy {
+  display: flex;
   min-width: 0;
-  padding: 14px var(--page-padding);
-  border-bottom: 1px solid var(--gray-150);
-}
-
-.summary-progress {
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 6px;
-  font-size: 12px;
-
-  div {
-    display: flex;
-    min-width: 0;
-    align-items: baseline;
-    gap: 10px;
-  }
+  flex-direction: column;
+  gap: 3px;
 
   strong {
-    color: var(--gray-900);
+    color: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.45;
   }
 
-  span {
-    color: var(--gray-600);
+  small {
+    overflow-wrap: anywhere;
+    color: var(--gray-500);
+    font-size: 11px;
+    line-height: 1.45;
   }
 }
 
@@ -1881,7 +2136,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 10px;
+  margin: 16px var(--page-padding) 0;
   padding: 9px 11px;
   border: 1px solid var(--color-error-100);
   border-radius: 6px;
@@ -1912,8 +2167,7 @@ onBeforeUnmount(() => {
   margin-bottom: 20px;
 
   h2,
-  p,
-  .section-kicker {
+  p {
     margin: 0;
   }
 
@@ -1965,13 +2219,11 @@ onBeforeUnmount(() => {
   margin-bottom: 20px;
 
   h2,
-  p,
-  .section-kicker {
+  p {
     margin: 0;
   }
 
   h2 {
-    margin-top: 4px;
     color: var(--gray-900);
     font-size: 21px;
     font-weight: 650;
@@ -1986,12 +2238,6 @@ onBeforeUnmount(() => {
     font-size: 13px;
     line-height: 1.65;
   }
-}
-
-.section-kicker {
-  color: var(--main-700);
-  font-size: 12px;
-  font-weight: 600;
 }
 
 .subsection-heading {
@@ -2072,6 +2318,81 @@ onBeforeUnmount(() => {
     color: var(--gray-900);
     font-size: 14px;
   }
+
+  :deep(.yk-markdown-preview) {
+    max-width: 78ch;
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+      max-width: 78ch;
+      color: var(--gray-900);
+      line-height: 1.4;
+    }
+
+    h1 {
+      margin: 0 0 26px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    h3,
+    h4 {
+      margin: 22px 0 8px 14px;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    h5,
+    h6 {
+      margin: 18px 0 7px 28px;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    > p,
+    > ul,
+    > ol,
+    > blockquote,
+    > table {
+      margin-left: 28px;
+    }
+
+    > p {
+      max-width: 72ch;
+      margin-top: 0;
+      margin-bottom: 14px;
+      line-height: 1.85;
+    }
+
+    > ul,
+    > ol {
+      max-width: 72ch;
+      margin-top: 0.4rem;
+      margin-bottom: 18px;
+      padding-left: 1.4rem;
+      line-height: 1.8;
+    }
+
+    > blockquote {
+      max-width: 70ch;
+      margin-top: 18px;
+      margin-bottom: 18px;
+    }
+
+    li > p {
+      margin-left: 0;
+    }
+  }
 }
 
 .disclosure-block {
@@ -2127,14 +2448,12 @@ onBeforeUnmount(() => {
 
 .artifact-list,
 .material-list,
-.topic-list,
 .source-list {
   border-top: 1px solid var(--gray-150);
 }
 
 .artifact-row,
 .material-row,
-.topic-row,
 .source-row {
   border-bottom: 1px solid var(--gray-150);
 }
@@ -2169,11 +2488,65 @@ onBeforeUnmount(() => {
       white-space: nowrap;
     }
   }
+
+  :deep(.yk-markdown-preview) {
+    max-width: 78ch;
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+      color: var(--gray-900);
+      line-height: 1.4;
+    }
+
+    h1 {
+      margin: 0 0 24px;
+      font-size: 21px;
+      font-weight: 700;
+    }
+
+    h2 {
+      margin: 28px 0 9px;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    h3,
+    h4 {
+      margin: 20px 0 7px 14px;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    > p,
+    > ul,
+    > ol,
+    > blockquote {
+      margin-left: 28px;
+    }
+
+    > p {
+      max-width: 72ch;
+      margin-top: 0;
+      margin-bottom: 13px;
+      line-height: 1.8;
+    }
+
+    > ul,
+    > ol {
+      max-width: 72ch;
+      margin-top: 0.4rem;
+      margin-bottom: 16px;
+      line-height: 1.8;
+    }
+  }
 }
 
 .review-disclosure,
-.row-details,
-.topic-copy details {
+.row-details {
   margin-top: 12px;
 
   summary {
@@ -2220,6 +2593,56 @@ onBeforeUnmount(() => {
 
   :deep(.ant-input) {
     flex: 1;
+  }
+}
+
+.decision-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--main-100);
+  border-radius: 7px;
+  background: var(--main-10);
+
+  h3 {
+    margin: 0 0 8px;
+    color: var(--gray-900);
+    font-size: 14px;
+  }
+
+  ul {
+    display: grid;
+    gap: 5px;
+    margin: 0;
+    padding-left: 18px;
+    color: var(--gray-700);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+
+  > strong {
+    flex: 0 0 auto;
+    max-width: 190px;
+    color: var(--main-700);
+    font-size: 12px;
+    line-height: 1.55;
+    text-align: right;
+  }
+}
+
+.decision-field {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 6px;
+
+  > span {
+    color: var(--gray-700);
+    font-size: 12px;
+    font-weight: 600;
   }
 }
 
@@ -2291,8 +2714,7 @@ onBeforeUnmount(() => {
   }
 }
 
-.material-copy,
-.topic-copy {
+.material-copy {
   display: flex;
   min-width: 0;
   flex: 1;
@@ -2426,49 +2848,6 @@ onBeforeUnmount(() => {
   }
 }
 
-.topic-row {
-  display: flex;
-  min-width: 0;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 16px 4px;
-}
-
-.topic-position {
-  display: flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--gray-200);
-  border-radius: 6px;
-  color: var(--gray-600);
-  font-size: 12px;
-}
-
-.topic-copy {
-  > p {
-    margin: 2px 0 0;
-    color: var(--gray-700);
-    font-size: 13px;
-    line-height: 1.55;
-  }
-
-  details p {
-    margin: 8px 0 0;
-    color: var(--gray-600);
-    font-size: 12px;
-    line-height: 1.6;
-  }
-}
-
-.sample-label {
-  border-color: var(--main-200);
-  background: var(--main-30);
-  color: var(--main-700);
-}
-
 .excluded-band {
   margin-top: 24px;
   padding: 16px;
@@ -2535,6 +2914,57 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   color: var(--gray-700);
   font-size: 13px;
+}
+
+.stage-facts,
+.release-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: -4px 0 22px;
+  color: var(--gray-600);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  strong {
+    color: var(--gray-900);
+    font-size: 15px;
+  }
+
+  .attention,
+  .attention strong {
+    color: var(--color-error-700);
+  }
+}
+
+.release-readiness {
+  margin: 2px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--gray-150);
+  border-radius: 7px;
+  background: var(--gray-25);
+}
+
+.preview-segmented {
+  margin: 4px 0 16px;
+}
+
+.preview-item-title {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+
+  strong {
+    overflow-wrap: anywhere;
+    color: var(--gray-900);
+    font-size: 13px;
+  }
+
+  small {
+    color: var(--gray-500);
+    font-size: 11px;
+  }
 }
 
 .release-heading {
@@ -2656,21 +3086,9 @@ onBeforeUnmount(() => {
     white-space: normal;
   }
 
-  .stage-list {
-    min-width: 650px;
-    padding: 0 10px;
-  }
-
-  .project-summary-band,
   .project-section {
     padding-right: 14px;
     padding-left: 14px;
-  }
-
-  .summary-progress div {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
   }
 
   .section-heading,
@@ -2680,6 +3098,16 @@ onBeforeUnmount(() => {
   .history-toolbar,
   .section-heading h2 {
     font-size: 18px;
+  }
+
+  .release-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .decision-actions,
@@ -2702,14 +3130,12 @@ onBeforeUnmount(() => {
     }
   }
 
-  .material-row,
-  .topic-row {
+  .material-row {
     align-items: flex-start;
     flex-wrap: wrap;
   }
 
-  .material-copy,
-  .topic-copy {
+  .material-copy {
     min-width: calc(100% - 48px);
   }
 
@@ -2726,6 +3152,15 @@ onBeforeUnmount(() => {
 
   .status-badge {
     max-width: 100%;
+  }
+
+  .decision-summary {
+    flex-direction: column;
+
+    > strong {
+      max-width: none;
+      text-align: left;
+    }
   }
 
   .artifact-row > header {
@@ -2749,6 +3184,97 @@ onBeforeUnmount(() => {
   }
 }
 
+@media (max-width: 820px) {
+  .project-shell {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .project-outline {
+    position: sticky;
+    z-index: 5;
+    top: 0;
+    flex: 0 0 auto;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--gray-150);
+  }
+
+  .mobile-outline-toggle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border: 0;
+    background: var(--gray-25);
+    color: var(--gray-900);
+    cursor: pointer;
+    text-align: left;
+
+    > span {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    strong {
+      font-size: 13px;
+    }
+
+    small {
+      color: var(--gray-600);
+      font-size: 12px;
+    }
+
+    svg {
+      flex: 0 0 auto;
+      transition: transform 160ms ease;
+    }
+
+    svg.rotated {
+      transform: rotate(180deg);
+    }
+  }
+
+  .project-outline-body {
+    display: none;
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
+    background: var(--gray-25);
+
+    &.open {
+      display: block;
+    }
+  }
+
+  .outline-status {
+    padding: 14px;
+  }
+
+  .stage-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 8px 10px 14px;
+
+    li::after {
+      display: none;
+    }
+  }
+
+  .stage-step {
+    min-height: 58px;
+    padding: 8px;
+  }
+
+  .project-content {
+    min-height: 0;
+  }
+}
+
 @media (max-width: 420px) {
   .project-topbar-actions .status-badge {
     display: none;
@@ -2756,6 +3282,10 @@ onBeforeUnmount(() => {
 
   .project-section {
     padding-top: 22px;
+  }
+
+  .stage-list {
+    grid-template-columns: 1fr;
   }
 
   .document-block,

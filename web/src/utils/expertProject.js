@@ -59,6 +59,31 @@ export const getExpertStatusLabel = (status) => PROJECT_STATUS_LABELS[status] ||
 export const getExpertMaterialStatusLabel = (status) =>
   MATERIAL_STATUS_LABELS[status] || status || '未知'
 
+/** 按首次出现的章节顺序组织主题，供组织确认和讲义目录复用。 */
+export const groupExpertTopics = (topics = []) => {
+  const groups = new Map()
+
+  topics.forEach((topic) => {
+    const section = String(topic.section || '').trim() || '其他主题'
+    if (!groups.has(section)) groups.set(section, [])
+    groups.get(section).push(topic)
+  })
+
+  return [...groups].map(([section, items]) => ({ section, topics: items }))
+}
+
+/** 汇总讲义数量与当前处理状态，避免用第二个百分比表达阶段进度。 */
+export const getExpertTopicStatusSummary = (topics = []) => ({
+  total: topics.length,
+  passed: topics.filter((topic) => topic.status === 'passed').length,
+  active: topics.filter((topic) =>
+    ['pending', 'preparing_evidence', 'evidence_ready', 'writing', 'review_revise'].includes(
+      topic.status
+    )
+  ).length,
+  attention: topics.filter((topic) => topic.status === 'needs_attention').length
+})
+
 /** 返回状态对应的克制视觉语义。 */
 export const getExpertStatusTone = (status) => {
   if (status === 'needs_attention') return 'error'

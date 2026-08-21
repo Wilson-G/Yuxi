@@ -1,31 +1,42 @@
 <template>
   <div v-if="topics.length" class="expert-topic-reader">
-    <aside class="topic-navigator" aria-label="讲义目录">
+    <aside ref="navigatorRef" class="topic-navigator" aria-label="讲义章节目录">
       <div class="topic-navigator-heading">
-        <span>讲义目录</span>
-        <span>{{ topics.length }} 篇</span>
+        <span>章节目录</span>
+        <span>{{ topicGroups.length }} 章 · {{ topics.length }} 篇</span>
       </div>
-      <button
-        v-for="topic in topics"
-        :key="topic.topic_id"
-        type="button"
-        class="topic-nav-item"
-        :class="{ selected: topic.topic_id === selectedTopic?.topic_id }"
-        :aria-pressed="topic.topic_id === selectedTopic?.topic_id"
-        @click="$emit('update:modelValue', topic.topic_id)"
-      >
-        <span class="topic-position">{{ topic.position }}</span>
-        <span class="topic-nav-copy">
-          <span>{{ topic.section }}</span>
-          <strong>{{ topic.title }}</strong>
-        </span>
-        <span class="status-badge" :class="`tone-${getExpertStatusTone(topic.status)}`">
-          {{ getExpertMaterialStatusLabel(topic.status) }}
-        </span>
-      </button>
+      <ExpertTopicOutline
+        :model-value="selectedTopic?.topic_id || ''"
+        :topics="topics"
+        interactive
+        compact
+        @update:model-value="$emit('update:modelValue', $event)"
+      />
     </aside>
 
     <article v-if="selectedTopic" class="topic-reader">
+      <nav class="reader-paging" aria-label="讲义切换">
+        <a-button
+          type="text"
+          size="small"
+          :disabled="selectedIndex <= 0"
+          @click="selectRelativeTopic(-1)"
+        >
+          <ArrowLeft :size="14" />
+          上一篇
+        </a-button>
+        <span>第 {{ selectedIndex + 1 }} / {{ topics.length }} 篇</span>
+        <a-button
+          type="text"
+          size="small"
+          :disabled="selectedIndex >= topics.length - 1"
+          @click="selectRelativeTopic(1)"
+        >
+          下一篇
+          <ArrowRight :size="14" />
+        </a-button>
+      </nav>
+
       <header class="topic-reader-heading">
         <div>
           <span>{{ selectedTopic.section }}</span>
@@ -69,10 +80,15 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { LoaderCircle } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import { ArrowLeft, ArrowRight, LoaderCircle } from 'lucide-vue-next'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
-import { getExpertMaterialStatusLabel, getExpertStatusTone } from '@/utils/expertProject'
+import ExpertTopicOutline from '@/components/extensions/ExpertTopicOutline.vue'
+import {
+  getExpertMaterialStatusLabel,
+  getExpertStatusTone,
+  groupExpertTopics
+} from '@/utils/expertProject'
 
 const props = defineProps({
   topics: {
@@ -97,10 +113,32 @@ const props = defineProps({
   }
 })
 
-defineEmits(['update:modelValue', 'retry'])
+const emit = defineEmits(['update:modelValue', 'retry'])
+const navigatorRef = ref(null)
 
+const topicGroups = computed(() => groupExpertTopics(props.topics))
 const selectedTopic = computed(
   () => props.topics.find((topic) => topic.topic_id === props.modelValue) || props.topics[0] || null
+)
+const selectedIndex = computed(() =>
+  Math.max(
+    0,
+    props.topics.findIndex((topic) => topic.topic_id === selectedTopic.value?.topic_id)
+  )
+)
+
+/** 按当前大纲顺序切换相邻讲义。 */
+const selectRelativeTopic = (offset) => {
+  const topic = props.topics[selectedIndex.value + offset]
+  if (topic) emit('update:modelValue', topic.topic_id)
+}
+
+watch(
+  () => props.modelValue,
+  async () => {
+    await nextTick()
+    navigatorRef.value?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' })
+  }
 )
 </script>
 
@@ -108,7 +146,7 @@ const selectedTopic = computed(
 .expert-topic-reader {
   display: grid;
   min-height: 460px;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 2.2fr);
+  grid-template-columns: minmax(240px, 0.82fr) minmax(0, 2.18fr);
   border-top: 1px solid var(--gray-150);
   border-bottom: 1px solid var(--gray-150);
 }
@@ -117,19 +155,25 @@ const selectedTopic = computed(
   position: sticky;
   top: 0;
   min-width: 0;
-  max-height: calc(100vh - 260px);
+  max-height: calc(100vh - 210px);
   overflow-y: auto;
   border-right: 1px solid var(--gray-150);
   background: var(--gray-25);
+  scrollbar-color: var(--gray-200) transparent;
+  scrollbar-width: thin;
 }
 
 .topic-navigator-heading {
+  position: sticky;
+  z-index: 1;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--gray-150);
+  background: var(--gray-25);
   color: var(--gray-700);
   font-size: 12px;
   font-weight: 600;
@@ -140,80 +184,34 @@ const selectedTopic = computed(
   }
 }
 
-.topic-nav-item {
-  display: grid;
-  width: 100%;
-  min-width: 0;
-  min-height: 56px;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 14px 12px;
-  border: 0;
-  border-bottom: 1px solid var(--gray-150);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-
-  &:hover,
-  &.selected {
-    background: var(--main-30);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--main-500);
-    outline-offset: -2px;
-  }
-
-  .status-badge {
-    grid-column: 2;
-    justify-self: start;
-  }
-}
-
-.topic-position {
-  display: flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--gray-200);
-  border-radius: 6px;
-  color: var(--gray-600);
-  font-size: 12px;
-}
-
-.topic-nav-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 3px;
-
-  span {
-    overflow: hidden;
-    color: var(--gray-500);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  strong {
-    display: -webkit-box;
-    overflow: hidden;
-    color: var(--gray-900);
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1.45;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-}
-
 .topic-reader {
   min-width: 0;
-  padding: 24px 28px 40px;
+  padding: 18px 32px 48px;
+}
+
+.reader-paging {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+
+  :deep(.ant-btn) {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  :deep(.ant-btn:first-child) {
+    justify-self: start;
+  }
+
+  :deep(.ant-btn:last-child) {
+    justify-self: end;
+  }
 }
 
 .topic-reader-heading {
@@ -221,7 +219,7 @@ const selectedTopic = computed(
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding-bottom: 18px;
+  padding-bottom: 20px;
   border-bottom: 1px solid var(--gray-150);
 
   h3,
@@ -230,19 +228,20 @@ const selectedTopic = computed(
   }
 
   h3 {
-    margin-top: 4px;
+    max-width: 28ch;
+    margin-top: 5px;
     color: var(--gray-900);
-    font-size: 19px;
+    font-size: 21px;
     font-weight: 650;
     line-height: 1.4;
   }
 
   p {
-    max-width: 720px;
-    margin-top: 7px;
+    max-width: 70ch;
+    margin-top: 8px;
     color: var(--gray-600);
     font-size: 13px;
-    line-height: 1.65;
+    line-height: 1.7;
   }
 
   > div > span:first-child {
@@ -284,7 +283,7 @@ const selectedTopic = computed(
 .tone-warning {
   border-color: var(--color-warning-100);
   background: var(--color-warning-50);
-  color: var(--color-warning-700);
+  color: var(--color-warning-900);
 }
 
 .tone-error {
@@ -299,6 +298,76 @@ const selectedTopic = computed(
   color: var(--color-success-700);
 }
 
+.topic-document {
+  max-width: 74ch;
+  margin-top: 24px;
+
+  :deep(.yk-markdown-preview) {
+    max-width: 74ch;
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+      color: var(--gray-900);
+      line-height: 1.4;
+    }
+
+    h1 {
+      margin: 0 0 26px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    h3,
+    h4 {
+      margin: 22px 0 8px 14px;
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    > p,
+    > ul,
+    > ol,
+    > blockquote {
+      margin-left: 28px;
+    }
+
+    > p {
+      max-width: 70ch;
+      margin-top: 0;
+      margin-bottom: 14px;
+      line-height: 1.85;
+    }
+
+    > ul,
+    > ol {
+      max-width: 70ch;
+      margin-top: 0.4rem;
+      margin-bottom: 18px;
+      line-height: 1.8;
+    }
+  }
+}
+
+.topic-reader-empty {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--gray-500);
+  font-size: 13px;
+}
+
 .reader-error {
   margin: 16px 0 0;
   padding: 10px 12px;
@@ -310,24 +379,9 @@ const selectedTopic = computed(
   line-height: 1.6;
 }
 
-.topic-document {
-  max-width: 760px;
-  margin-top: 24px;
-}
-
-.topic-reader-empty {
-  display: flex;
-  min-height: 220px;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--gray-600);
-  font-size: 13px;
-}
-
 .review-disclosure {
-  max-width: 760px;
-  margin-top: 24px;
+  max-width: 74ch;
+  margin-top: 26px;
   padding-top: 14px;
   border-top: 1px solid var(--gray-150);
 
@@ -340,7 +394,7 @@ const selectedTopic = computed(
 
   p {
     margin: 10px 0 0;
-    color: var(--gray-700);
+    color: var(--gray-600);
     font-size: 13px;
     line-height: 1.65;
   }
@@ -356,35 +410,43 @@ const selectedTopic = computed(
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 820px) {
   .expert-topic-reader {
-    min-height: 0;
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .topic-reader {
+    order: 1;
+    padding: 18px 18px 34px;
   }
 
   .topic-navigator {
     position: static;
-    max-height: 280px;
+    order: 2;
+    max-height: 360px;
+    border-top: 1px solid var(--gray-150);
     border-right: 0;
-    border-bottom: 1px solid var(--gray-150);
-  }
-
-  .topic-reader {
-    padding: 20px 0 32px;
   }
 
   .topic-reader-heading {
-    align-items: stretch;
     flex-direction: column;
   }
 
   .topic-reader-actions {
     justify-content: flex-start;
   }
+}
 
-  .topic-document,
-  .review-disclosure {
-    max-width: 100%;
+@media (max-width: 480px) {
+  .topic-reader {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .topic-reader-heading h3 {
+    font-size: 19px;
   }
 }
 </style>

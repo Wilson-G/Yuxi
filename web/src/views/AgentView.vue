@@ -112,7 +112,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { Settings2, ChevronDown, Check, Plus } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
@@ -149,6 +149,27 @@ const getRouteThreadId = () => {
 const getRouteAgentId = () => {
   const value = route.query.agent_id
   return typeof value === 'string' ? value : ''
+}
+
+const getRouteSkillSlug = () => {
+  const value = route.query.skill
+  return typeof value === 'string' ? value : ''
+}
+
+let resourceRefreshPromise = null
+let consumingRouteSkill = false
+const refreshAgentResources = () => {
+  if (resourceRefreshPromise) return resourceRefreshPromise
+  resourceRefreshPromise = (async () => {
+    if (!agentStore.isInitialized) await agentStore.initialize()
+    await agentStore.fetchMentionResources()
+    if (selectedAgentId.value) {
+      await agentStore.fetchAgentDetail(selectedAgentId.value, true)
+    }
+  })().finally(() => {
+    resourceRefreshPromise = null
+  })
+  return resourceRefreshPromise
 }
 
 const syncSelectedThreadFromRoute = async () => {
@@ -194,6 +215,27 @@ const consumeRouteAgentSelection = async () => {
   }
 }
 
+const consumeRouteSkillSelection = async () => {
+  const skillSlug = getRouteSkillSlug()
+  if (!skillSlug || getRouteThreadId() || !chatComponentRef.value || consumingRouteSkill) return
+
+  consumingRouteSkill = true
+  try {
+    await refreshAgentResources()
+    await nextTick()
+    await chatComponentRef.value?.selectThreadFromRoute?.('')
+    const selected = chatComponentRef.value?.selectSkillForDraft?.(skillSlug)
+    if (!selected) message.error('当前智能体无法使用这个 Skill')
+  } catch (error) {
+    handleChatError(error, 'load')
+  } finally {
+    const nextQuery = { ...route.query }
+    delete nextQuery.skill
+    consumingRouteSkill = false
+    await router.replace({ name: 'AgentComp', query: nextQuery })
+  }
+}
+
 watch(
   () => route.params.thread_id,
   () => {
@@ -210,9 +252,22 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => route.query.skill,
+  () => {
+    consumeRouteSkillSelection()
+  },
+  { immediate: true }
+)
+
 watch(chatComponentRef, (instance) => {
   if (!instance) return
   syncSelectedThreadFromRoute()
+  consumeRouteSkillSelection()
+})
+
+onMounted(() => {
+  void refreshAgentResources()
 })
 
 const handleThreadChange = (threadId) => {
