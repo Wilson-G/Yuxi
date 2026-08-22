@@ -100,6 +100,27 @@ def validate_candidate_skill(skill_root: Path) -> None:
     parse_skill_dir_metadata(skill_root)
 
 
+_COMPILED_VIEW_LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("资产节点目录标题", re.compile(r"^## 资产节点目录\s*$", re.MULTILINE)),
+    ("CoT 推导示范标题", re.compile(r"^## CoT 推导示范\s*$", re.MULTILINE)),
+    ("资产正文节点标题", re.compile(r"^### N\d{2} ", re.MULTILINE)),
+    ("来源标签", re.compile(r"\[(?:原文明说|领域补链|候选解释|专家质疑|材料未知)\]")),
+    ("推理过程标记", re.compile(r"^\s*(?:Thought|Action|Observation)\s*:", re.MULTILINE)),
+)
+
+
+def lint_compiled_view_leaks(text: str, *, label: str) -> None:
+    """最终用户可见产物不得泄漏节点 ID、来源标签等编译内部视图；命中即拒绝发布。
+
+    只扫描派生叙述产物（讲义、导航、Skill 正文），不扫描逐字摘自原始材料的
+    references——用户材料里出现相似字样属于内容本身，不应阻断发布。
+    """
+
+    for name, pattern in _COMPILED_VIEW_LEAK_PATTERNS:
+        if pattern.search(text):
+            raise ValueError(f"{label} 泄漏编译内部视图（{name}），不得发布")
+
+
 def _write_candidate_files(
     root: Path,
     *,
@@ -208,11 +229,13 @@ def _write_candidate_files(
         if evidence_links:
             handout = f"{handout}\n\n## 关键依据\n\n{evidence_links}"
         handout += "\n"
+        lint_compiled_view_leaks(handout, label=f"讲义 {wiki_path}")
         (root / wiki_path).write_text(handout, encoding="utf-8")
         wiki_links.append(f"- [{topic.title}](../{wiki_path})：{topic.reader_question}")
         search_rows.append(build_search_row(published_path=wiki_path, title=topic.title, text=handout))
 
     nav_text = f"# {project.name} 导航\n\n{navigation.strip()}\n\n## 讲义目录\n\n" + "\n".join(wiki_links) + "\n"
+    lint_compiled_view_leaks(nav_text, label="导航 nav/index.md")
     (root / "nav" / "index.md").write_text(nav_text, encoding="utf-8")
     search_rows.append(build_search_row(published_path="nav/index.md", title=f"{project.name} 导航", text=nav_text))
 
@@ -236,6 +259,7 @@ def _write_candidate_files(
         "回答关键判断时读取相应 `wiki/` 讲义和其中链接的 `references/` 精选证据。"
         "资料不足或条件不明时保持停止线，不访问或猜测编译项目中的原始材料。\n"
     )
+    lint_compiled_view_leaks(skill_text, label="Skill SKILL.md")
     (root / "SKILL.md").write_text(skill_text, encoding="utf-8")
     (root / "sources.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in source_rows),

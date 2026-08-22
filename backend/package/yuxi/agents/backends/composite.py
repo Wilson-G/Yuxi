@@ -16,7 +16,12 @@ from yuxi.agents.skills.service import (
     normalize_string_list,
     sync_thread_readable_skills_async,
 )
-from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS, VIRTUAL_PATH_OUTPUTS
+from yuxi.utils.paths import (
+    VIRTUAL_PATH_CONVERSATION_HISTORY,
+    VIRTUAL_PATH_LARGE_TOOL_RESULTS,
+    VIRTUAL_PATH_OUTPUTS,
+    VIRTUAL_SKILLS_PATH,
+)
 
 from .sandbox import ProvisionerSandboxBackend
 from .skills_backend import SelectedSkillsReadonlyBackend
@@ -28,6 +33,14 @@ def _coerce_glob_result(result) -> GlobResult:
     if isinstance(result, GlobResult):
         return result
     return GlobResult(matches=result or [])
+
+
+def _dedupe_by_path(matches: list[FileInfo]) -> list[FileInfo]:
+    """按 path 去重；默认后端与路由可能列出同一文件（如沙箱 bind mount 与本地投影）。"""
+    unique: dict[str, FileInfo] = {}
+    for fi in matches:
+        unique[fi.get("path", "")] = fi
+    return list(unique.values())
 
 
 class CustomCompositeBackend(CompositeBackend):
@@ -57,6 +70,7 @@ class CustomCompositeBackend(CompositeBackend):
                 if result.error:
                     return result
                 results.extend(_remap_file_info_path(fi, route_prefix) for fi in (result.matches or []))
+            results = _dedupe_by_path(results)
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(matches=results)
 
@@ -86,6 +100,7 @@ class CustomCompositeBackend(CompositeBackend):
                 if result.error:
                     return result
                 results.extend(_remap_file_info_path(fi, route_prefix) for fi in (result.matches or []))
+            results = _dedupe_by_path(results)
             results.sort(key=lambda x: x.get("path", ""))
             return GlobResult(matches=results)
 
@@ -173,6 +188,13 @@ class _BackendScope:
 
     def create_backend(self) -> CompositeBackend:
         thread_skills_root = get_thread_skills_root_dir(self.skills_thread_id)
+        # 提示词会同时引用 /skills/ 与 /home/gem/skills/ 两个根。后者默认走沙箱
+        # bind mount，容器刚创建时可能还没反映线程投影里新同步的 Skill（读到 404）。
+        # 因此两个根都路由到本地线程投影，保证 advertised 路径一次可读。
+        skills_projection = SelectedSkillsReadonlyBackend(
+            selected_slugs=list(self.skill_sources),
+            root_dir=thread_skills_root,
+        )
         return CustomCompositeBackend(
             default=ProvisionerSandboxBackend(
                 thread_id=self.thread_id,
@@ -183,10 +205,8 @@ class _BackendScope:
                 skills_thread_id=self.skills_thread_id,
             ),
             routes={
-                "/skills/": SelectedSkillsReadonlyBackend(
-                    selected_slugs=list(self.skill_sources),
-                    root_dir=thread_skills_root,
-                ),
+                "/skills/": skills_projection,
+                f"{VIRTUAL_SKILLS_PATH}/": skills_projection,
             },
             artifacts_root=VIRTUAL_PATH_OUTPUTS,
         )

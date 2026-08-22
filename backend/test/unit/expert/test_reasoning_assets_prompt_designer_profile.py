@@ -1,3 +1,11 @@
+"""领域推导资产编译方法的提示词资产合同检查。
+
+只保留三类真验证：结构解析（示例与生产解析器同构）、属性检查（领域中性、
+资产完备）、跨层合同（提示词引用的契约字段与 pydantic 模型一致）。
+纯措辞哨兵已移除；机械产出合同由 organization_service.validate_asset_note_structure
+在运行时执法，发布物内部视图泄漏由 publisher.lint_compiled_view_leaks 拦截。
+"""
+
 from __future__ import annotations
 
 import re
@@ -64,8 +72,6 @@ def test_reasoning_assets_profile_has_domain_neutral_material_templates():
     templates = {path.name: path.read_text(encoding="utf-8") for path in (PROFILE_ROOT / "templates").glob("*.md")}
 
     assert set(templates) == TEMPLATE_NAMES
-    assert all("项目定向" in content and "最终专家" in content for content in templates.values())
-    assert "补链" in "\n".join(templates.values())
     assert all(
         "八字" not in content and "Amazon" not in content and "亚马逊" not in content for content in templates.values()
     )
@@ -75,25 +81,17 @@ def test_reasoning_assets_profile_designs_all_existing_prompt_pack_fields():
     skill, example = _read_assets()
 
     for field in PROMPT_PACK_FIELDS:
-        assert f"`{field}`" in skill
-        assert f"`{field}`" in example or f"\n{field}\n" in example
+        assert field in skill
+        assert field in example
 
+    # 提示词引用的结构化字段必须与 pydantic 契约真实存在，防止文档与代码漂移。
     assert "MaterialNoteResult.note_markdown" in skill
     assert all(field in skill for field in ("evidence", "routing_labels", "candidate_questions"))
 
 
-def test_reasoning_assets_profile_keeps_domain_knowledge_and_material_sources_separate():
+def test_reasoning_assets_example_demonstrates_all_source_labels_and_stays_domain_neutral():
     skill, example = _read_assets()
 
-    assert "第 0 阶段的核心交付：项目领域推导模型" in skill
-    assert "compilation_brief" in skill
-    assert "先激活领域知识并形成候选推导模型" in skill
-    assert "用代表材料校准并冻结项目模型" in skill
-    assert "不能写成“材料认为”" in skill
-    assert "原文明说" in skill and "不代表内容正确" in skill
-    assert "候选解释" in skill and "不能单独支撑强动作" in skill
-    assert "一个节点只能有一个来源标签" in skill
-    assert "混在同一句时必须拆成多个节点" in skill
     assert all(label in example for label in SOURCE_LABELS)
 
     assert "亚马逊" not in skill
@@ -101,47 +99,26 @@ def test_reasoning_assets_profile_keeps_domain_knowledge_and_material_sources_se
     assert "八字" not in skill
 
 
-def test_reasoning_assets_profile_builds_expert_observer_identity_and_embeds_domain_model():
+def test_reasoning_assets_requires_embedding_of_project_domain_model():
+    """运行时看不到编译底稿：推导模型全文必须内嵌进三份笔记阶段 Prompt。
+
+    这是有事故史的硬合同（两次 fix commit 的主题），保留哨兵。
+    """
+
     skill, example = _read_assets()
-    author = skill.split("### `note_author`", maxsplit=1)[1].split("### `note_reviewer`", maxsplit=1)[0]
-    reviewer = skill.split("### `note_reviewer`", maxsplit=1)[1].split("### `note_reviser`", maxsplit=1)[0]
 
-    # Author 的中心身份是观察另一位专家：先重建实际路径，再与领域合理路径对比。
-    assert "编译的基本姿势是观察另一位专家" in skill
-    assert "观察另一位专家" in author
-    assert "重建这位专家实际走过的推导路径" in author
-    assert "领域上合理的分析路径对比" in author
-    assert "五类来源标签是这次对比的输出" in author
-    assert "材料没有反馈就明确写没有" in author
-
-    # 运行时看不到编译底稿，因此领域推导模型全文必须内嵌进阶段 Prompt。
     assert "编译底稿、中央 SKILL 和项目定向报告对下游任务不可见" in skill
     assert "必须完整写进 `note_author`、`note_reviewer`、\n`note_reviser` 的 Prompt 本身" in skill
     assert "下游任务实际拿不到模型" in skill
-
-    # 领域推导模型按判断局面组织成链，四层分层明确，样本不得提前变成通用方法。
-    assert "按判断局面组织，不按知识类别组织" in skill
-    assert "名词式清单不合格" in skill
     assert "`## 项目领域推导模型`" in skill
-    for layer in ("领域基础", "样本观察", "项目假设", "材料缺口"):
-        assert layer in skill
-    assert "待全部材料验证" in skill
-    assert "不得把样本观察或项目假设呈现为已确认的通用方法" in skill
 
-    # Reviewer 检查 CoT 连续性和路径重建；小样验收完整链。
-    assert "每一步由前一步触发" in reviewer
-    assert "检查项清单" in reviewer
-    assert "重建了这位专家的实际判断路径" in reviewer
-    assert "至少还原了一条完整链" in skill
-    assert "反馈验证了哪一步" in skill
-
-    # 示例必须展示完整 Prompt 骨架，而不是只留职责摘要。
-    assert "完整 `note_author` Prompt 的结构骨架" in example
     assert "全文内嵌，不能只写“依据模型”" in example
     assert "`note_reviser` 同样必须内嵌" in example
 
 
 def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodies():
+    """示例必须能被生产解析器同构的正则完整提取，且目录与正文同序一一对应。"""
+
     _, example = _read_assets()
     catalog_match = re.search(
         r"## 资产节点目录\n(?P<catalog>.*?)(?=\n\n## 资产正文)",
@@ -164,58 +141,17 @@ def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodi
     assert catalog_nodes
     assert catalog_nodes == body_nodes
     assert len({node_id for node_id, _, _ in catalog_nodes}) == len(catalog_nodes)
-    assert "材料没有反馈就不创建反馈节点" in _read_assets()[0]
-    assert "没有预测就不创建预测节点" in _read_assets()[0]
     assert "## CoT 推导示范" in example
     assert "Input" in example and "Goal / Constraints" in example
     assert "Domain Relation" in example and "Next Check" in example
     assert "Update" in example and "Transfer" in example
 
 
-def test_reasoning_assets_profile_limits_evidence_to_material_statements():
-    skill, example = _read_assets()
+def test_reasoning_assets_example_keeps_calibration_demo_and_scope_discipline():
+    """示例允许用真实领域材料示范校准深度，但必须写明只示范结构不外溢。"""
 
-    assert "只锚定当前材料直接明说的内容或材料事实" in skill
-    assert "不得为 `领域补链`、`候选解释`、`专家质疑` 或 `材料未知` 伪造原文行号" in skill
-    assert "只引用支持 N01、N03、N04、N05、N07" in example
-    assert "不为 N02、N06、N08、N09 伪造原文依据" in example
-
-
-def test_reasoning_assets_example_uses_real_amazon_materials_only_for_calibration():
     _, example = _read_assets()
 
-    assert "《每天一个亚马逊运营技巧ACOS太高怎么办？》" in example
-    assert "《亚马逊产品转化差怎么排查问题》" in example
+    assert "## 第 0 阶段：领域激活与材料校准" in example
     assert "只示范结构、来源拆分、补链尺度和 Review 深度" in example
     assert "不是其他领域或其他 Amazon 材料的检查清单" in example
-    assert "ACOS 等于广告花费除以广告销售额" in example
-    assert "Listing 九要素 -> 广告优化 -> 产品竞争力与止损" in example
-    assert "不能静默删掉数字后把结论继续写成已证事实" in example
-
-
-def test_reasoning_assets_reviews_and_products_reject_long_but_unsupported_chains():
-    skill, example = _read_assets()
-    reviewer = skill.split("### `note_reviewer`", maxsplit=1)[1].split("### `note_reviser`", maxsplit=1)[0]
-    product = skill.split("### `handout_editor`", maxsplit=1)[1]
-    requirements = (
-        "链更长不等于质量更高",
-        "尊重用户输入事实",
-        "反领域关系",
-        "候选解释不支撑强动作",
-    )
-
-    assert all(requirement in reviewer for requirement in requirements)
-    assert all(requirement in product for requirement in requirements)
-    assert all(requirement in example for requirement in requirements)
-
-
-def test_reasoning_assets_final_answers_hide_compilation_views():
-    skill, example = _read_assets()
-    forbidden_views = ("节点 ID", "来源标签", "Thought", "Action", "审计路径", "文件路径", "编译说明")
-
-    assert "最终用户回答必须自然完整" in skill
-    assert "最终用户回答自然完整" in example
-    assert all(value in skill for value in forbidden_views)
-    assert all(value in example for value in forbidden_views)
-    assert "CoT 是这些资产交给运行时模型学习判断顺序的主要视图" in skill
-    assert "不是最终用户回答格式" in skill

@@ -22,7 +22,7 @@ from yuxi.agents.backends.composite import (
 from yuxi.agents.backends.sandbox import ProvisionerSandboxProvider, resolve_virtual_path, sandbox_id_for_thread
 from yuxi.agents.backends.sandbox.backend import ProvisionerSandboxBackend
 from yuxi.agents.middlewares.skills import SkillsMiddleware
-from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS
+from yuxi.utils.paths import VIRTUAL_PATH_CONVERSATION_HISTORY, VIRTUAL_PATH_LARGE_TOOL_RESULTS, VIRTUAL_SKILLS_PATH
 
 
 def _runtime(
@@ -74,6 +74,94 @@ def test_create_agent_composite_backend_uses_prepared_readable_skills(monkeypatc
     assert backend.artifacts_root == "/home/gem/user-data/outputs"
     assert "/skills/" in backend.routes
     assert "/home/gem/kbs/" not in backend.routes
+
+
+def test_composite_backend_reads_advertised_skills_root_from_thread_projection(monkeypatch, tmp_path):
+    """提示词引用的 /home/gem/skills 根必须直接读线程投影，不依赖沙箱挂载。"""
+    monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
+    thread_skills = tmp_path / "skills"
+    skill_dir = thread_skills / "reporter"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nslug: reporter\nname: reporter\n---\nprojection-body", encoding="utf-8")
+    monkeypatch.setattr(
+        "yuxi.agents.backends.composite.get_thread_skills_root_dir",
+        lambda thread_id: thread_skills,
+    )
+    # 根级 glob 会聚合默认沙箱后端；单测里将其打桩为空，只关注投影路由的结果。
+    monkeypatch.setattr(ProvisionerSandboxBackend, "glob", lambda self, pattern, path="/": GlobResult(matches=[]))
+
+    backend = create_agent_composite_backend(
+        _runtime(readable_skills=["reporter"], skill_sources={"reporter": "/tmp/reporter"})
+    )
+
+    assert set(backend.routes) == {"/skills/", f"{VIRTUAL_SKILLS_PATH}/"}
+    assert backend.routes["/skills/"] is backend.routes[f"{VIRTUAL_SKILLS_PATH}/"]
+
+    result = backend.read("/home/gem/skills/reporter/SKILL.md")
+    assert result.error is None
+    assert result.file_data["content"] == "---\nslug: reporter\nname: reporter\n---\nprojection-body"
+
+    listed = backend.glob("**/SKILL.md", path="/")
+    advertised = [info["path"] for info in listed.matches or []]
+    assert "/home/gem/skills/reporter/SKILL.md" in advertised
+
+
+def test_composite_glob_root_dedupes_skills_listed_by_default_and_route(monkeypatch, tmp_path):
+    """稳态下沙箱 bind mount 与本地投影都会列出同一批 Skill，根级 glob 必须按路径去重。"""
+    monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
+    thread_skills = tmp_path / "skills"
+    skill_dir = thread_skills / "reporter"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nslug: reporter\nname: reporter\n---\nprojection-body", encoding="utf-8")
+    monkeypatch.setattr(
+        "yuxi.agents.backends.composite.get_thread_skills_root_dir",
+        lambda thread_id: thread_skills,
+    )
+
+    def _synced_mount_glob(self, pattern, path="/"):
+        # 模拟挂载已同步的稳态：默认沙箱后端也能列出与投影相同的 Skill 路径。
+        return GlobResult(matches=[{"path": f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md"}])
+
+    monkeypatch.setattr(ProvisionerSandboxBackend, "glob", _synced_mount_glob)
+
+    backend = create_agent_composite_backend(
+        _runtime(readable_skills=["reporter"], skill_sources={"reporter": "/tmp/reporter"})
+    )
+
+    result = backend.glob("**/SKILL.md", path="/")
+    paths = [info["path"] for info in result.matches or []]
+
+    assert paths.count(f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md") == 1
+    assert set(paths) == {f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md", "/skills/reporter/SKILL.md"}
+
+
+@pytest.mark.asyncio
+async def test_composite_aglob_root_dedupes_skills_listed_by_default_and_route(monkeypatch, tmp_path):
+    """aglob 与 glob 共享同一聚合逻辑，同路径同样只允许出现一次。"""
+    monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
+    thread_skills = tmp_path / "skills"
+    skill_dir = thread_skills / "reporter"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nslug: reporter\nname: reporter\n---\nprojection-body", encoding="utf-8")
+    monkeypatch.setattr(
+        "yuxi.agents.backends.composite.get_thread_skills_root_dir",
+        lambda thread_id: thread_skills,
+    )
+
+    async def _synced_mount_aglob(self, pattern, path="/"):
+        return GlobResult(matches=[{"path": f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md"}])
+
+    monkeypatch.setattr(ProvisionerSandboxBackend, "aglob", _synced_mount_aglob)
+
+    backend = create_agent_composite_backend(
+        _runtime(readable_skills=["reporter"], skill_sources={"reporter": "/tmp/reporter"})
+    )
+
+    result = await backend.aglob("**/SKILL.md", path="/")
+    paths = [info["path"] for info in result.matches or []]
+
+    assert paths.count(f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md") == 1
+    assert set(paths) == {f"{VIRTUAL_SKILLS_PATH}/reporter/SKILL.md", "/skills/reporter/SKILL.md"}
 
 
 def test_sandbox_provider_release_deletes_sandbox_and_clears_cache():

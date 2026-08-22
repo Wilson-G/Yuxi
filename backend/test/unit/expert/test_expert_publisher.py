@@ -391,3 +391,23 @@ def test_candidate_skill_rebuilds_existing_version_from_current_outputs(
     assert "# 新讲义" in next((skill_root / "wiki").glob("*.md")).read_text(encoding="utf-8")
     assert "新专家入口" in (skill_root / "SKILL.md").read_text(encoding="utf-8")
     assert not any(path.name.startswith(".candidate-") for path in (project_root / "release").iterdir())
+
+
+def test_lint_compiled_view_leaks_flags_compiled_views():
+    leaks = {
+        "资产节点目录标题": "正文\n## 资产节点目录\n- N01 [输入事实][原文明说] x\n",
+        "CoT 推导示范标题": "## CoT 推导示范\nInput: ...\n",
+        "资产正文节点标题": "### N01 [输入事实][原文明说]\n内容\n",
+        "来源标签": "这一步属于[领域补链]。",
+        "推理过程标记": "Thought: 先核对条件\n",
+    }
+    for expected, text in leaks.items():
+        with pytest.raises(ValueError, match=f"泄漏编译内部视图（{expected}）"):
+            publisher.lint_compiled_view_leaks(text, label="讲义 01-演示.md")
+
+
+def test_lint_compiled_view_leaks_allows_clean_narrative_and_real_world_mentions():
+    publisher.lint_compiled_view_leaks(
+        "# 讲义\n\nN95 口罩在 L12 附近被提到；Action 一词作为普通名词出现也无需拦截。\n",
+        label="讲义 01-演示.md",
+    )

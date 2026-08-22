@@ -190,20 +190,14 @@ def test_reasoning_assets_note_catalog_extracts_only_asset_node_list_items() -> 
 """,
     )
 
-    catalog = organization_service._build_note_catalog(
-        [material],
-        {material.material_id: "N001"},
-        include_asset_nodes=True,
-    )
+    # 直接测提取纯函数；结构合同由 validate_asset_note_structure 单独执法。
+    nodes = organization_service.extract_asset_node_catalog(material.note)
 
-    assert catalog == (
-        "N001 | 来源：series/source-1.md | Labels：判断条件 | "
-        "资产节点：N01 [事实][原文明说] 材料明确给出的定义；"
-        "N02 [机制][领域补链] 用于解释事实的候选机制；"
-        "N03 [边界][材料未知] 材料没有说明"
-    )
-    assert "这行不是列表" not in catalog
-    assert "不应进入目录" not in catalog
+    assert nodes == [
+        "N01 [事实][原文明说] 材料明确给出的定义",
+        "N02 [机制][领域补链] 用于解释事实的候选机制",
+        "N03 [边界][材料未知] 材料没有说明",
+    ]
 
 
 def test_default_note_catalog_ignores_asset_node_section() -> None:
@@ -859,3 +853,65 @@ async def test_organization_retry_preserves_sample_review_failure(organization_e
     assert project is not None
     assert project.organization_samples[0]["reason"] == "Review 仍要求补回判断条件"
     assert project.error_message == "Review 仍要求补回判断条件"
+
+
+def _wellformed_asset_note() -> str:
+    return (
+        "# 当前材料的领域推导资产\n"
+        "\n"
+        "## 资产定位\n"
+        "这份材料处理什么局面。\n"
+        "\n"
+        "## 资产节点目录\n"
+        "- N01 [输入事实][原文明说] 材料给出的事实\n"
+        "- N02 [连续推导][领域补链] 补出的中间关系\n"
+        "\n"
+        "## 资产正文\n"
+        "\n"
+        "### N01 [输入事实][原文明说]\n"
+        "内容。\n"
+        "\n"
+        "### N02 [连续推导][领域补链]\n"
+        "内容。\n"
+        "\n"
+        "## CoT 推导示范\n"
+        "Input: ...\n"
+    )
+
+
+def test_validate_asset_note_structure_accepts_wellformed_note():
+    organization_service.validate_asset_note_structure(_wellformed_asset_note(), material_alias="N001")
+
+
+def test_validate_asset_note_structure_rejects_missing_catalog():
+    note = "# 资产\n\n## 资产正文\n\n### N01 [输入事实][原文明说]\n内容\n"
+
+    with pytest.raises(ValueError, match="缺少可解析的资产节点目录"):
+        organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+def test_validate_asset_note_structure_rejects_double_source_label():
+    note = _wellformed_asset_note().replace(
+        "- N02 [连续推导][领域补链] 补出的中间关系",
+        "- N02 [连续推导][领域补链][原文明说] 两个来源标签",
+    )
+
+    with pytest.raises(ValueError, match="单一来源标签"):
+        organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+def test_validate_asset_note_structure_rejects_catalog_body_mismatch():
+    note = _wellformed_asset_note().replace("### N02 [连续推导][领域补链]", "### N03 [连续推导][领域补链]")
+
+    with pytest.raises(ValueError, match="同序一一对应"):
+        organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+def test_validate_asset_note_structure_rejects_duplicate_node_id():
+    note = _wellformed_asset_note().replace(
+        "- N02 [连续推导][领域补链] 补出的中间关系",
+        "- N01 [关键观察][原文明说] 重复 ID",
+    ).replace("### N02 [连续推导][领域补链]", "### N01 [关键观察][原文明说]")
+
+    with pytest.raises(ValueError, match="重复节点 ID"):
+        organization_service.validate_asset_note_structure(note, material_alias="N001")

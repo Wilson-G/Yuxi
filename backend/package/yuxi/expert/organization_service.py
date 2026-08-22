@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -801,6 +802,7 @@ def _build_note_catalog(
             f"Labels：{'；'.join(routing_labels) or '未提供'}"
         )
         if include_asset_nodes:
+            validate_asset_note_structure(material.note or "", material_alias=aliases[material.material_id])
             asset_nodes = extract_asset_node_catalog(material.note or "")
             row += f" | 资产节点：{'；'.join(asset_nodes) or '未提供'}"
         rows.append(row)
@@ -826,6 +828,61 @@ def extract_asset_node_catalog(note_markdown: str) -> list[str]:
         if separator and marker[:-1].isdigit() and marker[-1:] in {".", ")"}:
             nodes.append(content.strip())
     return nodes
+
+
+_ASSET_NODE_ENTRY_PATTERN = re.compile(
+    r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\] .+$"
+)
+_ASSET_BODY_HEADING_PATTERN = re.compile(
+    r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\]$"
+)
+
+
+def validate_asset_note_structure(note_markdown: str, *, material_alias: str) -> None:
+    """校验领域推导资产的结构合同：节点单来源标签，目录与正文三级标题同序一一对应。"""
+
+    catalog_entries: list[tuple[str, str, str]] = []
+    body_nodes: list[tuple[str, str, str]] = []
+    in_catalog = False
+    for raw_line in str(note_markdown or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("### "):
+            heading = _ASSET_BODY_HEADING_PATTERN.fullmatch(line[4:].strip())
+            if heading is not None:
+                body_nodes.append((heading["node_id"], heading["node_type"], heading["source_label"]))
+            continue
+        if not in_catalog:
+            in_catalog = line == "## 资产节点目录"
+            continue
+        if line.startswith("# "):
+            break
+        if line.startswith("## "):
+            in_catalog = False
+            continue
+        if line.startswith(("- ", "* ", "+ ")):
+            entry = line[2:].strip()
+        else:
+            marker, separator, content = line.partition(" ")
+            if not (separator and marker[:-1].isdigit() and marker[-1:] in {".", ")"}):
+                continue
+            entry = content.strip()
+        node_match = _ASSET_NODE_ENTRY_PATTERN.fullmatch(entry)
+        if node_match is None:
+            raise ValueError(
+                f"{material_alias} 的资产节点目录条目不符合 'N01 [类型][单一来源标签] 单行摘要' 结构: {entry}"
+            )
+        catalog_entries.append((node_match["node_id"], node_match["node_type"], node_match["source_label"]))
+
+    if not catalog_entries:
+        raise ValueError(f"{material_alias} 的领域推导资产缺少可解析的资产节点目录")
+    if len({node_id for node_id, _, _ in catalog_entries}) != len(catalog_entries):
+        raise ValueError(f"{material_alias} 的资产节点目录存在重复节点 ID")
+    if catalog_entries != body_nodes:
+        catalog_ids = [node_id for node_id, _, _ in catalog_entries]
+        body_ids = [node_id for node_id, _, _ in body_nodes]
+        raise ValueError(
+            f"{material_alias} 的资产节点目录与资产正文三级标题必须同序一一对应: 目录 {catalog_ids} vs 正文 {body_ids}"
+        )
 
 
 def format_full_notes(materials: list[Any], aliases: dict[str, str]) -> str:
