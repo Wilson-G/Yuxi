@@ -94,12 +94,10 @@ def _prompt_pack() -> ProjectPromptPack:
     return ProjectPromptPack(
         note_author=_note_prompt("note author prompt"),
         note_reviewer=_note_prompt("note reviewer prompt"),
-        note_reviser=_note_prompt("note reviser prompt"),
         topic_researcher="topic researcher prompt",
         topic_editor="topic editor prompt",
         handout_editor="handout editor prompt",
         handout_reviewer="handout reviewer prompt",
-        handout_reviser="handout reviser prompt",
         book_editor="book editor prompt",
         navigation_author="navigation author prompt",
         skill_author="skill author prompt",
@@ -244,7 +242,6 @@ class OrientationModelTasks:
             decision="learned",
             note_markdown="# 学艺笔记",
             routing_labels=["判断条件"],
-            candidate_questions=["什么条件会让判断反转？"],
             evidence=[
                 {
                     "material_alias": material_alias,
@@ -1139,7 +1136,6 @@ async def test_auto_mode_resolves_content_issues_to_complete_learned_note(
                 note_markdown="# 自动终局笔记\n保留完整判断条件。",
                 reason="完整材料能够形成可采用的判断方法",
                 routing_labels=["条件变化时调整"],
-                candidate_questions=["什么条件会改变处理？"],
                 evidence=[
                     {
                         "material_alias": kwargs["material_alias"],

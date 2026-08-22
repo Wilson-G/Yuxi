@@ -226,7 +226,6 @@ async def run_handout_compilation(
                 project_id,
                 organization_version,
                 topic_id,
-                tasks,
                 note_aliases,
             )
 
@@ -617,7 +616,7 @@ async def _revise_topic_from_book_review(
         revised = await tasks.revise_handout(
             model_spec=snapshot["model_spec"],
             learning_plan=snapshot["learning_plan"],
-            stage_prompt=snapshot["prompt_pack"].handout_reviser,
+            stage_prompt=snapshot["prompt_pack"].handout_editor,
             editorial_plan=snapshot["handout"].editorial_plan_markdown,
             topic=snapshot["topic"],
             notes=snapshot["notes"],

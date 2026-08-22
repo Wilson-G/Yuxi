@@ -21,7 +21,6 @@ from yuxi.expert.contracts import (
     HandoutReviewResult,
     NavigationResult,
     SkillBodyResult,
-    TopicEvidencePack,
 )
 from yuxi.expert.model_tasks import ExpertContextLimitError
 from yuxi.repositories.expert_repository import ExpertRepository
@@ -67,12 +66,10 @@ def _prompt_pack() -> dict[str, str]:
     return {
         "note_author": "note author prompt",
         "note_reviewer": "note reviewer prompt",
-        "note_reviser": "note reviser prompt",
         "topic_researcher": "topic researcher prompt",
         "topic_editor": "topic editor prompt",
         "handout_editor": "handout editor prompt",
         "handout_reviewer": "handout reviewer prompt",
-        "handout_reviser": "handout reviser prompt",
         "book_editor": "book editor prompt",
         "navigation_author": "navigation author prompt",
         "skill_author": "skill author prompt",
@@ -129,7 +126,7 @@ async def _seed_compilation_project(compilation_env) -> tuple[list[str], list[st
                             {
                                 "material_alias": "CURRENT_MATERIAL",
                                 "start_line": 1,
-                                "end_line": 3,
+                                "end_line": 2,
                                 "supports": f"材料 {index} 的判断条件",
                             }
                         ],
@@ -174,15 +171,13 @@ class CompilationModelTasks:
 
     def __init__(self, *, failing_topic: str | None = None):
         self.failing_topic = failing_topic
-        self.evidence_active = 0
-        self.evidence_max_active = 0
-        self.evidence_started: list[str] = []
         self.editor_active = 0
         self.editor_max_active = 0
         self.editor_started: list[str] = []
         self.writer_notes: dict[str, str] = {}
         self.reviewer_notes: dict[str, list[str]] = {}
         self.reviser_notes: dict[str, str] = {}
+        self.revise_stage_prompts: dict[str, str] = {}
         self.book_calls = 0
 
     @staticmethod
@@ -192,25 +187,6 @@ class CompilationModelTasks:
     @staticmethod
     def _topic_alias(topic_key: str) -> str:
         return {"topic-a": "N001", "topic-b": "N002", "topic-c": "N003"}[topic_key]
-
-    async def prepare_topic_evidence(self, *, topic: str, **_kwargs) -> TopicEvidencePack:
-        topic_key = self._topic_key(topic)
-        self.evidence_started.append(topic_key)
-        self.evidence_active += 1
-        self.evidence_max_active = max(self.evidence_max_active, self.evidence_active)
-        await REAL_ASYNCIO_SLEEP(0.1)
-        self.evidence_active -= 1
-        return TopicEvidencePack(
-            topic_key=topic_key,
-            evidence=[
-                {
-                    "note_alias": self._topic_alias(topic_key),
-                    "start_line": 1,
-                    "end_line": 2,
-                    "supports": f"{topic_key} 的关键判断",
-                }
-            ],
-        )
 
     async def write_handout(self, *, topic: str, notes: str, **_kwargs) -> HandoutDraftResult:
         topic_key = self._topic_key(topic)
@@ -241,9 +217,10 @@ class CompilationModelTasks:
         *,
         handout: HandoutDraftResult,
         notes: str,
-        **_kwargs,
+        **kwargs,
     ) -> HandoutDraftResult:
         self.reviser_notes[handout.topic_key] = notes
+        self.revise_stage_prompts[handout.topic_key] = kwargs.get("stage_prompt") or ""
         return self._draft(handout.topic_key, suffix="全书定点修订")
 
     async def review_book(self, **_kwargs) -> BookReviewResult:
@@ -307,10 +284,11 @@ class GroupedBookModelTasks(CompilationModelTasks):
         *,
         handout: HandoutDraftResult,
         notes: str,
-        **_kwargs,
+        **kwargs,
     ) -> HandoutDraftResult:
         self.book_revision_calls += 1
         self.reviser_notes[handout.topic_key] = notes
+        self.revise_stage_prompts[handout.topic_key] = kwargs.get("stage_prompt") or ""
         return self._draft(handout.topic_key, suffix="全书定点修订")
 
     async def write_navigation(self, *, handouts: str, **_kwargs) -> NavigationResult:
@@ -325,12 +303,10 @@ class GroupedBookModelTasks(CompilationModelTasks):
 
 
 @pytest.mark.asyncio
-async def test_evidence_preparation_is_concurrent_but_handout_editor_is_serial_and_failure_blocks(
+async def test_handout_editor_is_serial_and_failure_blocks_downstream_topics(
     compilation_env,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, topic_keys = await _seed_compilation_project(compilation_env)
-    monkeypatch.setattr(compilation_service, "EVIDENCE_PREPARATION_CONCURRENCY", 3)
     tasks = CompilationModelTasks(failing_topic="topic-b")
 
     result = await compilation_service.run_handout_compilation(PROJECT_ID, 1, model_tasks=tasks)
@@ -340,8 +316,6 @@ async def test_evidence_preparation_is_concurrent_but_handout_editor_is_serial_a
         project = await repo.get_project(PROJECT_ID)
         topics = await repo.list_topics(PROJECT_ID, 1)
     assert result == {"project_id": PROJECT_ID, "status": "needs_attention"}
-    assert tasks.evidence_max_active == 3
-    assert set(tasks.evidence_started) == set(topic_keys)
     assert tasks.editor_max_active == 1
     assert tasks.editor_started == topic_keys
     assert {topic.topic_key: topic.status for topic in topics} == {
@@ -380,7 +354,6 @@ async def test_book_revision_ignores_excluded_legacy_material_without_text_path(
             ],
         )
         await db.commit()
-    monkeypatch.setattr(compilation_service, "EVIDENCE_PREPARATION_CONCURRENCY", 3)
     tasks = GroupedBookModelTasks()
 
     result = await compilation_service.run_handout_compilation(PROJECT_ID, 1, model_tasks=tasks)
@@ -401,6 +374,7 @@ async def test_book_revision_ignores_excluded_legacy_material_without_text_path(
     assert tasks.editor_started == topic_keys
     assert tasks.book_revision_calls == 1
     assert tasks.reviser_notes["topic-a"] == tasks.writer_notes["topic-a"]
+    assert tasks.revise_stage_prompts["topic-a"] == "handout editor prompt"
     assert tasks.reviewer_notes["topic-a"] == [
         tasks.writer_notes["topic-a"],
         tasks.writer_notes["topic-a"],

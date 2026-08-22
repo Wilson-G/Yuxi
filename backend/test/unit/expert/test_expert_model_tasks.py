@@ -103,12 +103,10 @@ def _prompt_pack() -> dict[str, str]:
     return {
         "note_author": "note author prompt",
         "note_reviewer": "note reviewer prompt",
-        "note_reviser": "note reviser prompt",
         "topic_researcher": "topic researcher prompt",
         "topic_editor": "topic editor prompt",
         "handout_editor": "handout editor prompt",
         "handout_reviewer": "handout reviewer prompt",
-        "handout_reviser": "handout reviser prompt",
         "book_editor": "book editor prompt",
         "navigation_author": "navigation author prompt",
         "skill_author": "skill author prompt",
@@ -165,7 +163,6 @@ async def test_gpt_5_6_material_tasks_reuse_stable_explicit_cache_prefix(
         "decision": "learned",
         "note_markdown": "第一份判断链",
         "routing_labels": ["判断条件"],
-        "candidate_questions": [],
         "evidence": [
             {
                 "material_alias": "M001",
@@ -239,7 +236,6 @@ async def test_other_models_keep_plain_messages_without_cache_parameters(
                 "decision": "no_value",
                 "note_markdown": "",
                 "routing_labels": [],
-                "candidate_questions": [],
                 "evidence": [],
             }
         ]
@@ -353,7 +349,6 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
                 "decision": "learned",
                 "note_markdown": "初稿笔记中的判断链",
                 "routing_labels": ["停止条件"],
-                "candidate_questions": ["何时应停止判断？"],
                 "evidence": [
                     {
                         "material_alias": "M007",
@@ -379,7 +374,6 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
                 "decision": "learned",
                 "note_markdown": "修订后保留反转条件的完整笔记",
                 "routing_labels": ["停止条件"],
-                "candidate_questions": ["何时应停止判断？"],
                 "evidence": [
                     {
                         "material_alias": "M007",
@@ -464,7 +458,6 @@ async def test_auto_resolution_returns_a_complete_note_from_full_material_contex
                 "note_markdown": "# 最终笔记\n保留条件和停止线。",
                 "reason": "当前材料能够形成有依据的判断方法",
                 "routing_labels": ["条件变化时停止"],
-                "candidate_questions": ["什么条件会改变处理？"],
                 "evidence": [
                     {
                         "material_alias": "M009",
@@ -531,7 +524,6 @@ async def test_auto_resolution_rejects_another_needs_attention_decision() -> Non
         "reason": "希望用户继续判断",
         "note_markdown": "",
         "routing_labels": [],
-        "candidate_questions": [],
         "evidence": [],
     }
     model = RecordingStructuredModel([invalid, invalid])

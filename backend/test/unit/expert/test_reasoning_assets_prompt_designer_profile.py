@@ -23,12 +23,10 @@ EXAMPLE_PATH = PROFILE_ROOT / "examples" / "apprentice-stage-prompt-pack.md"
 PROMPT_PACK_FIELDS = (
     "note_author",
     "note_reviewer",
-    "note_reviser",
     "topic_researcher",
     "topic_editor",
     "handout_editor",
     "handout_reviewer",
-    "handout_reviser",
     "book_editor",
     "navigation_author",
     "skill_author",
@@ -86,7 +84,7 @@ def test_reasoning_assets_profile_designs_all_existing_prompt_pack_fields():
 
     # 提示词引用的结构化字段必须与 pydantic 契约真实存在，防止文档与代码漂移。
     assert "MaterialNoteResult.note_markdown" in skill
-    assert all(field in skill for field in ("evidence", "routing_labels", "candidate_questions"))
+    assert all(field in skill for field in ("evidence", "routing_labels"))
 
 
 def test_reasoning_assets_example_demonstrates_all_source_labels_and_stays_domain_neutral():
@@ -100,7 +98,7 @@ def test_reasoning_assets_example_demonstrates_all_source_labels_and_stays_domai
 
 
 def test_reasoning_assets_requires_embedding_of_project_domain_model():
-    """运行时看不到编译底稿：推导模型全文必须内嵌进三份笔记阶段 Prompt。
+    """运行时看不到编译底稿：推导模型全文必须内嵌进两份笔记阶段 Prompt。
 
     这是有事故史的硬合同（两次 fix commit 的主题），保留哨兵。
     """
@@ -108,12 +106,12 @@ def test_reasoning_assets_requires_embedding_of_project_domain_model():
     skill, example = _read_assets()
 
     assert "编译底稿、中央 SKILL 和项目定向报告对下游任务不可见" in skill
-    assert "必须完整写进 `note_author`、`note_reviewer`、\n`note_reviser` 的 Prompt 本身" in skill
+    assert "必须完整写进 `note_author` 与\n`note_reviewer` 的 Prompt 本身" in skill
     assert "下游任务实际拿不到模型" in skill
     assert "`## 项目领域推导模型`" in skill
 
     assert "全文内嵌，不能只写“依据模型”" in example
-    assert "`note_reviser` 同样必须内嵌" in example
+    assert "`note_reviewer` 同样必须内嵌" in example
 
 
 def test_reasoning_assets_example_has_extractable_node_catalog_and_matching_bodies():

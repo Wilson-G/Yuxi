@@ -372,8 +372,8 @@ V2 小样结果：
 
 请完整阅读原材料、当前可用笔记、最新 Author 或 Repair 响应及最后一次 Review。
 如果材料能够形成忠实、可迁移且有原文依据的判断方法，直接交付一份完整的 `learned` 笔记；
-必要时可以依据完整原文重写当前笔记。该结果必须包含自然 Markdown 笔记、忠实的 routing_labels、
-候选读者问题和可定位证据，能够直接进入后续主题组织。
+必要时可以依据完整原文重写当前笔记。该结果必须包含自然 Markdown 笔记、忠实的 routing_labels
+和可定位证据，能够直接进入后续主题组织。
 
 如果材料本身没有足够迁移价值，返回 `no_value` 并说明不采用原因。
 不要返回 `needs_attention`、修订建议或过程说明。模型调用、正文读取、上下文、响应合同和存储故障
@@ -510,39 +510,6 @@ V2 小样结果：
             TopicMapResult,
             system=_stage_system(stage_prompt, task_instruction),
             prompt=prompt,
-        )
-
-    async def prepare_topic_evidence(
-        self,
-        *,
-        model_spec: str,
-        learning_plan: str,
-        stage_prompt: str,
-        topic: str,
-        notes_and_evidence: str,
-    ) -> TopicEvidencePack:
-        """让普通研究助手为当前主题选择证据并列出冲突和遗漏。"""
-
-        task_instruction = """
-你现在只为总编准备当前主题的证据包，不决定主题地图，也不写讲义。
-只能选择提供的已通过笔记及其原文行号依据；不得新增材料外判断。
-""".strip()
-        prompt = f"""
-当前主题定义：
-{topic}
-
-返回证据时，note_alias 只能使用下方笔记标题开头的 N... 别名。
-原文或笔记中出现的 M...、CURRENT_MATERIAL 等只是材料任务内证据标识，不是当前主题的笔记别名。
-
-获准笔记与原文依据：
-{notes_and_evidence}
-""".strip()
-        return await self._invoke_structured(
-            model_spec,
-            TopicEvidencePack,
-            system=_project_stage_system(stage_prompt, learning_plan, task_instruction),
-            prompt=prompt,
-            cacheable=True,
         )
 
     async def write_handout(

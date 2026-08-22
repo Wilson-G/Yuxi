@@ -18,6 +18,7 @@ from yuxi.expert.contracts import (
     HandoutReviewResult,
     PlanningGroupsResult,
     ProjectPromptPack,
+    TopicEvidenceItem,
     TopicEvidencePack,
     TopicMapResult,
     TopicResearchResult,
@@ -453,10 +454,9 @@ async def prepare_topic_evidence(
     project_id: str,
     organization_version: int,
     topic_id: str,
-    tasks: ExpertModelTasks,
     note_aliases: dict[str, str],
 ) -> dict[str, Any]:
-    """由普通研究助手为一个主题准备经过范围校验的证据包。"""
+    """用通过笔记的原文依据锚点机械化组装证据包，不经模型调用。"""
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -473,30 +473,14 @@ async def prepare_topic_evidence(
             return _serialize_sample_topic(topic)
         materials = await repo.list_project_materials(project_id)
         selected = [material for material in materials if material.material_id in set(topic.material_ids or [])]
-        source_texts = await load_expert_material_source_texts(selected)
+        allowed_materials = {note_aliases[item.material_id]: item for item in selected}
         topic.status = "preparing_evidence"
-        topic.error_message = None
-        snapshot = {
-            "model_spec": project.model_spec,
-            "learning_plan": project.learning_plan or "",
-            "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
-            "topic": format_topic_definition(topic),
-            "notes_and_evidence": _format_notes_with_source_evidence(selected, note_aliases, source_texts),
-            "topic_key": topic.topic_key,
-            "allowed_materials": {note_aliases[item.material_id]: item for item in selected},
-        }
         topic.error_message = None
         await db.commit()
 
     try:
-        evidence_pack = await tasks.prepare_topic_evidence(
-            model_spec=snapshot["model_spec"],
-            learning_plan=snapshot["learning_plan"],
-            stage_prompt=snapshot["prompt_pack"].topic_researcher,
-            topic=snapshot["topic"],
-            notes_and_evidence=snapshot["notes_and_evidence"],
-        )
-        _validate_evidence_pack(evidence_pack, snapshot["topic_key"], snapshot["allowed_materials"])
+        evidence_pack = _build_topic_evidence_pack(topic.topic_key, selected, note_aliases)
+        _validate_evidence_pack(evidence_pack, topic.topic_key, allowed_materials)
     except Exception as exc:  # noqa: BLE001
         return await _save_topic_failure(topic_id, str(exc))
 
@@ -536,7 +520,6 @@ async def write_topic_handout(
             project_id,
             organization_version,
             topic_id,
-            tasks,
             note_aliases,
         )
         if evidence_result["status"] != "evidence_ready":
@@ -607,7 +590,7 @@ async def write_topic_handout(
             revision = await tasks.revise_handout(
                 model_spec=snapshot["model_spec"],
                 learning_plan=snapshot["learning_plan"],
-                stage_prompt=snapshot["prompt_pack"].handout_reviser,
+                stage_prompt=snapshot["prompt_pack"].handout_editor,
                 editorial_plan=handout.editorial_plan_markdown,
                 topic=snapshot["topic"],
                 notes=snapshot["notes"],
@@ -743,6 +726,22 @@ def _validate_topic_map(result: TopicMapResult, known_aliases: set[str]) -> None
         raise ValueError("同一笔记不能同时进入正式主题和未分配清单")
     if not unassigned <= known_aliases or assigned | unassigned != known_aliases:
         raise ValueError("主题地图没有明确交代全部已通过笔记")
+
+
+def _build_topic_evidence_pack(topic_key: str, materials: list[Any], aliases: dict[str, str]) -> TopicEvidencePack:
+    """把各份通过笔记的原文依据锚点原样汇成证据包，不做选择、扩写或新增判断。"""
+
+    evidence = [
+        TopicEvidenceItem(
+            note_alias=aliases[material.material_id],
+            start_line=int(anchor["start_line"]),
+            end_line=int(anchor["end_line"]),
+            supports=str(anchor.get("supports") or ""),
+        )
+        for material in materials
+        for anchor in (material.note_contract or {}).get("evidence") or []
+    ]
+    return TopicEvidencePack(topic_key=topic_key, evidence=evidence)
 
 
 def _validate_evidence_pack(pack: TopicEvidencePack, topic_key: str, materials: dict[str, Any]) -> None:
@@ -936,31 +935,6 @@ def format_handout_notes_with_evidence(
         f"# 完整已审笔记\n\n{format_full_notes(materials, aliases)}\n\n"
         f"# 当前主题获准原文摘录\n\n{'\n\n'.join(evidence_sections)}"
     )
-
-
-def _format_notes_with_source_evidence(
-    materials: list[Any],
-    aliases: dict[str, str],
-    source_texts: dict[str, str],
-) -> str:
-    sections = []
-    for material in materials:
-        evidence_sections = []
-        for anchor in (material.note_contract or {}).get("evidence") or []:
-            start = int(anchor["start_line"])
-            end = int(anchor["end_line"])
-            excerpt = format_expert_material_excerpt(
-                material,
-                source_texts[material.material_id],
-                start_line=start,
-                end_line=end,
-            )
-            evidence_sections.append(f"依据 {start}-{end}：{anchor['supports']}\n{excerpt}")
-        sections.append(
-            f"## {aliases[material.material_id]} · {material.title}\n"
-            f"来源：{material.source_path}\n\n{material.note or ''}\n\n" + "\n\n".join(evidence_sections)
-        )
-    return "\n\n".join(sections)
 
 
 def _format_excluded_materials(materials: list[Any]) -> str:

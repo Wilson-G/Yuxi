@@ -1386,12 +1386,10 @@ const stageSummary = (stage) => {
 const promptLabels = {
   note_author: '逐份学习',
   note_reviewer: '笔记 Review',
-  note_reviser: '笔记定点修订',
   topic_researcher: '候选主题研究',
   topic_editor: '主题地图与编辑方案',
   handout_editor: '讲义总编',
   handout_reviewer: '讲义 Review',
-  handout_reviser: '讲义定点修订',
   book_editor: '全书收口',
   navigation_author: '读者导航',
   skill_author: '最终专家身份'

@@ -1,4 +1,4 @@
-"""_validate_method_contract 对三份 note Prompt 共享块的机械一致性校验测试。"""
+"""_validate_method_contract 对两份 note Prompt 共享块的机械一致性校验测试。"""
 
 from __future__ import annotations
 
@@ -46,12 +46,10 @@ def _prompt_pack(**overrides: str) -> ProjectPromptPack:
     values: dict[str, str] = {
         "note_author": _note_prompt(),
         "note_reviewer": _note_prompt(),
-        "note_reviser": _note_prompt(),
         "topic_researcher": "研究 Prompt。",
         "topic_editor": "总编 Prompt。",
         "handout_editor": "编讲义 Prompt。",
         "handout_reviewer": "审讲义 Prompt。",
-        "handout_reviser": "修讲义 Prompt。",
         "book_editor": "收口 Prompt。",
         "navigation_author": "导航 Prompt。",
         "skill_author": "技能 Prompt。",
@@ -71,7 +69,7 @@ def test_missing_embedded_model_is_rejected() -> None:
 
 
 def test_domain_block_drift_is_rejected() -> None:
-    pack = _prompt_pack(note_reviser=_note_prompt(domain_tail="（漂移）"))
+    pack = _prompt_pack(note_author=_note_prompt(domain_tail="（漂移）"))
     with pytest.raises(ValueError, match="四层边界块不一致"):
         _validate_method_contract("学习方案", "编译底稿", pack)
 

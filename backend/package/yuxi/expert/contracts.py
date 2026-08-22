@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExpertContract(BaseModel):
@@ -33,15 +33,22 @@ class ProjectPromptPack(ExpertContract):
 
     note_author: str
     note_reviewer: str
-    note_reviser: str
     topic_researcher: str
     topic_editor: str
     handout_editor: str
     handout_reviewer: str
-    handout_reviser: str
     book_editor: str
     navigation_author: str
     skill_author: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_legacy_role_fields(cls, data: object) -> object:
+        """旧版持久化包与模型偶发多吐可能携带已砍岗位字段，加载时静默剥离。"""
+
+        if isinstance(data, dict) and data.keys() & {"note_reviser", "handout_reviser"}:
+            return {key: value for key, value in data.items() if key not in {"note_reviser", "handout_reviser"}}
+        return data
 
 
 class ProjectMethodResult(ExpertContract):
@@ -84,8 +91,16 @@ class MaterialNoteResult(ExpertContract):
     note_markdown: str = ""
     reason: str = ""
     routing_labels: list[str] = Field(default_factory=list)
-    candidate_questions: list[str] = Field(default_factory=list)
     evidence: list[EvidenceAnchor] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_legacy_candidate_questions(cls, data: object) -> object:
+        """已砍的零消费字段仍存在于历史持久化笔记中，再校验时静默剥离。"""
+
+        if isinstance(data, dict) and "candidate_questions" in data:
+            return {key: value for key, value in data.items() if key != "candidate_questions"}
+        return data
 
 
 class MaterialAutoResolutionResult(MaterialNoteResult):

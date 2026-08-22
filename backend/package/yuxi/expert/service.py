@@ -1287,7 +1287,7 @@ async def _run_method_sample(
         revision = await tasks.revise_material_note(
             model_spec=model_spec,
             learning_plan=learning_plan,
-            stage_prompt=prompt_pack.note_reviser,
+            stage_prompt=prompt_pack.note_author,
             material_alias=alias,
             title=material.title,
             source=material.source_path,
@@ -1321,7 +1321,7 @@ async def _run_method_sample(
         resolution = await tasks.resolve_material_automatically(
             model_spec=model_spec,
             learning_plan=learning_plan,
-            stage_prompt=prompt_pack.note_reviser if learned_candidate is not None else prompt_pack.note_author,
+            stage_prompt=prompt_pack.note_author,
             material_alias=alias,
             title=material.title,
             source=material.source_path,
@@ -1370,7 +1370,7 @@ async def _run_method_sample(
     }
 
 
-_NOTE_PROMPT_ROLES = ("note_author", "note_reviewer", "note_reviser")
+_NOTE_PROMPT_ROLES = ("note_author", "note_reviewer")
 _DOMAIN_BLOCK_START = "- 领域基础（可作为补链依据）："
 _DOMAIN_BLOCK_END = "- 材料缺口："
 _SOURCE_LABEL_BLOCK_START = "- 原文明说："
@@ -1390,7 +1390,7 @@ def _extract_shared_block(text: str, start_marker: str, end_marker: str) -> str:
 
 
 def _validate_shared_prompt_blocks(prompt_pack: ProjectPromptPack) -> None:
-    """三份 note Prompt 的四层边界块与五类来源标签块必须逐字一致（唯一权威文本在 compilation_brief）。"""
+    """两份笔记 Prompt 的四层边界块与五类来源标签块必须逐字一致（唯一权威文本在 compilation_brief）。"""
 
     extracted: dict[str, dict[str, str]] = {}
     for role in _NOTE_PROMPT_ROLES:
@@ -1411,7 +1411,7 @@ def _validate_shared_prompt_blocks(prompt_pack: ProjectPromptPack) -> None:
         if drifted:
             raise ValueError(
                 f"{role} 与 {baseline_role} 的{'、'.join(drifted)}不一致："
-                "三份 note Prompt 的共用块必须以 compilation_brief 定稿版本逐字复制"
+                "两份笔记 Prompt 的共用块必须以 compilation_brief 定稿版本逐字复制"
             )
 
 

@@ -64,12 +64,10 @@ def _prompt_pack() -> dict[str, str]:
     return {
         "note_author": "note author prompt",
         "note_reviewer": "note reviewer prompt",
-        "note_reviser": "note reviser prompt",
         "topic_researcher": "topic researcher prompt",
         "topic_editor": "topic editor prompt",
         "handout_editor": "handout editor prompt",
         "handout_reviewer": "handout reviewer prompt",
-        "handout_reviser": "handout reviser prompt",
         "book_editor": "book editor prompt",
         "navigation_author": "navigation author prompt",
         "skill_author": "skill author prompt",
@@ -128,7 +126,7 @@ async def _seed_organization_project(
                             {
                                 "material_alias": "CURRENT_MATERIAL",
                                 "start_line": 1,
-                                "end_line": 3,
+                                "end_line": 2,
                                 "supports": f"材料 {index} 的判断条件",
                             }
                         ],
@@ -226,7 +224,6 @@ class OrganizationModelTasks:
         self.research_started: list[str] = []
         self.review_calls = 0
         self.revision_calls = 0
-        self.evidence_topic = ""
         self.handout_topic = ""
         self.writer_notes = ""
         self.writer_editorial_plan = ""
@@ -234,6 +231,7 @@ class OrganizationModelTasks:
         self.reviewer_editorial_plans: list[str] = []
         self.reviser_notes = ""
         self.reviser_editorial_plan = ""
+        self.revise_stage_prompt = ""
 
     async def plan_note_groups(self, **_kwargs) -> PlanningGroupsResult:
         return PlanningGroupsResult(
@@ -304,20 +302,6 @@ class OrganizationModelTasks:
             sample_selection_reason="同时覆盖判断顺序和材料边界",
         )
 
-    async def prepare_topic_evidence(self, *, topic: str, **_kwargs) -> TopicEvidencePack:
-        self.evidence_topic = topic
-        return TopicEvidencePack(
-            topic_key="diagnosis",
-            evidence=[
-                {
-                    "note_alias": "N001",
-                    "start_line": 1,
-                    "end_line": 2,
-                    "supports": "先识别局面再判断",
-                }
-            ],
-        )
-
     async def write_handout(
         self,
         *,
@@ -362,9 +346,10 @@ class OrganizationModelTasks:
             )
         return HandoutReviewResult(decision="pass", summary="修订后通过", issues=[])
 
-    async def revise_handout(self, *, notes: str, editorial_plan: str, **_kwargs) -> HandoutDraftResult:
+    async def revise_handout(self, *, notes: str, editorial_plan: str, **kwargs) -> HandoutDraftResult:
         self.reviser_notes = notes
         self.reviser_editorial_plan = editorial_plan
+        self.revise_stage_prompt = kwargs.get("stage_prompt") or ""
         self.revision_calls += 1
         return HandoutDraftResult(
             topic_key="diagnosis",
@@ -717,9 +702,9 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
     assert project.organization_samples[0]["status"] == "passed"
     assert tasks.revision_calls == 1
     assert tasks.review_calls == 2
-    assert "停止条件应由哪一段原文支撑？" in tasks.evidence_topic
     assert "停止条件应由哪一段原文支撑？" in tasks.handout_topic
     assert tasks.writer_notes == tasks.reviser_notes
+    assert tasks.revise_stage_prompt == "handout editor prompt"
     assert tasks.reviewer_notes == [tasks.writer_notes, tasks.writer_notes]
     assert tasks.writer_editorial_plan == "# 当前编辑方案"
     assert tasks.reviser_editorial_plan == "# 初版写后编辑方案"
