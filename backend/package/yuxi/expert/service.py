@@ -1370,12 +1370,58 @@ async def _run_method_sample(
     }
 
 
+_NOTE_PROMPT_ROLES = ("note_author", "note_reviewer", "note_reviser")
+_DOMAIN_BLOCK_START = "- 领域基础（可作为补链依据）："
+_DOMAIN_BLOCK_END = "- 材料缺口："
+_SOURCE_LABEL_BLOCK_START = "- 原文明说："
+_SOURCE_LABEL_BLOCK_END = "- 材料未知："
+
+
+def _extract_shared_block(text: str, start_marker: str, end_marker: str) -> str:
+    """按稳定哨兵提取 Prompt 内嵌的共享块（首尾行均含）；任一哨兵未命中返回空串。"""
+
+    lines = [line.strip() for line in text.splitlines()]
+    try:
+        start = next(idx for idx, line in enumerate(lines) if line.startswith(start_marker))
+        end = next(idx for idx, line in enumerate(lines[start + 1 :], start + 1) if line.startswith(end_marker))
+    except StopIteration:
+        return ""
+    return "\n".join(lines[start : end + 1])
+
+
+def _validate_shared_prompt_blocks(prompt_pack: ProjectPromptPack) -> None:
+    """三份 note Prompt 的四层边界块与五类来源标签块必须逐字一致（唯一权威文本在 compilation_brief）。"""
+
+    extracted: dict[str, dict[str, str]] = {}
+    for role in _NOTE_PROMPT_ROLES:
+        prompt_text = str(getattr(prompt_pack, role))
+        blocks = {
+            "四层边界块": _extract_shared_block(prompt_text, _DOMAIN_BLOCK_START, _DOMAIN_BLOCK_END),
+            "五类来源标签块": _extract_shared_block(prompt_text, _SOURCE_LABEL_BLOCK_START, _SOURCE_LABEL_BLOCK_END),
+        }
+        missing = [name for name, block in blocks.items() if not block]
+        if missing:
+            raise ValueError(f"{role} 未完整内嵌{'与'.join(missing)}")
+        extracted[role] = blocks
+    baseline_role, baseline_blocks = next(iter(extracted.items()))
+    for role, blocks in extracted.items():
+        if role == baseline_role:
+            continue
+        drifted = [name for name, block in blocks.items() if block != baseline_blocks[name]]
+        if drifted:
+            raise ValueError(
+                f"{role} 与 {baseline_role} 的{'、'.join(drifted)}不一致："
+                "三份 note Prompt 的共用块必须以 compilation_brief 定稿版本逐字复制"
+            )
+
+
 def _validate_method_contract(learning_plan: str, compilation_brief: str, prompt_pack: ProjectPromptPack) -> None:
     if not learning_plan.strip() or not compilation_brief.strip():
         raise ValueError("项目方法缺少学习方案或编译底稿")
     missing = [name for name, value in prompt_pack.model_dump().items() if not str(value).strip()]
     if missing:
         raise ValueError(f"项目 Prompt 包缺少阶段内容: {', '.join(missing)}")
+    _validate_shared_prompt_blocks(prompt_pack)
 
 
 def _validate_note(note: MaterialNoteResult, *, alias: str, line_count: int) -> None:

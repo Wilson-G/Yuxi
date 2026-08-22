@@ -71,11 +71,30 @@ async def expert_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await engine.dispose()
 
 
+def _note_prompt(role: str) -> str:
+    """构造符合方法合同的三份 note Prompt：共用块逐字一致，仅角色职责句不同。"""
+
+    domain_block = (
+        "- 领域基础（可作为补链依据）：领域事实。\n"
+        "- 样本观察（只属于样本资产，不代表整个材料包）：样本事实。\n"
+        "- 项目假设（待全部材料验证，不得写成已确认方法）：假设句。\n"
+        "- 材料缺口：缺口句。"
+    )
+    label_block = (
+        "- 原文明说：归属规则。\n"
+        "- 领域补链：补链规则。\n"
+        "- 候选解释：降调规则。\n"
+        "- 专家质疑：质疑规则。\n"
+        "- 材料未知：未知规则。"
+    )
+    return f"{role} prompt\n【项目领域推导模型】\n{domain_block}\n【五类来源标签】\n{label_block}"
+
+
 def _prompt_pack() -> ProjectPromptPack:
     return ProjectPromptPack(
-        note_author="note author prompt",
-        note_reviewer="note reviewer prompt",
-        note_reviser="note reviser prompt",
+        note_author=_note_prompt("note author prompt"),
+        note_reviewer=_note_prompt("note reviewer prompt"),
+        note_reviser=_note_prompt("note reviser prompt"),
         topic_researcher="topic researcher prompt",
         topic_editor="topic editor prompt",
         handout_editor="handout editor prompt",
