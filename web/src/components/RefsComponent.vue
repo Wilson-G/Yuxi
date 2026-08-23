@@ -97,10 +97,20 @@
     okText="提交"
     cancelText="取消"
   >
+    <div class="dislike-quick-tags">
+      <a-checkable-tag
+        v-for="tag in DISLIKE_QUICK_TAGS"
+        :key="tag"
+        :checked="selectedDislikeTags.includes(tag)"
+        @change="toggleDislikeTag(tag)"
+      >
+        {{ tag }}
+      </a-checkable-tag>
+    </div>
     <a-textarea
       v-model:value="dislikeReason"
       :rows="4"
-      placeholder="您的反馈将帮助我们改进服务（可选）"
+      placeholder="可先点选上方标签，再补充具体说明（可选）"
       :maxlength="500"
       show-count
     />
@@ -225,6 +235,20 @@ watch(
 const dislikeModalVisible = ref(false)
 const dislikeReason = ref('')
 const submittingFeedback = ref(false)
+// 点踩快速标签：多选，提交时以 [标签] 前缀并入 reason，后台按方括号即可归类统计
+const DISLIKE_QUICK_TAGS = ['答错了', '答非所问', '内容过时', '太啰嗦', '黑话太多']
+const selectedDislikeTags = ref([])
+const toggleDislikeTag = (tag) => {
+  if (selectedDislikeTags.value.includes(tag)) {
+    selectedDislikeTags.value = selectedDislikeTags.value.filter((item) => item !== tag)
+  } else {
+    selectedDislikeTags.value = [...selectedDislikeTags.value, tag]
+  }
+}
+const buildDislikeReason = () => {
+  const tagPrefix = selectedDislikeTags.value.map((tag) => `[${tag}]`).join('')
+  return `${tagPrefix} ${dislikeReason.value}`.trim()
+}
 
 // 使用 useClipboard 实现复制功能
 const { copy, isSupported } = useClipboard()
@@ -336,16 +360,18 @@ const dislikeThisResponse = async (msg) => {
 
 // Submit dislike feedback with reason
 const submitDislikeFeedback = async () => {
+  const reason = buildDislikeReason()
   try {
     submittingFeedback.value = true
-    await agentApi.submitMessageFeedback(msg.value.id, 'dislike', dislikeReason.value || null)
+    await agentApi.submitMessageFeedback(msg.value.id, 'dislike', reason || null)
 
     feedbackState.hasSubmitted = true
     feedbackState.rating = 'dislike'
-    feedbackState.reason = dislikeReason.value
+    feedbackState.reason = reason
 
     dislikeModalVisible.value = false
     dislikeReason.value = ''
+    selectedDislikeTags.value = []
 
     antMessage.success('感谢您的反馈！')
   } catch (error) {
@@ -354,6 +380,8 @@ const submitDislikeFeedback = async () => {
       antMessage.info('您已经提交过反馈了')
       feedbackState.hasSubmitted = true
       dislikeModalVisible.value = false
+      dislikeReason.value = ''
+      selectedDislikeTags.value = []
     } else {
       antMessage.error('提交反馈失败，请稍后重试')
     }
@@ -366,10 +394,20 @@ const submitDislikeFeedback = async () => {
 const cancelDislike = () => {
   dislikeModalVisible.value = false
   dislikeReason.value = ''
+  selectedDislikeTags.value = []
 }
 </script>
 
 <style lang="less" scoped>
+.dislike-quick-tags {
+  margin-bottom: 12px;
+
+  .ant-checkable-tag {
+    font-size: 13px;
+    padding: 4px 10px;
+  }
+}
+
 .refs {
   display: flex;
   flex-direction: column;
