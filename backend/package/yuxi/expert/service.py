@@ -1371,6 +1371,7 @@ async def _run_method_sample(
 
 
 _NOTE_PROMPT_ROLES = ("note_author", "note_reviewer")
+_MODEL_CHAPTER_HEADING = "## 项目领域推导模型"
 _DOMAIN_BLOCK_START = "- 领域基础（可作为补链依据）："
 _DOMAIN_BLOCK_END = "- 材料缺口："
 _SOURCE_LABEL_BLOCK_START = "- 原文明说："
@@ -1389,13 +1390,30 @@ def _extract_shared_block(text: str, start_marker: str, end_marker: str) -> str:
     return "\n".join(lines[start : end + 1])
 
 
+def _extract_model_chapter(prompt_text: str) -> str:
+    """按固定标题整章提取项目领域推导模型（标题行起、下一个二级标题前）；未命中返回空串。"""
+
+    lines = prompt_text.splitlines()
+    try:
+        start = next(idx for idx, line in enumerate(lines) if line.strip() == _MODEL_CHAPTER_HEADING)
+    except StopIteration:
+        return ""
+    end = next(
+        (idx for idx, line in enumerate(lines[start + 1 :], start + 1) if line.strip().startswith("## ")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]).strip()
+
+
 def _validate_shared_prompt_blocks(prompt_pack: ProjectPromptPack) -> None:
-    """两份笔记 Prompt 的四层边界块与五类来源标签块必须逐字一致（唯一权威文本在 compilation_brief）。"""
+    """两份笔记 Prompt 的领域推导模型整章、四层边界块与五类来源标签块必须逐字一致
+    （唯一权威文本在 compilation_brief）。"""
 
     extracted: dict[str, dict[str, str]] = {}
     for role in _NOTE_PROMPT_ROLES:
         prompt_text = str(getattr(prompt_pack, role))
         blocks = {
+            "项目领域推导模型章节": _extract_model_chapter(prompt_text),
             "四层边界块": _extract_shared_block(prompt_text, _DOMAIN_BLOCK_START, _DOMAIN_BLOCK_END),
             "五类来源标签块": _extract_shared_block(prompt_text, _SOURCE_LABEL_BLOCK_START, _SOURCE_LABEL_BLOCK_END),
         }

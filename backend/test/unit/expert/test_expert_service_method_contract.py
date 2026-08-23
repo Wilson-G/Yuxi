@@ -32,7 +32,7 @@ def _label_block(tail: str = "") -> str:
 def _note_prompt(domain_tail: str = "", label_tail: str = "") -> str:
     return (
         "你是编译者，先读领域模型再动笔。\n\n"
-        "【项目领域推导模型】\n四层边界：\n"
+        "## 项目领域推导模型\n四层边界：\n"
         + _domain_block(domain_tail)
         + "\n\n七条推导链是比较框架，不是内容清单：略。\n"
         "按判断局面组织的七条推导链（每条：先观察 -> 候选判断）：\n1. 略。\n\n"
@@ -77,6 +77,12 @@ def test_domain_block_drift_is_rejected() -> None:
 def test_source_label_block_drift_is_rejected() -> None:
     pack = _prompt_pack(note_reviewer=_note_prompt(label_tail="（漂移）"))
     with pytest.raises(ValueError, match="五类来源标签块不一致"):
+        _validate_method_contract("学习方案", "编译底稿", pack)
+
+
+def test_model_chapter_drift_outside_sentinels_is_rejected() -> None:
+    pack = _prompt_pack(note_author=_note_prompt() + "\n共用章节里的句子被单方改动。")
+    with pytest.raises(ValueError, match="项目领域推导模型章节不一致"):
         _validate_method_contract("学习方案", "编译底稿", pack)
 
 

@@ -87,7 +87,7 @@ def _note_prompt(role: str) -> str:
         "- 专家质疑：质疑规则。\n"
         "- 材料未知：未知规则。"
     )
-    return f"{role} prompt\n【项目领域推导模型】\n{domain_block}\n【五类来源标签】\n{label_block}"
+    return f"{role} prompt\n## 项目领域推导模型\n{domain_block}\n【五类来源标签】\n{label_block}"
 
 
 def _prompt_pack() -> ProjectPromptPack:
