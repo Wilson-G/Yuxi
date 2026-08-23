@@ -116,7 +116,6 @@
           :action="'/api/knowledge/files/upload?kb_id=' + kbId"
           :headers="getAuthHeaders()"
           @change="handleFileUpload"
-          @drop="handleDrop"
         >
           <p class="ant-upload-text">点击或将文件拖拽到此处</p>
           <p class="ant-upload-hint">支持类型: {{ uploadHint }}</p>
@@ -832,8 +831,6 @@ const isOcrEnabled = computed(() => {
   return processingParams.value.ocr_engine !== 'disable'
 })
 
-// 上传模式切换相关逻辑已移除
-
 // 计算属性：是否有PDF或图片文件
 const hasPdfOrImageFiles = computed(() => {
   if (fileList.value.length === 0) {
@@ -1200,10 +1197,6 @@ const handleFileUpload = (info) => {
 
   fileList.value = info?.fileList ?? []
 }
-
-const handleDrop = () => {}
-
-// 已移除文件夹上传逻辑
 
 const getAuthHeaders = () => {
   const userStore = useUserStore()
