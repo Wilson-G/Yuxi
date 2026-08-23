@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi.config import options
 from yuxi.storage.postgres.models_business import Base
+from yuxi.storage.postgres import models_knowledge, models_material  # noqa: F401  # 建表前须注册全部模型
 
 
 class FakeRedis:
