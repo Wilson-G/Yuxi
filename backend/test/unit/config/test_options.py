@@ -275,5 +275,15 @@ async def test_invalid_boolean_is_rejected(db_session):
         )
 
 
+def test_int_option_field_is_normalized():
+    """int 配置字段接受数字或数字字符串并归一化，拒绝非整数文本。"""
+
+    field = {"key": "expert_material_parse_concurrency", "type": "int"}
+    assert options._normalize_value(field, "12") == 12
+    assert options._normalize_value(field, 7) == 7
+    with pytest.raises(ValueError, match="整数"):
+        options._normalize_value(field, "abc")
+
+
 async def _async_value(value):
     return value

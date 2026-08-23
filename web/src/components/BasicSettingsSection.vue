@@ -85,6 +85,40 @@
         </div>
       </template>
 
+      <div class="section-title">专家编译并发</div>
+      <div class="section">
+        <p class="section-description">
+          控制专家项目批量任务同时调用模型的路数。调大编译更快但更费模型额度，调小更稳。改动对之后启动的任务生效。
+        </p>
+        <div class="card">
+          <span class="label">{{ items?.expert_material_parse_concurrency?.des }}</span>
+          <a-input-number
+            :value="configStore.config?.expert_material_parse_concurrency"
+            :min="1"
+            :max="50"
+            @change="handleChange('expert_material_parse_concurrency', $event)"
+          />
+        </div>
+        <div class="card">
+          <span class="label">{{ items?.expert_organization_research_concurrency?.des }}</span>
+          <a-input-number
+            :value="configStore.config?.expert_organization_research_concurrency"
+            :min="1"
+            :max="50"
+            @change="handleChange('expert_organization_research_concurrency', $event)"
+          />
+        </div>
+        <div class="card">
+          <span class="label">{{ items?.expert_evidence_preparation_concurrency?.des }}</span>
+          <a-input-number
+            :value="configStore.config?.expert_evidence_preparation_concurrency"
+            :min="1"
+            :max="50"
+            @change="handleChange('expert_evidence_preparation_concurrency', $event)"
+          />
+        </div>
+      </div>
+
       <SkillSettingsSection :class="{ 'first-section': !userStore.isSuperAdmin }" />
     </template>
 

@@ -145,6 +145,27 @@ system_options = Option(
                 "type": "ocr_engine",
                 "default": "rapid_ocr",
             },
+            {
+                "key": "expert_material_parse_concurrency",
+                "label": "专家材料解析并发数",
+                "type": "int",
+                "default": 8,
+                "environment": "EXPERT_MATERIAL_PARSE_CONCURRENCY",
+            },
+            {
+                "key": "expert_organization_research_concurrency",
+                "label": "专家主题研究并发数",
+                "type": "int",
+                "default": 10,
+                "environment": "EXPERT_ORGANIZATION_RESEARCH_CONCURRENCY",
+            },
+            {
+                "key": "expert_evidence_preparation_concurrency",
+                "label": "专家证据准备并发数",
+                "type": "int",
+                "default": 10,
+                "environment": "EXPERT_EVIDENCE_PREPARATION_CONCURRENCY",
+            },
         ],
     },
 )
@@ -447,6 +468,12 @@ def _normalize_value(field: dict[str, Any], value: Any) -> Any:
         if not isinstance(value, bool):
             raise ValueError("配置值必须是布尔值")
         return value
+
+    if field.get("type") == "int":
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("配置值必须是整数") from exc
 
     if field.get("type") == "list[str]":
         if not isinstance(value, list):

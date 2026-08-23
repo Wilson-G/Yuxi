@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -13,6 +12,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.expert.compiler_profiles import get_expert_compiler_profile
+from yuxi.expert.concurrency import get_expert_concurrency
 from yuxi.expert.contracts import (
     HandoutDraftResult,
     HandoutReviewResult,
@@ -29,8 +29,6 @@ from yuxi.expert.storage import read_material_text as read_legacy_material_text
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
-
-ORGANIZATION_RESEARCH_CONCURRENCY = int(os.getenv("EXPERT_ORGANIZATION_RESEARCH_CONCURRENCY", "10"))
 
 
 async def initialize_organization_stage(project_id: str, *, feedback: str = "") -> int:
@@ -107,7 +105,9 @@ async def run_organization_stage(
 
     async with pg_manager.get_async_session_context() as db:
         batches = await ExpertRepository(db).list_research_batches(project_id, organization_version)
-    semaphore = asyncio.Semaphore(max(1, ORGANIZATION_RESEARCH_CONCURRENCY))
+    semaphore = asyncio.Semaphore(
+        await get_expert_concurrency("expert_organization_research_concurrency", 10)
+    )
 
     async def research(batch_id: str) -> None:
         async with semaphore:

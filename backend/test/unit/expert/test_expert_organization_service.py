@@ -672,7 +672,10 @@ async def test_organization_researches_groups_concurrently_and_confirms_only_aft
             )
         await db.rollback()
 
-    monkeypatch.setattr(organization_service, "ORGANIZATION_RESEARCH_CONCURRENCY", 2)
+    async def _fixed_concurrency(key: str, default: int) -> int:
+        return 2
+
+    monkeypatch.setattr(organization_service, "get_expert_concurrency", _fixed_concurrency)
     tasks = OrganizationModelTasks()
     result = await organization_service.run_organization_stage(
         PROJECT_ID,

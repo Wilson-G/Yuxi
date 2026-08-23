@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import tempfile
 from collections import defaultdict
@@ -14,6 +13,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.agents.skills.repository import SkillRepository
+from yuxi.expert.concurrency import get_expert_concurrency
 from yuxi.agents.skills.service import (
     delete_skill,
     import_skill_dir,
@@ -46,7 +46,6 @@ from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.datetime_utils import utc_now_naive
 
-EVIDENCE_PREPARATION_CONCURRENCY = int(os.getenv("EXPERT_EVIDENCE_PREPARATION_CONCURRENCY", "10"))
 MAX_HANDOUT_REVISIONS = 2
 
 
@@ -218,7 +217,9 @@ async def run_handout_compilation(
         )
     }
 
-    semaphore = asyncio.Semaphore(max(1, EVIDENCE_PREPARATION_CONCURRENCY))
+    semaphore = asyncio.Semaphore(
+        await get_expert_concurrency("expert_evidence_preparation_concurrency", 10)
+    )
 
     async def prepare(topic_id: str) -> None:
         async with semaphore:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -25,13 +24,13 @@ from yuxi.expert.storage import (
     delete_project_workspace,
     parse_material,
 )
+from yuxi.expert.concurrency import get_expert_concurrency
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
 
-MATERIAL_PARSE_CONCURRENCY = int(os.getenv("EXPERT_MATERIAL_PARSE_CONCURRENCY", "8"))
 MAX_MATERIAL_REVISIONS = 2
 MIN_REPRESENTATIVE_MATERIALS = 4
 MAX_REPRESENTATIVE_MATERIALS = 20
@@ -383,7 +382,9 @@ async def prepare_expert_project(project_id: str) -> dict[str, Any]:
             error_message=None,
         )
 
-    semaphore = asyncio.Semaphore(max(1, MATERIAL_PARSE_CONCURRENCY))
+    semaphore = asyncio.Semaphore(
+        await get_expert_concurrency("expert_material_parse_concurrency", 8)
+    )
 
     async def convert(material_id: str) -> None:
         async with semaphore:
