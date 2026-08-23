@@ -144,7 +144,7 @@ async def test_model_task_rejects_oversized_input_before_loading_model(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_gpt_5_6_material_tasks_reuse_stable_explicit_cache_prefix(
+async def test_openai_protocol_material_tasks_reuse_stable_explicit_cache_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """同一方法版本共享缓存前缀，但每个任务仍发送自己的完整材料。"""
@@ -215,19 +215,19 @@ async def test_gpt_5_6_material_tasks_reuse_stable_explicit_cache_prefix(
 
 
 @pytest.mark.asyncio
-async def test_other_models_keep_plain_messages_without_cache_parameters(
+async def test_non_openai_protocols_keep_plain_messages_without_cache_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未验证的模型保持原请求，不携带 GPT-5.6 缓存协议字段。"""
+    """Anthropic/Gemini 协议不接受 OpenAI 缓存字段，保持原请求；OpenAI 协议模型一律携带缓存参数。"""
 
     model_info = ModelInfo(
-        provider_id="siliconflow",
-        model_id="deepseek-test",
+        provider_id="anthropic",
+        model_id="claude-test",
         model_type="chat",
-        display_name="DeepSeek Test",
+        display_name="Claude Test",
         api_key="test-key",
-        base_url="https://api.siliconflow.cn/v1",
-        provider_type="openai",
+        base_url="https://api.anthropic.com",
+        provider_type="anthropic",
     )
     monkeypatch.setattr(model_tasks.model_cache, "get_model_info", lambda _model_spec: model_info)
     model = RecordingStructuredModel(
@@ -246,7 +246,7 @@ async def test_other_models_keep_plain_messages_without_cache_parameters(
     )
 
     await tasks.write_material_note(
-        model_spec="siliconflow:deepseek-test",
+        model_spec="anthropic:claude-test",
         learning_plan="已确认学习方案",
         stage_prompt="项目专属笔记 Prompt",
         material_alias="M001",

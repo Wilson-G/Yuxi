@@ -893,11 +893,14 @@ V2 小样结果：
 
 
 def _supports_expert_prompt_cache(model_info: Any) -> bool:
-    """只向已验证的 GPT-5.6 OpenAI 协议模型发送缓存参数。"""
+    """OpenAI 协议端点统一发送显式前缀缓存参数，不再按模型名单独设限。
 
-    return bool(
-        model_info and model_info.provider_type == "openai" and str(model_info.model_id).lower().startswith("gpt-5.6")
-    )
+    Anthropic 与 Gemini 协议的 ChatModel 不接受 OpenAI 缓存字段，发送即报错；
+    其余 provider（含 OpenAI 兼容端点与 OpenRouter）都经 ChatOpenAI 加载，
+    不支持缓存的端点会忽略参数，命中与否以返回的 cache_read 为准并可从日志观测。
+    """
+
+    return bool(model_info and model_info.provider_type not in {"anthropic", "gemini"})
 
 
 def _log_prompt_cache_usage(model_spec: str, prompt_cache_key: str, response: Any) -> None:
