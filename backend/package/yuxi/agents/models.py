@@ -52,6 +52,9 @@ def load_chat_model(fully_specified_name: str | None, **kwargs) -> BaseChatModel
     )
     kwargs["metadata"] = metadata
 
+    streaming = bool(kwargs.pop("streaming", False))
+    request_timeout = kwargs.pop("timeout", None)
+
     logger.debug(f"Loading model {fully_specified_name} with provider_type={info.provider_type}")
 
     if info.provider_type == "anthropic":
@@ -77,6 +80,8 @@ def load_chat_model(fully_specified_name: str | None, **kwargs) -> BaseChatModel
         api_key=SecretStr(api_key),
         base_url=base_url,
         stream_usage=True,
+        streaming=streaming,
+        timeout=request_timeout,
         **kwargs,
     )
 

@@ -336,8 +336,8 @@ async def test_orientation_uses_only_catalog_and_explicit_complete_samples_and_m
     assert "保持中央方法要求的来源强度" in method_prompt
     assert method.learning_plan_markdown == "已确认前的项目学习方案"
     assert loader.calls == [
-        ("provider:model", {"temperature": 0}),
-        ("provider:model", {"temperature": 0}),
+        ("provider:model", model_tasks.MODEL_LOADER_KWARGS),
+        ("provider:model", model_tasks.MODEL_LOADER_KWARGS),
     ]
 
 
@@ -443,7 +443,7 @@ async def test_note_review_and_revision_receive_complete_stable_context() -> Non
     assert review.issues[0].problem in prompts[2]
     assert revised.note_markdown == "修订后保留反转条件的完整笔记"
     assert model_tasks.number_material_lines(text) == numbered_text
-    assert loader.calls == [("provider:model", {"temperature": 0})] * 3
+    assert loader.calls == [("provider:model", model_tasks.MODEL_LOADER_KWARGS)] * 3
     assert model.responses == []
 
 

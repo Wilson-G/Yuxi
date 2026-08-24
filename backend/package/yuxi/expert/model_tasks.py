@@ -41,6 +41,17 @@ from yuxi.utils.logging_config import logger
 
 ContractT = TypeVar("ContractT", bound=BaseModel)
 
+# 单次模型调用的兜底超时（秒）：流式下按相邻分片间隔计，挂死的连接最多等这么久。
+EXPERT_MODEL_TIMEOUT_SECONDS = 900
+
+# 专家任务统一的结构化模型加载参数；流式接收让字节持续到达，
+# 长请求不会被中间网络设备按空闲掐断。
+MODEL_LOADER_KWARGS: dict[str, Any] = {
+    "temperature": 0,
+    "streaming": True,
+    "timeout": EXPERT_MODEL_TIMEOUT_SECONDS,
+}
+
 
 ARTIFACT_HUMANIZER_ZH_GUIDANCE = """
 成品表达采用 humanizer-zh 的编辑原则：直接说明材料已经支持的判断，不用广告语、空泛拔高、
@@ -826,7 +837,7 @@ V2 小样结果：
                 f"{context_length} tokens 上下文范围；请缩小自然材料单元或更换模型"
             )
 
-        model = self._model_loader(model_spec, temperature=0)
+        model = self._model_loader(model_spec, **MODEL_LOADER_KWARGS)
         for attempt in range(2):
             attempt_messages = list(messages)
             if attempt:
