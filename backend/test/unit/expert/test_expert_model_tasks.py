@@ -1043,3 +1043,19 @@ async def test_transport_replay_composes_with_jsonl_quality_retry(
     retry_messages = model.calls[2]
     assert isinstance(retry_messages[-1], HumanMessage)
     assert "JSONL 合同" in retry_messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_stream_chunk_timeout_is_replayed_as_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """langchain 流式看门狗的 StreamChunkTimeoutError（TimeoutError 子类）同样在调用层重放。"""
+
+    review = {"decision": "pass", "summary": "笔记忠实保留了当前材料的判断链", "issues": []}
+    model, result = await _review_with_transport_script(
+        [TimeoutError("No streaming chunk received for 120.0s"), json.dumps(review, ensure_ascii=False)],
+        monkeypatch,
+    )
+
+    assert result.decision == "pass"
+    assert len(model.calls) == 2

@@ -924,7 +924,14 @@ V2 小样结果：
                 await asyncio.sleep(delay)
             try:
                 response = await model.ainvoke(messages, **invoke_kwargs)
-            except (APIConnectionError, APITimeoutError, httpx.TransportError) as exc:
+            except (
+                APIConnectionError,
+                APITimeoutError,
+                # langchain 流式看门狗 StreamChunkTimeoutError 是 TimeoutError 子类：
+                # 连接 TCP 层存活但长时间不出分片，同样按传输故障重放。
+                TimeoutError,
+                httpx.TransportError,
+            ) as exc:
                 last_failure = exc
                 continue
             if isinstance(response.content, str) and not response.content.strip():
