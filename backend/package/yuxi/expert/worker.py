@@ -30,8 +30,16 @@ from yuxi.services.run_queue_service import get_arq_pool
 from yuxi.storage.minio.client import StorageError
 from yuxi.storage.postgres.manager import pg_manager
 
-SYSTEM_TASK_MAX_TRIES = 2
+# 首次执行之外最多重试 4 次；与 run_worker.WorkerSettings.max_tries 保持一致。
+SYSTEM_TASK_MAX_RETRIES = 4
+SYSTEM_TASK_MAX_TRIES = 1 + SYSTEM_TASK_MAX_RETRIES
 _project_job_locks: dict[str, asyncio.Lock] = {}
+
+
+def _system_retry_defer(ctx: dict) -> int:
+    """失败后的指数退避：第 n 次失败延迟 2**n 秒（2、4、8、16）。"""
+
+    return 2 ** min(max(1, _job_try(ctx)), SYSTEM_TASK_MAX_RETRIES)
 
 
 async def enqueue_project_preparation(project_id: str, *, token: str = "initial") -> None:
@@ -173,7 +181,7 @@ async def process_expert_project_preparation(ctx, project_id: str) -> dict:
             return await prepare_expert_project(project_id)
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=5) from exc
+                raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
 
@@ -186,7 +194,7 @@ async def process_expert_project_orientation(ctx, project_id: str, method_versio
             return await run_project_orientation(project_id, method_version)
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=10) from exc
+                raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
 
@@ -201,7 +209,7 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
             return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=10) from exc
+                raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
 
@@ -225,7 +233,7 @@ async def process_expert_material_learning(
         return result
     except Exception as exc:
         if _is_transient_material_error(exc) and _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-            raise Retry(defer=10) from exc
+            raise Retry(defer=_system_retry_defer(ctx)) from exc
         await mark_material_learning_attention(project_id, material_id, method_version, str(exc))
         raise
 
@@ -247,7 +255,7 @@ async def process_expert_organization(ctx, project_id: str, organization_version
             return result
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=10) from exc
+                raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
 
@@ -266,7 +274,7 @@ async def process_expert_handout_compilation(ctx, project_id: str, organization_
             return await run_handout_compilation(project_id, organization_version)
         except Exception as exc:
             if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
-                raise Retry(defer=10) from exc
+                raise Retry(defer=_system_retry_defer(ctx)) from exc
             await _mark_handout_compilation_attention(project_id, organization_version, str(exc))
             raise
 

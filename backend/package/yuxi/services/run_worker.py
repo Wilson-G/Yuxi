@@ -807,7 +807,8 @@ class WorkerSettings:
             keep_result=0,
         ),
     ]
-    max_tries = 2
+    # 首次执行 + 最多 4 次重试；与 expert.worker.SYSTEM_TASK_MAX_TRIES 保持一致。
+    max_tries = 5
     retry_jobs = True
     # 单任务最长执行时间（秒），可配置：超长图谱构建/深度检索场景需调大，
     # 避免长任务被 arq 取消并误标为 cancelled。

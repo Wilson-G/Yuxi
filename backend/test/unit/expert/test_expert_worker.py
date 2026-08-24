@@ -674,6 +674,43 @@ async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: py
     assert attention == [("material-retry-project", "material-1", 1, "材料阶段数据库连接中断")]
 
 
+@pytest.mark.asyncio
+async def test_orientation_retry_backs_off_exponentially_then_marks_attention(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连接抖动按 2/4/8/16 秒指数退避重试 4 次；第 5 次失败才标记需要处理。"""
+
+    project_id = "orientation-retry-backoff"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="running",
+        method_version=1,
+    )
+
+    async def fail_orientation(_project_id: str, _method_version: int) -> dict:
+        raise ConnectionError("网络抖动连接中断")
+
+    monkeypatch.setattr(worker, "run_project_orientation", fail_orientation)
+
+    for job_try in range(1, worker.SYSTEM_TASK_MAX_RETRIES + 1):
+        with pytest.raises(Retry) as exc_info:
+            await worker.process_expert_project_orientation({"job_try": job_try}, project_id, 1)
+        assert exc_info.value.defer_score == 2 ** job_try * 1000
+
+    with pytest.raises(ConnectionError, match="网络抖动连接中断"):
+        await worker.process_expert_project_orientation(
+            {"job_try": worker.SYSTEM_TASK_MAX_TRIES}, project_id, 1
+        )
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert project.error_message == "网络抖动连接中断"
+
+
 def _anthropic_status_error(error_type, status_code: int):
     request = httpx.Request("POST", "https://model.example/v1/messages")
     response = httpx.Response(status_code, request=request)
