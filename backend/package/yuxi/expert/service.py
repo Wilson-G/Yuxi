@@ -576,7 +576,10 @@ async def run_project_orientation(
         ):
             if len(samples) < MIN_REPRESENTATIVE_MATERIALS:
                 raise ValueError("项目方法必须使用全部代表材料试跑小样")
-            raise ValueError("项目方法没有从代表材料中选择 4～5 份试跑小样")
+            raise ValueError(
+                "项目方法没有从代表材料中选择 4～5 份试跑小样："
+                f"收到 {sorted(selected_aliases)}，可选 {sorted(available_aliases)}"
+            )
         sample_material_ids = [
             material.material_id
             for material, sample in zip(representative_materials, samples, strict=True)

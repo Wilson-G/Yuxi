@@ -104,6 +104,19 @@ class ExpertModelTasks:
         )
         example = compiler_profile.structure_example_path.read_text(encoding="utf-8")
         sample_text = _format_samples(samples)
+        # 小样别名规则动态生成：把精确清单写进指令，避免模型从材料目录里自行挑别名。
+        # 阈值与 service.MAX_METHOD_SAMPLES 一致；本模块不能反向导入 service。
+        allowed_aliases = "、".join(sample["alias"] for sample in samples)
+        if len(samples) < 5:
+            alias_rule = (
+                f"method_sample_aliases 必须且只能是这些别名的全部：{allowed_aliases}。"
+                "一个都不能少，也不得出现上面没有列出的别名。"
+            )
+        else:
+            alias_rule = (
+                f"method_sample_aliases 必须从这些 {len(samples)} 个别名中选 4～5 个：{allowed_aliases}。"
+                "不得出现上面没有列出的别名。"
+            )
         feedback_section = f"\n\n用户对上一版的反馈：\n{feedback.strip()}" if feedback.strip() else ""
         prompt = f"""
 你正在执行专家项目的第 0 阶段。这一趟连续完成两步：先做项目定向，再依据定向结论形成只属于当前项目的完整编译方法。
@@ -136,7 +149,7 @@ class ExpertModelTasks:
 编译底稿和 Prompt 包只承担内部编译职责。学习方案和定向依据不得把内部角色、阶段交接
 或编译过程写给用户。讲义相关 Prompt 必须把材料中的判断动作和明确术语、经验口径
 编成可学习的方法，并保持中央方法要求的来源强度，不能把讲义写成材料审计报告。
-method_sample_aliases 只能取自上方代表材料列出的 M... 别名，不得虚构：不足 5 份时必须全部选中；有 5 份以上时从中选 4～5 个，用于试跑这套 Prompt。
+{alias_rule}
 选择覆盖不同表达或判断方式的材料，不要因样本内容预设后续单篇的主题。
 """.strip()
         return await self._invoke_structured(
