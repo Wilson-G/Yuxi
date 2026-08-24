@@ -316,7 +316,7 @@ async def test_plan_uses_only_catalog_and_explicit_complete_samples_and_method_a
     assert "OTHER-TEMPLATE" in plan_prompt
     assert "EXAMPLE-FIRST\nEXAMPLE-LAST" in plan_prompt
     assert "method_sample_aliases" in plan_prompt
-    assert "不足 4 份" in plan_prompt
+    assert "不足 5 份时必须全部选中" in plan_prompt
     assert "三个交付物必须按中央方法分层" in plan_prompt
     # 保真边界只限定材料内容，不压制领域知识激活；运行时不可见底稿，框架必须写进 Prompt 本身。
     assert "材料内容不得用外部知识补齐或改写" in plan_prompt
