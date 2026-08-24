@@ -452,6 +452,34 @@ async def test_retry_units_resets_only_selected_source(material_env) -> None:
     assert untouched_source.unit_status == "ready"
 
 
+async def test_whole_file_source_cannot_rerun_unit_confirmation(material_env) -> None:
+    """整文件模式不经过模型切分，重跑边界确认的入口直接拒绝。"""
+
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    selected = await _upload_source(material_env, fake_minio, "whole.md")
+
+    async with material_env() as db:
+        await MaterialLibraryRepository(db).update_source_file(
+            selected["file_id"],
+            unit_mode="whole_file",
+            status="ready",
+            unit_status="ready",
+            markdown_bucket="materials",
+            markdown_object="whole.md",
+            line_count=1,
+        )
+        await db.commit()
+
+    async with material_env() as db:
+        with pytest.raises(ValueError, match="整文件模式"):
+            await service.reset_material_source_units(
+                db,
+                library_id="library-1",
+                file_id=selected["file_id"],
+            )
+
+
 async def test_referenced_source_cannot_be_deleted_or_rechapterized(material_env) -> None:
     await _create_library(material_env)
     fake_minio = FakeMinio()

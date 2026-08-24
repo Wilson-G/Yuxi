@@ -275,6 +275,8 @@ async def reset_material_source_units(db: AsyncSession, *, library_id: str, file
 
     repo = MaterialLibraryRepository(db)
     source_file = await _require_source_file(repo, library_id, file_id, for_update=True)
+    if source_file.unit_mode == UNIT_MODE_WHOLE_FILE:
+        raise ValueError("整文件模式不经过模型切分，没有边界确认可以重跑")
     if source_file.status != SOURCE_READY_STATUS or source_file.unit_status not in {
         UNIT_PENDING_STATUS,
         UNIT_READY_STATUS,
