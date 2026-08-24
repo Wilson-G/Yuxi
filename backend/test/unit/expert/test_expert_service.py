@@ -328,6 +328,92 @@ class AttentionCalibrationTasks(CalibrationModelTasks):
         return SimpleNamespace(decision="needs_attention", reason="V2 仍会系统性遗漏判断条件")
 
 
+class BoundedAutoAssessmentTasks(AttentionCalibrationTasks):
+    """前三次评估都判方法级残余，之后放行；用于验证预算耗尽后人工修复能重新解锁。"""
+
+    async def assess_method_calibration(self, **kwargs):
+        self.assessment_inputs.append(kwargs)
+        if len(self.assessment_inputs) <= 3:
+            return SimpleNamespace(decision="needs_attention", reason="本轮小样仍有系统性遗漏")
+        return SimpleNamespace(decision="acceptable_residual", reason="局部问题可由逐篇 Repair 处理")
+
+
+class PersistentSampleFailureTasks(CalibrationModelTasks):
+    """初始定向小样带可修问题但通过；进入校准后每轮复跑的 Review 都不通过（手动模式无自动终裁）。"""
+
+    async def review_material_note(self, *, title: str, **_kwargs) -> MaterialReviewResult:
+        self.review_rounds[title] += 1
+        if self.calibration_inputs:
+            return MaterialReviewResult(
+                decision="revise",
+                summary="校准后仍会遗漏改变处理的条件",
+                issues=[
+                    {
+                        "problem": "仍遗漏改变处理的条件",
+                        "affected_part": "判断链",
+                        "source_lines": ["L3"],
+                        "revision_direction": "保留原文明确条件",
+                    }
+                ],
+            )
+        if title == "01-material" and self.review_rounds[title] == 1:
+            return MaterialReviewResult(
+                decision="revise",
+                summary="缺少判断条件的保留职责",
+                issues=[
+                    {
+                        "problem": "遗漏改变处理的条件",
+                        "affected_part": "判断链",
+                        "source_lines": ["L3"],
+                        "revision_direction": "保留原文明确条件",
+                    }
+                ],
+            )
+        return MaterialReviewResult(decision="pass", summary="通过", issues=[])
+
+
+class AutoResolvedCalibrationTasks(CalibrationModelTasks):
+    """Review 始终要求修订；自动终裁把一份收编、另一份判不入选，验证 no_value 小样可通过交接。"""
+
+    async def review_material_note(self, *, title: str, **kwargs) -> MaterialReviewResult:
+        if self.calibration_inputs:
+            self.review_rounds[title] += 1
+            return MaterialReviewResult(
+                decision="revise",
+                summary="始终要求修订",
+                issues=[
+                    {
+                        "problem": "仍需补回条件",
+                        "affected_part": "判断链",
+                        "source_lines": ["L3"],
+                        "revision_direction": "按原文调整",
+                    }
+                ],
+            )
+        # 初始定向沿用默认行为：01 材料首轮给出具体问题、修订后通过，保证确认时能触发校准。
+        return await super().review_material_note(title=title, **kwargs)
+
+    async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
+        return await self.write_material_note(**kwargs)
+
+    async def resolve_material_automatically(self, *, title: str, material_alias: str, **_kwargs) -> MaterialNoteResult:
+        if title == "01-material":
+            return MaterialNoteResult(
+                decision="learned",
+                note_markdown="# 终裁笔记",
+                routing_labels=["判断条件"],
+                evidence=[
+                    {
+                        "material_alias": material_alias,
+                        "start_line": 1,
+                        "end_line": 3,
+                        "supports": "终裁保留判断条件",
+                    }
+                ],
+            )
+        return MaterialNoteResult(decision="no_value", reason="材料与专家判断无关")
+
+
 class RetryableAssessmentTasks(CalibrationModelTasks):
     """让第一次方法评估发生瞬时失败，验证重试只恢复评估。"""
 
@@ -1615,8 +1701,15 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
         project.method_samples = original_samples
 
         project.method_calibration_completed_at = service.utc_now_naive()
-        with pytest.raises(ValueError, match="已经完成一次校准"):
-            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        # 校准已完成且基线为空是死锁态：repair 是预算制人工出口，应当放行并重置校准预算。
+        repaired_version = await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert repaired_version == method_version + 1
+        assert project.status == "running"
+        assert project.method_calibration_completed_at is None
+        assert project.method_calibration_rounds == 0
+        assert project.auto_advance is False
 
 
 @pytest.mark.asyncio
@@ -1874,6 +1967,231 @@ async def test_method_calibration_stops_when_residual_problem_is_method_level(ex
     assert project.method_calibration_baseline == []
 
 
+async def _confirm_with_calibration(
+    expert_env,
+    model_tasks,
+    *,
+    auto_advance: bool,
+) -> tuple[str, list[str], int]:
+    """驱动一个项目走到首次方法确认并触发校准，返回项目 ID、材料清单和校准版本。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    async with expert_env.factory() as db:
+        calibrated_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            auto_advance=auto_advance,
+        )
+    return project_id, material_ids, calibrated_version
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_calibration_budget_exhaustion_then_repair_reopens(expert_env) -> None:
+    """自动校准按预算有界续跑：耗尽后带已用轮数停机；人工修复保留自动推进并重置预算解锁。"""
+
+    model_tasks = BoundedAutoAssessmentTasks()
+    project_id, material_ids, calibrated_version = await _confirm_with_calibration(
+        expert_env,
+        model_tasks,
+        auto_advance=True,
+    )
+
+    first = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert first["status"] == "running"
+    assert first["next_method_version"] == calibrated_version + 1
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert project.method_version == calibrated_version + 1
+        assert project.status == "running"
+        # 代际确认事实与自动推进授权在续跑期间保持不变。
+        assert project.method_confirmed_at is not None
+        assert project.auto_advance is True
+        assert project.method_calibration_completed_at is None
+        assert project.method_calibration_rounds == 1
+        # 本轮失败的小样连同 Review 成为下一轮的基线证据。
+        assert [sample["material_alias"] for sample in project.method_calibration_baseline] == ["M001", "M002"]
+
+    second = await service.run_method_calibration(project_id, calibrated_version + 1, model_tasks=model_tasks)
+    assert second["next_method_version"] == calibrated_version + 2
+    third = await service.run_method_calibration(project_id, calibrated_version + 2, model_tasks=model_tasks)
+    assert third["status"] == "needs_attention"
+    assert "next_method_version" not in third
+    assert len(model_tasks.calibration_inputs) == 3
+    assert len(model_tasks.assessment_inputs) == 3
+
+    # 并发窗口：旧版本的重复校准任务晚到，只能被忽略，不得再推进版本或重复结算。
+    stale = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert stale == {"project_id": project_id, "ignored": True}
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert project.method_version == calibrated_version + 2
+        assert project.status == "needs_attention"
+        assert project.error_message == "本轮小样仍有系统性遗漏（自动校准已用 3/3 轮）"
+        assert project.method_calibration_rounds == 3
+
+    # 人工修复是死锁态出口：保留 auto_advance、重置轮数预算，并从最新小样重建基线。
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        samples = list(project.method_samples)
+        samples[0] = {
+            **samples[0],
+            "review": {
+                "decision": "revise",
+                "summary": "仍需补回条件",
+                "issues": [
+                    {
+                        "problem": "仍需补回条件",
+                        "affected_part": "判断链",
+                        "source_lines": ["L3"],
+                        "revision_direction": "按原文调整",
+                    }
+                ],
+            },
+        }
+        project.method_samples = samples
+        await db.commit()
+        repaired_version = await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+
+    assert repaired_version == calibrated_version + 3
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert project.status == "running"
+        assert project.auto_advance is True
+        assert project.method_calibration_rounds == 0
+        assert project.method_calibration_completed_at is None
+        assert [sample["material_alias"] for sample in project.method_calibration_baseline] == ["M001", "M002"]
+
+    # 预算重置后下一轮评估放行：项目自动交接进入逐份学习。
+    result = await service.run_method_calibration(project_id, repaired_version, model_tasks=model_tasks)
+    assert result["status"] == "running"
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
+    assert all(material.status == "pending" for material in materials)
+
+
+@pytest.mark.asyncio
+async def test_manual_mode_sample_failure_stops_without_next_round(expert_env) -> None:
+    """手动模式小样复跑仍失败时保持单次停机：不推进版本、不消耗轮数预算。"""
+
+    model_tasks = PersistentSampleFailureTasks()
+    project_id, _, calibrated_version = await _confirm_with_calibration(
+        expert_env,
+        model_tasks,
+        auto_advance=False,
+    )
+
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+
+    assert result["status"] == "needs_attention"
+    assert len(model_tasks.calibration_inputs) == 1
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None
+    assert project.method_version == calibrated_version
+    assert project.status == "needs_attention"
+    assert project.method_calibration_rounds == 0
+    assert project.auto_advance is False
+    assert project.error_message and "已用" not in project.error_message
+    # 小样复跑失败的停机点早于残余评估：基线保留原始 V1 证据。
+    assert project.method_calibration_baseline
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_resolved_samples_including_no_value_hand_off_to_learning(expert_env) -> None:
+    """自动模式复跑小样启用终裁：no_value 结论通过就绪校验并随整批材料自动交接。"""
+
+    model_tasks = AutoResolvedCalibrationTasks()
+    project_id, _, calibrated_version = await _confirm_with_calibration(
+        expert_env,
+        model_tasks,
+        auto_advance=True,
+    )
+
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+
+    assert result["status"] == "running"
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        materials = await repo.list_project_materials(project_id)
+    assert project is not None
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
+    statuses = {sample["status"] for sample in project.method_samples}
+    assert statuses == {"passed", "no_value"}
+    no_value_sample = next(sample for sample in project.method_samples if sample["status"] == "no_value")
+    assert no_value_sample["final_review"]["decision"] == "no_value"
+    assert all(material.status == "pending" for material in materials)
+
+
+def test_validate_method_samples_ready_accepts_auto_resolved_no_value_only() -> None:
+    """no_value 只有携带终裁 Review 结论时才算可交接；需要处理的小样仍然被拒。"""
+
+    service._validate_method_samples_ready(
+        [
+            {"status": "passed", "final_review": {"decision": "pass"}},
+            {"status": "review_revise", "final_review": {"decision": "revise"}},
+            {"status": "no_value", "final_review": {"decision": "no_value"}},
+        ]
+    )
+    with pytest.raises(ValueError, match="无法自动修复"):
+        service._validate_method_samples_ready(
+            [{"status": "needs_attention", "final_review": {"decision": "no_value"}}]
+        )
+    with pytest.raises(ValueError, match="无法自动修复"):
+        service._validate_method_samples_ready([{"status": "no_value", "final_review": None}])
+
+
+@pytest.mark.asyncio
+async def test_repair_only_blocks_in_flight_calibration(expert_env) -> None:
+    """repair 只拦「基线已建且本轮未完成」的在途校准；其余 needs_attention 死锁态都放行。"""
+
+    project_id, material_ids = await _create_project(expert_env, count=2)
+    await _make_materials_ready(expert_env, project_id)
+    model_tasks = InitialAttentionCalibrationTasks()
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        baseline = service._build_method_calibration_samples(list(project.method_samples), material_ids)
+        project.status = "needs_attention"
+        project.method_calibration_baseline = baseline
+        project.method_calibration_completed_at = None
+        await db.commit()
+        with pytest.raises(ValueError, match="请恢复当前校准任务"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+
+
 @pytest.mark.asyncio
 async def test_reorientation_can_replace_auto_advance_selection(expert_env) -> None:
     """重新定向生成的新 V1 可以重新选择自动推进模式。"""
@@ -1897,7 +2215,18 @@ async def test_reorientation_can_replace_auto_advance_selection(expert_env) -> N
             created_by="user-1",
             auto_advance=True,
         )
-    await service.run_method_calibration(project_id, calibrated_version, model_tasks=calibration_tasks)
+    # 与 worker 相同的驱动方式：评估不通过就带着新版本号续跑，直到预算耗尽停机。
+    running_version = calibrated_version
+    while True:
+        calibration_result = await service.run_method_calibration(
+            project_id, running_version, model_tasks=calibration_tasks
+        )
+        next_version = calibration_result.get("next_method_version")
+        if isinstance(next_version, int) and next_version > running_version:
+            running_version = next_version
+            continue
+        break
+    assert calibration_result["status"] == "needs_attention"
 
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)

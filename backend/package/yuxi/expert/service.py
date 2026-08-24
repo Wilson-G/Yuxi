@@ -35,6 +35,8 @@ MAX_MATERIAL_REVISIONS = 2
 MIN_REPRESENTATIVE_MATERIALS = 4
 MAX_REPRESENTATIVE_MATERIALS = 20
 MAX_METHOD_SAMPLES = 5
+# 每个方法确认代际允许的自动校准执行上限：首次校准加两次续跑；耗尽后停在需要处理，防止无人值守无限烧钱。
+MAX_METHOD_CALIBRATION_ROUNDS = 3
 ORIENTATION_STAGE = "orientation"
 MATERIAL_LEARNING_STAGE = "material_learning"
 
@@ -460,6 +462,7 @@ async def start_project_orientation(
     project.method_confirmed_at = None
     project.method_calibration_completed_at = None
     project.method_calibration_baseline = []
+    project.method_calibration_rounds = 0
     project.representative_material_ids = selected_ids
     project.orientation_report = None
     project.compilation_brief = None
@@ -493,6 +496,7 @@ async def run_project_orientation(
     method_version: int,
     *,
     model_tasks: ExpertModelTasks | None = None,
+    auto_advance: bool = False,
 ) -> dict[str, Any]:
     """生成当前方法版本的定向、专属 Prompt、笔记小样与 Review。"""
 
@@ -637,6 +641,7 @@ async def run_project_orientation(
             material=material,
             alias=sample["alias"],
             text=sample["text"],
+            auto_advance=auto_advance,
         )
         async with pg_manager.get_async_session_context() as db:
             project = await ExpertRepository(db).lock_project(project_id)
@@ -735,6 +740,7 @@ async def confirm_project_method(
     project.method_confirmed_at = utc_now_naive()
     project.method_calibration_completed_at = None
     project.method_calibration_baseline = _build_method_calibration_samples(project.method_samples, sample_ids)
+    project.method_calibration_rounds = 0
     project.status = "running"
     project.message = "学习方向已确认，总编模型正在依据小样 Review 收敛方法并重新试跑"
     project.error_message = None
@@ -749,7 +755,7 @@ async def repair_project_method(
     project_id: str,
     created_by: str,
 ) -> int:
-    """依据初始小样 Review 创建一个校准版本，不重新执行项目定向。"""
+    """依据既有小样 Review 创建一个校准版本，不重新执行项目定向；是校准死锁态的人工出口。"""
 
     repo = ExpertRepository(db)
     project = await repo.lock_project(project_id)
@@ -757,9 +763,8 @@ async def repair_project_method(
         raise ValueError("专家项目不存在")
     if project.stage != ORIENTATION_STAGE or project.status != "needs_attention":
         raise ValueError("当前项目没有等待修复的学习方法")
-    if project.method_calibration_completed_at is not None:
-        raise ValueError("当前项目方法已经完成一次校准，请重新定向后再试")
-    if project.method_calibration_baseline:
+    if project.method_calibration_baseline and project.method_calibration_completed_at is None:
+        # 基线已建、本轮尚未完成：这是在途校准，应走恢复而不是另起一轮。
         raise ValueError("当前项目方法校准已经开始，请恢复当前校准任务")
     if not str(project.orientation_report or "").strip():
         raise ValueError("项目方法缺少定向报告")
@@ -781,7 +786,7 @@ async def repair_project_method(
     project.method_confirmed_at = None
     project.method_calibration_completed_at = None
     project.method_calibration_baseline = baseline
-    project.auto_advance = False
+    project.method_calibration_rounds = 0
     project.status = "running"
     project.message = "正在依据小样 Review 调整学习方法并重新试跑"
     project.error_message = None
@@ -821,7 +826,7 @@ async def run_method_calibration(
     *,
     model_tasks: ExpertModelTasks | None = None,
 ) -> dict[str, Any]:
-    """由总编收敛方法并复跑小样，等待用户确认校准后的方法版本。"""
+    """由总编收敛方法并复跑小样；自动模式下失败轮有界续跑，等待确认或交接。"""
 
     tasks = model_tasks or ExpertModelTasks()
     async with pg_manager.get_async_session_context() as db:
@@ -855,6 +860,7 @@ async def run_method_calibration(
             "learning_plan": project.learning_plan or "",
             "compilation_brief": project.compilation_brief or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
+            "auto_advance": bool(project.auto_advance),
         }
 
     if needs_method_calibration:
@@ -891,8 +897,26 @@ async def run_method_calibration(
             await db.flush()
 
     if not v2_samples_ready:
-        result = await run_project_orientation(project_id, method_version, model_tasks=tasks)
+        result = await run_project_orientation(
+            project_id,
+            method_version,
+            model_tasks=tasks,
+            auto_advance=snapshot["auto_advance"],
+        )
         if result.get("status") != "awaiting_confirmation":
+            # 小样复跑仍失败：自动模式开启下一轮或宣告预算耗尽；手动模式保持原有停机结果。
+            next_method_version = await _settle_failed_auto_calibration(
+                project_id,
+                method_version,
+                failure_reason=None,
+            )
+            if next_method_version is not None:
+                return {
+                    "project_id": project_id,
+                    "method_version": method_version,
+                    "next_method_version": next_method_version,
+                    "status": "running",
+                }
             return result
 
     async with pg_manager.get_async_session_context() as db:
@@ -928,6 +952,24 @@ async def run_method_calibration(
             return {"project_id": project_id, "ignored": True}
         project.method_calibration_baseline = []
         if assessment.decision == "needs_attention":
+            if project.auto_advance:
+                next_method_version = _advance_auto_calibration_round(
+                    project,
+                    failure_reason=assessment.reason,
+                )
+                await db.commit()
+                if next_method_version is not None:
+                    return {
+                        "project_id": project_id,
+                        "method_version": method_version,
+                        "next_method_version": next_method_version,
+                        "status": "running",
+                    }
+                return {
+                    "project_id": project_id,
+                    "method_version": method_version,
+                    "status": "needs_attention",
+                }
             project.method_confirmed_at = None
             project.status = "needs_attention"
             project.message = "校准后仍存在会影响批量学习的方法问题"
@@ -945,6 +987,68 @@ async def run_method_calibration(
         project.updated_at = utc_now_naive()
         await db.commit()
     return {"project_id": project_id, "method_version": method_version, "status": "awaiting_confirmation"}
+
+
+async def _settle_failed_auto_calibration(
+    project_id: str,
+    method_version: int,
+    *,
+    failure_reason: str | None,
+) -> int | None:
+    """在锁内结算一次失败的自动校准轮：开启下一轮返回新版本号，预算耗尽落需要处理。
+
+    只处理仍处于本轮失败现场（同版本、定向阶段、需要处理）的自动推进项目；
+    项目已被人工移动、暂停或版本已推进时返回 None，不触碰任何事实。
+    """
+
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).lock_project(project_id)
+        if (
+            project is None
+            or project.stage != ORIENTATION_STAGE
+            or project.status != "needs_attention"
+            or project.method_version != method_version
+            or not bool(project.auto_advance)
+        ):
+            return None
+        next_method_version = _advance_auto_calibration_round(
+            project,
+            failure_reason=failure_reason or project.error_message,
+        )
+        await db.commit()
+        return next_method_version
+
+
+def _advance_auto_calibration_round(project: Any, *, failure_reason: str) -> int | None:
+    """自动推进项目专用：单轮失败后有界续跑。返回下一轮方法版本；预算耗尽返回 None 并停机。
+
+    轮数语义：method_calibration_rounds 记录本确认代际内已失败的校准执行次数，
+    第 N 次失败时 used=N；used 未达上限则把本轮小样连同 Review 作为下一轮基线继续收敛。
+    """
+
+    used_rounds = int(project.method_calibration_rounds or 0) + 1
+    round_report = f"已用 {used_rounds}/{MAX_METHOD_CALIBRATION_ROUNDS} 轮"
+    project.method_calibration_rounds = used_rounds
+    if used_rounds >= MAX_METHOD_CALIBRATION_ROUNDS:
+        project.status = "needs_attention"
+        project.message = "自动方法校准仍未收敛，需要人工修复或重新定向"
+        project.error_message = f"{str(failure_reason).strip()}（自动校准{round_report}）"
+        project.updated_at = utc_now_naive()
+        return None
+    project.method_version += 1
+    project.method_calibration_completed_at = None
+    project.method_calibration_baseline = _build_method_calibration_samples(
+        list(project.method_samples or []),
+        list(project.method_sample_material_ids or []),
+    )
+    project.status = "running"
+    project.message = (
+        f"自动校准第 {used_rounds} 轮未收敛（{round_report}），"
+        f"总编将依据最新小样 Review 继续第 {used_rounds + 1} 轮"
+    )
+    project.error_message = None
+    project.updated_at = utc_now_naive()
+    return project.method_version
 
 
 async def run_material_learning_stage(
@@ -1492,12 +1596,12 @@ def _method_calibration_issues(samples: list[Any]) -> list[dict[str, Any]]:
 
 
 def _validate_method_samples_ready(samples: list[Any]) -> None:
-    """确认小样可交接；可修 Review 问题交给后续材料 Repair。"""
+    """确认小样可交接；可修 Review 问题交给后续材料 Repair，no_value 须是自动终裁结论。"""
 
     if not samples or any(
         not isinstance(sample, dict)
-        or sample.get("status") not in {"passed", "review_revise"}
-        or (sample.get("final_review") or {}).get("decision") not in {"pass", "revise"}
+        or sample.get("status") not in {"passed", "review_revise", "no_value"}
+        or (sample.get("final_review") or {}).get("decision") not in {"pass", "revise", "no_value"}
         for sample in samples
     ):
         raise ValueError("项目方法小样存在无法自动修复的问题")

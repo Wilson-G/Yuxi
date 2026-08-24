@@ -313,6 +313,12 @@ class ExpertProject(Base):
     method_confirmed_at = Column(DateTime, nullable=True, comment="当前方法版本确认时间")
     method_calibration_completed_at = Column(DateTime, nullable=True, comment="当前方法校准完成时间")
     method_calibration_baseline = Column(JSON_VALUE, nullable=False, default=list, comment="校准期间使用的 V1 小样基线")
+    method_calibration_rounds = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        comment="当前确认代际内已失败的自动校准轮数",
+    )
     representative_material_ids = Column(
         JSON_VALUE,
         nullable=False,
@@ -387,6 +393,7 @@ class ExpertProject(Base):
             "method_confirmed_at": format_utc_datetime(self.method_confirmed_at),
             "method_calibration_completed_at": format_utc_datetime(self.method_calibration_completed_at),
             "method_calibration_baseline": self.method_calibration_baseline or [],
+            "method_calibration_rounds": int(self.method_calibration_rounds or 0),
             "representative_material_ids": self.representative_material_ids or [],
             "orientation_report": self.orientation_report,
             "compilation_brief": self.compilation_brief,

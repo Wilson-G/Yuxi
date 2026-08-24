@@ -84,7 +84,7 @@ async def enqueue_project_orientation(project_id: str, method_version: int) -> N
 
 
 async def enqueue_method_calibration(project_id: str, method_version: int) -> None:
-    """提交唯一一次方法校准及同批小样复跑任务。"""
+    """提交当前版本的方法校准及同批小样复跑任务。"""
 
     pool = await get_arq_pool()
     await pool.enqueue_job(
@@ -294,7 +294,12 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
     async with _project_job_lock(project_id):
         try:
             result = await run_method_calibration(project_id, method_version)
-            await enqueue_pending_material_learning(project_id, method_version)
+            next_method_version = result.get("next_method_version")
+            if isinstance(next_method_version, int) and next_method_version > method_version:
+                # 自动模式开启了下一轮校准：必须用新版本号投递，否则同一 job_id 会被队列去重拒投。
+                await enqueue_method_calibration(project_id, next_method_version)
+            else:
+                await enqueue_pending_material_learning(project_id, method_version)
             return result
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):

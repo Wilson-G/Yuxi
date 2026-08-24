@@ -868,7 +868,7 @@ async def test_method_calibration_only_receives_current_method_and_sample_notes_
     assert result.learning_plan_markdown == "V2 学习方案"
     prompt = _prompt(model.calls[0])
     assert "V1 学习方案" in prompt
-    assert "当前项目方法已经完成第一轮真实小样" in prompt
+    assert "当前项目方法刚完成一轮真实小样" in prompt
     assert "用户已经认可第一版学习方向" not in prompt
     assert "V1 编译底稿" in prompt
     assert "小样笔记" in prompt

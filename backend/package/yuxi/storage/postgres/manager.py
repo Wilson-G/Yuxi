@@ -170,6 +170,10 @@ class PostgresManager(metaclass=SingletonMeta):
                 "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
                 "method_calibration_baseline JSONB NOT NULL DEFAULT '[]'::jsonb"
             ),
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "method_calibration_rounds INTEGER NOT NULL DEFAULT 0"
+            ),
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS embedding_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS llm_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases DROP COLUMN IF EXISTS embed_info",

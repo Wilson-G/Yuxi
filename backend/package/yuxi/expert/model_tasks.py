@@ -183,7 +183,7 @@ class ExpertModelTasks:
         """只依据既有方法与小样 Review 收敛下一版方法。"""
 
         prompt = f"""
-你是“{project_name}”专家作品的总编。当前项目方法已经完成第一轮真实小样，现在依据小样 Review 执行唯一一次方法校准。
+你是“{project_name}”专家作品的总编。当前项目方法刚完成一轮真实小样，现在依据小样 Review 执行一次方法校准。
 
 你只能阅读下方当前学习方案、编译底稿、完整 Prompt 包，
 以及同一批小样的最终笔记和独立 Review。
@@ -229,21 +229,21 @@ class ExpertModelTasks:
         """仅比较两轮小样笔记与 Review，判断方法级残余是否可交给逐篇 Repair。"""
 
         prompt = f"""
-你是专家项目的方法级 Reviewer。只比较下方同一批小样在 V1 与 V2 的笔记和独立 Review。
+你是专家项目的方法级 Reviewer。只比较下方同一批小样在上一轮与本轮的笔记和独立 Review。
 不要读取原材料、学习方案、Prompt、材料目录、项目定向报告、其他项目产物或外部知识。
 
-你要判断 V1 暴露的方法级问题在 V2 后是否已经降低到不会阻碍批量学习的程度。
+你要判断上一轮暴露的方法级问题在本轮之后是否已经降低到不会阻碍批量学习的程度。
 局部仍需逐篇 Repair 的问题可以接受，只要其影响局限于单篇材料，
 且现有 Author/Reviewer/Repair 能依据具体意见关闭；这类情况返回 `acceptable_residual`。
 
-若残余问题仍会系统性扭曲后续材料的判断、证据、条件或边界，或 V2 小样无法形成可用笔记，
+若残余问题仍会系统性扭曲后续材料的判断、证据、条件或边界，或本轮小样无法形成可用笔记，
 则返回 `needs_attention`。不要按问题数量、字数或固定比例机械判断；根据问题对方法级行为的实际影响作出结论。
 不要判断材料是否来自同一位老师或说话人。
 
-V1 小样基线：
+上一轮小样基线：
 {json.dumps(v1_samples, ensure_ascii=False, indent=2)}
 
-V2 小样结果：
+本轮小样结果：
 {json.dumps(v2_samples, ensure_ascii=False, indent=2)}
 """.strip()
         return await self._invoke_structured(

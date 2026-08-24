@@ -259,6 +259,41 @@ async def test_explicit_resume_enqueues_current_stage(worker_env, monkeypatch: p
 
 
 @pytest.mark.asyncio
+async def test_method_calibration_next_round_reenqueues_with_incremented_version(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自动校准开启下一轮时必须用新版本号重新投递；同版本号会被队列按 job_id 去重拒投。"""
+
+    async def open_next_round(project_id: str, method_version: int) -> dict:
+        return {
+            "project_id": project_id,
+            "method_version": method_version,
+            "next_method_version": method_version + 1,
+            "status": "running",
+        }
+
+    calibration_enqueued: list[tuple[str, int]] = []
+    material_learning_enqueued: list[tuple[str, int]] = []
+
+    async def enqueue_calibration(project_id: str, version: int) -> None:
+        calibration_enqueued.append((project_id, version))
+
+    async def enqueue_pending(project_id: str, version: int) -> None:
+        material_learning_enqueued.append((project_id, version))
+
+    monkeypatch.setattr(worker, "run_method_calibration", open_next_round)
+    monkeypatch.setattr(worker, "enqueue_method_calibration", enqueue_calibration)
+    monkeypatch.setattr(worker, "enqueue_pending_material_learning", enqueue_pending)
+
+    result = await worker.process_expert_method_calibration({"job_try": 1}, "auto-round-project", 2)
+
+    assert result["next_method_version"] == 3
+    assert calibration_enqueued == [("auto-round-project", 3)]
+    assert material_learning_enqueued == []
+
+
+@pytest.mark.asyncio
 async def test_method_calibration_waits_for_confirmation_without_queueing_materials(
     worker_env,
     monkeypatch: pytest.MonkeyPatch,
