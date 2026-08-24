@@ -689,6 +689,8 @@ async def test_orientation_retry_backs_off_exponentially_then_marks_attention(
         status="running",
         method_version=1,
     )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
 
     async def fail_orientation(_project_id: str, _method_version: int) -> dict:
         raise ConnectionError("网络抖动连接中断")
@@ -709,6 +711,9 @@ async def test_orientation_retry_backs_off_exponentially_then_marks_attention(
         project = await ExpertRepository(db).get_project(project_id)
     assert project is not None and project.status == "needs_attention"
     assert project.error_message == "网络抖动连接中断"
+    # 传输类失败烧尽预算后安排错峰自动重投。
+    assert len(pool.jobs) == 1
+    assert pool.jobs[0][0][0] == "process_expert_project_orientation_reroll"
 
 
 @pytest.mark.asyncio
@@ -898,3 +903,220 @@ async def test_stale_handout_job_is_ignored_without_touching_finished_project(
     assert result == {"project_id": project_id, "ignored": True}
     assert project is not None and project.status == "ready"
     assert project.error_message is None
+
+
+class RerollCountingPool:
+    """模拟 arq 连接：计数器、TTL 与投递记录。"""
+
+    def __init__(self) -> None:
+        self.counters: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
+        self.jobs: list[tuple[tuple, dict]] = []
+
+    async def incr(self, key: str) -> int:
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
+
+    async def expire(self, key: str, ttl: int) -> None:
+        self.ttls[key] = ttl
+
+    async def enqueue_job(self, *args, **kwargs) -> None:
+        self.jobs.append((args, kwargs))
+
+
+def _install_reroll_pool(monkeypatch: pytest.MonkeyPatch, pool: RerollCountingPool) -> None:
+    async def fake_get_arq_pool():
+        return pool
+
+    monkeypatch.setattr(worker, "get_arq_pool", fake_get_arq_pool)
+
+
+async def _set_representatives(factory, project_id: str, reps: list[str]) -> None:
+    async with factory() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        project.representative_material_ids = reps
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_orientation_auto_reroll_schedules_one_deferred_round(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "reroll-a",
+        stage="orientation",
+        status="needs_attention",
+        method_version=9,
+    )
+    await _set_representatives(worker_env, "reroll-a", ["m1", "m2", "m3", "m4"])
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    await worker._schedule_orientation_auto_reroll("reroll-a")
+
+    assert len(pool.jobs) == 1
+    args, kwargs = pool.jobs[0]
+    assert args[:3] == ("process_expert_project_orientation_reroll", "reroll-a", 9)
+    assert kwargs["_job_id"] == "expert:orientation:reroll-a:reroll:1"
+    assert kwargs["_defer_by"].total_seconds() == worker.ORIENTATION_AUTO_REROLL_DEFER_SECONDS
+    counter_key = "expert:orientation:auto-reroll:reroll-a"
+    assert pool.counters[counter_key] == 1
+    assert pool.ttls[counter_key] == worker.ORIENTATION_AUTO_REROLL_COUNTER_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_orientation_auto_reroll_stops_at_daily_limit(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "reroll-limit",
+        stage="orientation",
+        status="needs_attention",
+        method_version=2,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    for _ in range(worker.ORIENTATION_AUTO_REROLL_LIMIT + 1):
+        await worker._schedule_orientation_auto_reroll("reroll-limit")
+
+    assert len(pool.jobs) == worker.ORIENTATION_AUTO_REROLL_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_orientation_reroll_handler_rescues_project_with_stored_samples(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "reroll-run",
+        stage="orientation",
+        status="needs_attention",
+        method_version=9,
+    )
+    await _set_representatives(worker_env, "reroll-run", ["m1", "m2", "m3", "m4"])
+    rescued: dict[str, object] = {}
+    enqueued: list[tuple[str, int]] = []
+
+    async def fake_start(db, *, project_id, created_by, representative_material_ids):
+        rescued.update(
+            id=project_id,
+            by=created_by,
+            reps=list(representative_material_ids),
+        )
+        return 10
+
+    async def fake_enqueue(project_id: str, version: int) -> None:
+        enqueued.append((project_id, version))
+
+    monkeypatch.setattr(worker, "start_project_orientation", fake_start)
+    monkeypatch.setattr(worker, "enqueue_project_orientation", fake_enqueue)
+
+    result = await worker.process_expert_project_orientation_reroll({}, "reroll-run", 9, 1)
+
+    assert result == {"project_id": "reroll-run", "method_version": 10, "reroll": 1}
+    assert rescued == {"id": "reroll-run", "by": "user-1", "reps": ["m1", "m2", "m3", "m4"]}
+    assert enqueued == [("reroll-run", 10)]
+
+
+@pytest.mark.asyncio
+async def test_orientation_reroll_handler_ignores_projects_moved_on(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """人工已救活、已推进版本或已离开 attention 的项目不再被旧的重投任务触碰。"""
+
+    await _add_project(
+        worker_env,
+        "reroll-moved",
+        stage="orientation",
+        status="needs_attention",
+        method_version=9,
+    )
+    await _set_representatives(worker_env, "reroll-moved", ["m1", "m2", "m3", "m4"])
+
+    async def forbidden_start(*_args, **_kwargs):
+        raise AssertionError("项目状态已变化时不应再次创建方法版本")
+
+    monkeypatch.setattr(worker, "start_project_orientation", forbidden_start)
+
+    for mutate_status, mutate_version in [("running", 9), ("needs_attention", 10), ("ready", 9)]:
+        async with worker_env() as db:
+            repo = ExpertRepository(db)
+            project = await repo.get_project("reroll-moved")
+            assert project is not None
+            project.status = mutate_status
+            project.method_version = mutate_version
+            await db.commit()
+
+        result = await worker.process_expert_project_orientation_reroll({}, "reroll-moved", 9, 1)
+        assert result == {"project_id": "reroll-moved", "reroll": 1, "ignored": True}
+
+
+@pytest.mark.asyncio
+async def test_orientation_final_transport_failure_marks_attention_and_schedules_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "orient-transport"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="running",
+        method_version=8,
+    )
+    await _set_representatives(worker_env, project_id, ["m1", "m2", "m3", "m4"])
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    async def failing_run(_project_id: str, _method_version: int) -> dict:
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    monkeypatch.setattr(worker, "run_project_orientation", failing_run)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await worker.process_expert_project_orientation({"job_try": 5}, project_id, 8)
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert len(pool.jobs) == 1
+    assert pool.jobs[0][0][0] == "process_expert_project_orientation_reroll"
+
+
+@pytest.mark.asyncio
+async def test_orientation_business_failure_does_not_auto_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "orient-business"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="running",
+        method_version=8,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    async def failing_run(_project_id: str, _method_version: int) -> dict:
+        raise ValueError("项目方法没有从代表材料中选择 4～5 份试跑小样")
+
+    monkeypatch.setattr(worker, "run_project_orientation", failing_run)
+
+    with pytest.raises(ValueError):
+        await worker.process_expert_project_orientation({"job_try": 5}, project_id, 8)
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert pool.jobs == []

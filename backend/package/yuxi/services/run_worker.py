@@ -19,6 +19,7 @@ from yuxi.expert.worker import (
     process_expert_method_calibration,
     process_expert_organization,
     process_expert_project_orientation,
+    process_expert_project_orientation_reroll,
     process_expert_project_preparation,
     recover_expert_project_jobs,
 )
@@ -778,6 +779,10 @@ class WorkerSettings:
         ),
         func(
             process_expert_project_orientation,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_project_orientation_reroll,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
         ),
         func(

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import httpx
 import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, ValidationError
 
 from yuxi.agents.models import load_chat_model
@@ -43,6 +46,10 @@ ContractT = TypeVar("ContractT", bound=BaseModel)
 # 单次模型调用的兜底超时（秒）：流式下按相邻分片间隔计，挂死的连接最多等这么久。
 EXPERT_MODEL_TIMEOUT_SECONDS = 900
 
+# 传输层瞬时失败（连接中断、超时、被上游包装成空响应的网络错误）在调用层短退避重放；
+# 不占任务级 arq 重试预算，避免一次抖动就烧掉整趟长生成。
+EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS: tuple[float, ...] = (2.0, 6.0)
+
 # 专家任务统一的结构化模型加载参数；流式接收让字节持续到达，
 # 长请求不会被中间网络设备按空闲掐断。
 MODEL_LOADER_KWARGS: dict[str, Any] = {
@@ -69,6 +76,10 @@ class ExpertContextLimitError(ValueError):
 
 class ExpertJsonlOutputError(ValueError):
     """模型未按专家任务的 JSONL 输出合同返回结果。"""
+
+
+class ExpertTransportError(Exception):
+    """模型调用在传输层失败或被上游包装成空响应；按瞬时故障自动重放，不是业务失败。"""
 
 
 class ExpertModelTasks:
@@ -828,7 +839,12 @@ V2 小样结果：
                         )
                     )
                 )
-            response = await model.ainvoke(attempt_messages, **invoke_kwargs)
+            response = await self._ainvoke_replaying_transport(
+                model_spec=model_spec,
+                model=model,
+                messages=attempt_messages,
+                invoke_kwargs=invoke_kwargs,
+            )
             if prompt_cache_key:
                 _log_prompt_cache_usage(model_spec, prompt_cache_key, response)
             try:
@@ -881,6 +897,41 @@ V2 小样结果：
             messages.append(SystemMessage(content=system_content))
         messages.append(HumanMessage(content=prompt))
         return messages, invoke_kwargs, prompt_cache_key
+
+    async def _ainvoke_replaying_transport(
+        self,
+        *,
+        model_spec: str,
+        model: Any,
+        messages: list[Any],
+        invoke_kwargs: dict[str, Any],
+    ) -> Any:
+        """传输层瞬时失败与空响应在本层短退避重放，不占任务级重试预算。
+
+        上游会把部分网络故障包装成 finish_reason=stop 的空响应；这类失败若落到
+        JSONL 解析会被当成确定性业务失败，烧掉全部任务级重试预算。
+        """
+
+        last_failure: Exception | None = None
+        for replay in range(len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS) + 1):
+            if replay:
+                delay = EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS[replay - 1]
+                logger.warning(
+                    f"Expert 模型调用传输失败，{delay:g}s 后第 {replay}/"
+                    f"{len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS)} 次重放 "
+                    f"model={model_spec}: {last_failure!r}"
+                )
+                await asyncio.sleep(delay)
+            try:
+                response = await model.ainvoke(messages, **invoke_kwargs)
+            except (APIConnectionError, APITimeoutError, httpx.TransportError) as exc:
+                last_failure = exc
+                continue
+            if isinstance(response.content, str) and not response.content.strip():
+                last_failure = ExpertTransportError("模型返回空响应（上游可能把网络故障包装成正常结束）")
+                continue
+            return response
+        raise ExpertTransportError(f"模型调用连续传输失败 model={model_spec}: {last_failure!r}") from last_failure
 
 
 def _supports_expert_prompt_cache(model_info: Any) -> bool:
@@ -982,4 +1033,10 @@ def _format_samples(samples: list[dict[str, str]]) -> str:
     return "\n\n".join(sections)
 
 
-__all__ = ["ExpertContextLimitError", "ExpertJsonlOutputError", "ExpertModelTasks", "number_material_lines"]
+__all__ = [
+    "ExpertContextLimitError",
+    "ExpertJsonlOutputError",
+    "ExpertModelTasks",
+    "ExpertTransportError",
+    "number_material_lines",
+]

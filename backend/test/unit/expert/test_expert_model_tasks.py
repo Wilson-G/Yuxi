@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
@@ -933,3 +934,112 @@ async def test_method_calibration_assessment_reads_only_v1_and_v2_samples() -> N
     assert "V1 学习方案" not in prompt
     assert "不要按问题数量、字数或固定比例机械判断" in prompt
     assert "不要判断材料是否来自同一位老师或说话人" in prompt
+
+
+class TransportScriptedModel:
+    """按脚本抛出传输异常或返回指定内容，记录调用次数与每次消息。"""
+
+    def __init__(self, script: Sequence[Exception | str]):
+        self.script = list(script)
+        self.calls: list[list[Any]] = []
+
+    async def ainvoke(self, messages: list[BaseMessage], **kwargs) -> AIMessage:
+        self.calls.append(list(messages))
+        step = self.script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return AIMessage(content=step)
+
+
+def _review_note() -> MaterialNoteResult:
+    return MaterialNoteResult(
+        decision="learned",
+        note_markdown="判断链",
+        routing_labels=["见信号，要判条件"],
+        evidence=[
+            {
+                "material_alias": "M001",
+                "start_line": 1,
+                "end_line": 1,
+                "supports": "当前判断",
+            }
+        ],
+    )
+
+
+async def _review_with_transport_script(
+    script: Sequence[Exception | str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TransportScriptedModel, MaterialReviewResult]:
+    delays: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(model_tasks.asyncio, "sleep", fake_sleep)
+    model = TransportScriptedModel(script)
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    result = await tasks.review_material_note(
+        model_spec="provider:model",
+        learning_plan="学习方案",
+        stage_prompt="Review Prompt",
+        material_alias="M001",
+        title="材料",
+        source="来源",
+        text="原文",
+        note=_review_note(),
+    )
+    assert delays == [2.0, 6.0][: len(delays)]
+    return model, result
+
+
+@pytest.mark.asyncio
+async def test_transport_failures_replay_in_call_layer_before_task_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """断流与空响应在调用层短退避重放；重放期间成功则任务照常完成，不烧任务级预算。"""
+
+    review = {"decision": "pass", "summary": "笔记忠实保留了当前材料的判断链", "issues": []}
+    model, result = await _review_with_transport_script(
+        [
+            httpx.RemoteProtocolError("peer closed connection without sending complete message body"),
+            "   ",
+            json.dumps(review, ensure_ascii=False),
+        ],
+        monkeypatch,
+    )
+
+    assert result.decision == "pass"
+    assert len(model.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_exhausted_transport_replays_raise_transport_error_not_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空响应是传输故障不是业务失败；不得伪装成 JSONL 合同错误让任务级预算语义失效。"""
+
+    with pytest.raises(model_tasks.ExpertTransportError) as exc_info:
+        await _review_with_transport_script(["", " ", ""], monkeypatch)
+
+    assert not isinstance(exc_info.value, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_transport_replay_composes_with_jsonl_quality_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重放恢复后若输出仍不符合合同，原有的单任务纠正重试继续生效。"""
+
+    review = {"decision": "pass", "summary": "笔记忠实保留了当前材料的判断链", "issues": []}
+    raw = json.dumps(review, ensure_ascii=False)
+    model, result = await _review_with_transport_script(
+        [httpx.RemoteProtocolError("server disconnected without sending a response"), raw + " 多余说明", raw],
+        monkeypatch,
+    )
+
+    assert result.decision == "pass"
+    assert len(model.calls) == 3
+    retry_messages = model.calls[2]
+    assert isinstance(retry_messages[-1], HumanMessage)
+    assert "JSONL 合同" in retry_messages[-1].content

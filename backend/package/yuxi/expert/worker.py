@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import httpx
 from anthropic import APIConnectionError as AnthropicAPIConnectionError
@@ -16,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ProtocolError, ReadTimeoutError
 
 from yuxi.expert.compilation_service import run_handout_compilation
+from yuxi.expert.model_tasks import ExpertTransportError
 from yuxi.expert.organization_service import initialize_organization_stage, run_organization_stage
 from yuxi.expert.service import (
     mark_material_learning_attention,
@@ -24,15 +26,23 @@ from yuxi.expert.service import (
     run_material_learning_stage,
     run_method_calibration,
     run_project_orientation,
+    start_project_orientation,
 )
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.services.run_queue_service import get_arq_pool
 from yuxi.storage.minio.client import StorageError
 from yuxi.storage.postgres.manager import pg_manager
+from yuxi.utils.logging_config import logger
 
 # 首次执行之外最多重试 4 次；与 run_worker.WorkerSettings.max_tries 保持一致。
 SYSTEM_TASK_MAX_RETRIES = 4
 SYSTEM_TASK_MAX_TRIES = 1 + SYSTEM_TASK_MAX_RETRIES
+
+# 传输类故障烧尽任务级预算后，错峰自动重投定向的上限与间隔：
+# 免费上游分时段不可用，等窗口比立刻放弃更符合无人值守承诺；有界防循环。
+ORIENTATION_AUTO_REROLL_LIMIT = 6
+ORIENTATION_AUTO_REROLL_DEFER_SECONDS = 45 * 60
+ORIENTATION_AUTO_REROLL_COUNTER_TTL_SECONDS = 24 * 60 * 60
 _project_job_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -189,6 +199,9 @@ async def process_expert_project_preparation(ctx, project_id: str) -> dict:
             return await prepare_expert_project(project_id)
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):
+                logger.warning(
+                    f"expert 材料准备将重试 project={project_id} try={_job_try(ctx)}: {exc!r}"
+                )
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -202,9 +215,78 @@ async def process_expert_project_orientation(ctx, project_id: str, method_versio
             return await run_project_orientation(project_id, method_version)
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):
+                logger.warning(
+                    f"expert 项目定向将重试 project={project_id} try={_job_try(ctx)}: {exc!r}"
+                )
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
+            if _is_transient_material_error(exc):
+                await _schedule_orientation_auto_reroll(project_id)
             raise
+
+
+async def _schedule_orientation_auto_reroll(project_id: str) -> None:
+    """传输类故障烧尽任务预算后安排错峰自动重投；有界，超限留给人工。"""
+
+    pool = await get_arq_pool()
+    counter_key = f"expert:orientation:auto-reroll:{project_id}"
+    rounds = int(await pool.incr(counter_key))
+    await pool.expire(counter_key, ORIENTATION_AUTO_REROLL_COUNTER_TTL_SECONDS)
+    if rounds > ORIENTATION_AUTO_REROLL_LIMIT:
+        logger.warning(
+            f"expert 定向自动重投 24h 内已达 {ORIENTATION_AUTO_REROLL_LIMIT} 轮上限，"
+            f"等待人工处理 project={project_id}"
+        )
+        return
+    async with pg_manager.get_async_session_context() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        if project is None or project.stage != "orientation":
+            return
+        method_version = project.method_version
+    logger.warning(
+        f"expert 定向传输故障烧尽预算，{ORIENTATION_AUTO_REROLL_DEFER_SECONDS // 60} 分钟后自动重投 "
+        f"project={project_id} v{method_version} 第 {rounds}/{ORIENTATION_AUTO_REROLL_LIMIT} 轮"
+    )
+    await pool.enqueue_job(
+        "process_expert_project_orientation_reroll",
+        project_id,
+        method_version,
+        rounds,
+        _job_id=f"expert:orientation:{project_id}:reroll:{rounds}",
+        _defer_by=timedelta(seconds=ORIENTATION_AUTO_REROLL_DEFER_SECONDS),
+    )
+
+
+async def process_expert_project_orientation_reroll(
+    ctx,
+    project_id: str,
+    method_version: int,
+    round_index: int = 0,
+) -> dict:
+    """错峰重投：把因传输故障落 attention 的定向项目按既有代表材料拉回队列。"""
+
+    del ctx
+    async with pg_manager.get_async_session_context() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        if (
+            project is None
+            or project.stage != "orientation"
+            or project.status != "needs_attention"
+            or project.method_version != method_version
+            or not project.representative_material_ids
+        ):
+            return {"project_id": project_id, "reroll": round_index, "ignored": True}
+        version = await start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by=project.created_by,
+            representative_material_ids=list(project.representative_material_ids),
+        )
+        await db.commit()
+    await enqueue_project_orientation(project_id, version)
+    logger.warning(f"expert 定向自动重投已提交 project={project_id} v{method_version}→v{version}")
+    return {"project_id": project_id, "method_version": version, "reroll": round_index}
 
 
 async def process_expert_method_calibration(ctx, project_id: str, method_version: int) -> dict:
@@ -217,6 +299,9 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
             return result
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):
+                logger.warning(
+                    f"expert 方法校准将重试 project={project_id} try={_job_try(ctx)}: {exc!r}"
+                )
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -241,6 +326,10 @@ async def process_expert_material_learning(
         return result
     except Exception as exc:
         if _is_transient_material_error(exc) and _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            logger.warning(
+                f"expert 单材料学习将重试 project={project_id} material={material_id} "
+                f"try={_job_try(ctx)}: {exc!r}"
+            )
             raise Retry(defer=_system_retry_defer(ctx)) from exc
         await mark_material_learning_attention(project_id, material_id, method_version, str(exc))
         raise
@@ -263,6 +352,9 @@ async def process_expert_organization(ctx, project_id: str, organization_version
             return result
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):
+                logger.warning(
+                    f"expert 组织阶段将重试 project={project_id} try={_job_try(ctx)}: {exc!r}"
+                )
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -282,6 +374,9 @@ async def process_expert_handout_compilation(ctx, project_id: str, organization_
             return await run_handout_compilation(project_id, organization_version)
         except Exception as exc:
             if _should_retry_system_failure(exc, ctx):
+                logger.warning(
+                    f"expert 讲义编译将重试 project={project_id} try={_job_try(ctx)}: {exc!r}"
+                )
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await _mark_handout_compilation_attention(project_id, organization_version, str(exc))
             raise
@@ -361,6 +456,8 @@ def _is_transient_material_error(exc: Exception) -> bool:
             MaxRetryError,
             ProtocolError,
             ReadTimeoutError,
+            # 专家调用层重放耗尽后抛出的统一传输失败信号。
+            ExpertTransportError,
         ),
     ):
         return True
