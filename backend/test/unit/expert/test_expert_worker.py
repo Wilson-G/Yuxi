@@ -62,6 +62,7 @@ async def _add_project(
     method_version: int,
     organization_version: int = 0,
     method_confirmed: bool = False,
+    calibration_pending: bool = False,
 ) -> None:
     async with factory() as db:
         project = await ExpertRepository(db).create_project(
@@ -78,6 +79,7 @@ async def _add_project(
         if method_confirmed:
             project.method_confirmed_at = utc_now_naive()
             project.method_calibration_completed_at = utc_now_naive()
+        if method_confirmed or calibration_pending:
             project.method_calibration_baseline = [{"material_alias": "M001"}]
         if stage == "material_learning":
             await ExpertRepository(db).create_materials(
@@ -132,6 +134,7 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         ("prepare", "orientation", "preparing", 0),
         ("orient", "orientation", "running", 2),
         ("calibration", "orientation", "running", 2, True),
+        ("repair-calibration", "orientation", "running", 3, False, True),
         ("orientation-without-version", "orientation", "running", 0),
         ("ready", "orientation", "ready", 0),
         ("awaiting", "orientation", "awaiting_confirmation", 1),
@@ -149,6 +152,7 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
             status=status,
             method_version=method_version,
             method_confirmed=bool(flags and flags[0]),
+            calibration_pending=bool(len(flags) > 1 and flags[1]),
         )
     for project_id, stage, status in [
         ("organization", "organization", "running"),
@@ -197,6 +201,10 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         (
             ("process_expert_method_calibration", "calibration", 2),
             {"_job_id": "expert:method-calibration:calibration:v2"},
+        ),
+        (
+            ("process_expert_method_calibration", "repair-calibration", 3),
+            {"_job_id": "expert:method-calibration:repair-calibration:v3"},
         ),
         (
             ("process_expert_material_learning", "learning", "learning-material", 3),

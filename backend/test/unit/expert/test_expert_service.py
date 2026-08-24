@@ -299,6 +299,27 @@ class CalibrationModelTasks(OrientationModelTasks):
         return SimpleNamespace(decision="acceptable_residual", reason="局部问题可由逐篇 Repair 处理")
 
 
+class InitialAttentionCalibrationTasks(CalibrationModelTasks):
+    """让 V1 小样在两次修订后仍失败，V2 使用校准方法后通过。"""
+
+    async def review_material_note(self, *, title: str, **_kwargs) -> MaterialReviewResult:
+        self.review_rounds[title] += 1
+        if not self.calibration_inputs and title == "01-material":
+            return MaterialReviewResult(
+                decision="revise",
+                summary="当前方法仍会遗漏改变处理的条件",
+                issues=[
+                    {
+                        "problem": "遗漏改变处理的条件",
+                        "affected_part": "判断链",
+                        "source_lines": ["L3"],
+                        "revision_direction": "让 Author 和 Reviewer 明确保留原文条件",
+                    }
+                ],
+            )
+        return MaterialReviewResult(decision="pass", summary="通过", issues=[])
+
+
 class AttentionCalibrationTasks(CalibrationModelTasks):
     """模拟 V2 后仍存在方法级问题的校准评估。"""
 
@@ -1456,6 +1477,140 @@ async def test_cannot_exclude_the_only_remaining_material(expert_env) -> None:
                 created_by="user-1",
                 reason="排除后项目将没有材料",
             )
+
+
+@pytest.mark.asyncio
+async def test_initial_attention_repair_calibrates_current_method_without_reorientation(
+    expert_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """初始小样失败后保留 V1 证据，校准完整方法并复跑固定小样。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    model_tasks = InitialAttentionCalibrationTasks()
+
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    result = await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    assert result["status"] == "needs_attention"
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        v1_samples = list(project.method_samples)
+        v1_baseline = service._build_method_calibration_samples(v1_samples, material_ids)
+        assert project.method_sample_material_ids == material_ids
+
+        repaired_version = await service.repair_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert repaired_version == method_version + 1
+        assert project.status == "running"
+        assert project.method_confirmed_at is None
+        assert project.auto_advance is False
+        assert project.method_samples == v1_samples
+        assert project.method_calibration_baseline == v1_baseline
+        assert project.method_sample_material_ids == material_ids
+
+    def forbidden_profile_read(*_args, **_kwargs):
+        raise AssertionError("Review 修复不能重新读取中央 Profile")
+
+    monkeypatch.setattr(service, "get_expert_compiler_profile", forbidden_profile_read)
+    result = await service.run_method_calibration(
+        project_id,
+        repaired_version,
+        model_tasks=model_tasks,
+    )
+
+    assert result == {
+        "project_id": project_id,
+        "method_version": repaired_version,
+        "status": "awaiting_confirmation",
+    }
+    assert model_tasks.call_counts["plan"] == 1
+    assert len(model_tasks.calibration_inputs) == 1
+    calibration_input = model_tasks.calibration_inputs[0]
+    assert calibration_input["learning_plan"] == "# 项目学习方案"
+    assert calibration_input["compilation_brief"] == "# 项目专属编译底稿"
+    assert calibration_input["samples"] == v1_baseline
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None
+    assert project.learning_plan == "# 校准后的项目学习方案"
+    assert project.compilation_brief == "# 校准后的项目专属编译底稿"
+    assert project.prompt_pack == _prompt_pack().model_dump()
+    assert project.method_sample_material_ids == material_ids
+    assert [sample["material_id"] for sample in project.method_samples] == material_ids
+    assert all(sample["status"] == "passed" for sample in project.method_samples)
+    assert project.method_calibration_baseline == []
+
+
+@pytest.mark.asyncio
+async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evidence(expert_env) -> None:
+    """修复只接受完整、固定且带具体 Review 问题的初始 attention 方法。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    model_tasks = InitialAttentionCalibrationTasks()
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        original_samples = list(project.method_samples)
+        original_plan = project.learning_plan
+        original_sample_ids = list(project.method_sample_material_ids)
+
+        project.status = "awaiting_confirmation"
+        with pytest.raises(ValueError, match="没有等待修复"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project.status = "needs_attention"
+
+        project.learning_plan = ""
+        with pytest.raises(ValueError, match="缺少学习方案"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project.learning_plan = original_plan
+
+        project.method_sample_material_ids = []
+        with pytest.raises(ValueError, match="缺少固定的小样材料清单"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project.method_sample_material_ids = original_sample_ids
+
+        project.method_samples = [
+            {
+                **sample,
+                "review": ({**sample["review"], "issues": []} if sample.get("review") else None),
+                "final_review": (
+                    {**sample["final_review"], "issues": []} if sample.get("final_review") else None
+                ),
+            }
+            for sample in original_samples
+        ]
+        with pytest.raises(ValueError, match="没有可执行的 Review 问题"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project.method_samples = original_samples
+
+        project.method_calibration_completed_at = service.utc_now_naive()
+        with pytest.raises(ValueError, match="已经完成一次校准"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
 
 
 @pytest.mark.asyncio

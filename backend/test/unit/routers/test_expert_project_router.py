@@ -142,6 +142,53 @@ async def test_method_confirmation_accepts_legacy_body_and_returns_saved_mode(
 
 
 @pytest.mark.asyncio
+async def test_method_repair_creates_version_and_enqueues_calibration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queued: list[tuple[str, int]] = []
+
+    async def repair_method(_db, *, project_id: str, created_by: str) -> int:
+        assert project_id == "project-1"
+        assert created_by == "admin-1"
+        return 2
+
+    async def enqueue_calibration(project_id: str, method_version: int) -> None:
+        queued.append((project_id, method_version))
+
+    monkeypatch.setattr(router, "repair_project_method", repair_method)
+    monkeypatch.setattr(router, "enqueue_method_calibration", enqueue_calibration)
+
+    response = await router.repair_project_method_route(
+        "project-1",
+        current_user=SimpleNamespace(uid="admin-1"),
+        db=object(),
+    )
+
+    assert response == {"project_id": "project-1", "method_version": 2, "status": "running"}
+    assert queued == [("project-1", 2)]
+
+
+@pytest.mark.asyncio
+async def test_method_repair_returns_conflict_for_invalid_project_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject_repair(*_args, **_kwargs):
+        raise ValueError("项目方法小样没有可执行的 Review 问题")
+
+    monkeypatch.setattr(router, "repair_project_method", reject_repair)
+
+    with pytest.raises(HTTPException) as exc:
+        await router.repair_project_method_route(
+            "project-1",
+            current_user=SimpleNamespace(uid="admin-1"),
+            db=object(),
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "项目方法小样没有可执行的 Review 问题"
+
+
+@pytest.mark.asyncio
 async def test_resume_enqueue_failure_restores_paused_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """恢复任务未投递时，项目仍可由用户再次恢复。"""
 

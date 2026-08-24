@@ -171,12 +171,11 @@ async def enqueue_resumed_expert_project(project_id: str) -> None:
         status = project.status
         method_version = project.method_version
         organization_version = project.organization_version
-        method_confirmed = project.method_confirmed_at is not None
         calibration_pending = bool(project.method_calibration_baseline)
 
     if stage == "orientation" and status == "preparing":
         await enqueue_project_preparation(project_id, token="resume")
-    elif stage == "orientation" and status == "running" and method_confirmed and calibration_pending:
+    elif stage == "orientation" and status == "running" and calibration_pending:
         await enqueue_method_calibration(project_id, method_version)
     elif stage == "orientation" and status == "running":
         await enqueue_project_orientation(project_id, method_version)
@@ -407,7 +406,7 @@ async def recover_expert_project_jobs() -> None:
     for project in projects:
         if project.status == "preparing":
             await enqueue_project_preparation(project.project_id, token="recovery")
-        elif project.method_confirmed_at and project.method_calibration_baseline:
+        elif project.method_calibration_baseline:
             await enqueue_method_calibration(project.project_id, project.method_version)
         elif project.status == "running" and project.method_version > 0:
             await enqueue_project_orientation(project.project_id, project.method_version)

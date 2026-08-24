@@ -547,11 +547,14 @@ async def run_project_orientation(
         learning_plan=project_snapshot["learning_plan"],
         prompt_pack=project_snapshot["prompt_pack"],
     )
-    compiler_profile = get_expert_compiler_profile(
-        project_snapshot["compiler_profile_id"],
-        validate_assets=not has_method_candidate,
-    )
-    tasks = model_tasks or ExpertModelTasks(compiler_profile=compiler_profile)
+    if model_tasks is not None:
+        tasks = model_tasks
+    else:
+        compiler_profile = get_expert_compiler_profile(
+            project_snapshot["compiler_profile_id"],
+            validate_assets=not has_method_candidate,
+        )
+        tasks = ExpertModelTasks(compiler_profile=compiler_profile)
     if has_method_candidate:
         learning_plan = project_snapshot["learning_plan"]
         prompt_pack = ProjectPromptPack.model_validate(project_snapshot["prompt_pack"])
@@ -740,6 +743,51 @@ async def confirm_project_method(
     return project.method_version
 
 
+async def repair_project_method(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+) -> int:
+    """依据初始小样 Review 创建一个校准版本，不重新执行项目定向。"""
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise ValueError("专家项目不存在")
+    if project.stage != ORIENTATION_STAGE or project.status != "needs_attention":
+        raise ValueError("当前项目没有等待修复的学习方法")
+    if project.method_calibration_completed_at is not None:
+        raise ValueError("当前项目方法已经完成一次校准，请重新定向后再试")
+    if project.method_calibration_baseline:
+        raise ValueError("当前项目方法校准已经开始，请恢复当前校准任务")
+
+    _validate_method_contract(
+        project.learning_plan or "",
+        project.compilation_brief or "",
+        ProjectPromptPack.model_validate(project.prompt_pack),
+    )
+    sample_ids = list(project.method_sample_material_ids or [])
+    if not sample_ids:
+        raise ValueError("项目方法缺少固定的小样材料清单")
+    samples = list(project.method_samples or [])
+    baseline = _build_method_calibration_samples(samples, sample_ids)
+    if not _method_calibration_issues(samples):
+        raise ValueError("项目方法小样没有可执行的 Review 问题")
+
+    project.method_version += 1
+    project.method_confirmed_at = None
+    project.method_calibration_completed_at = None
+    project.method_calibration_baseline = baseline
+    project.auto_advance = False
+    project.status = "running"
+    project.message = "正在依据小样 Review 调整学习方法并重新试跑"
+    project.error_message = None
+    project.updated_at = utc_now_naive()
+    await db.commit()
+    return project.method_version
+
+
 async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertRepository) -> int:
     """在已完成方法校准后初始化逐份材料学习。"""
 
@@ -790,7 +838,7 @@ async def run_method_calibration(
             project.stage != ORIENTATION_STAGE
             or project.status not in {"running", "awaiting_confirmation"}
             or project.method_version != method_version
-            or project.method_confirmed_at is None
+            or not project.method_calibration_baseline
         ):
             return {"project_id": project_id, "ignored": True}
         sample_ids = list(project.method_sample_material_ids or [])
@@ -1521,6 +1569,7 @@ __all__ = [
     "mark_project_attention",
     "pause_expert_project",
     "prepare_expert_project",
+    "repair_project_method",
     "retry_material_learning",
     "retry_material_preparation",
     "resume_expert_project",

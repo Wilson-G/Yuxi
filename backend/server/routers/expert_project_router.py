@@ -20,6 +20,7 @@ from yuxi.expert.service import (
     list_expert_projects,
     list_expert_compiler_profile_options,
     pause_expert_project,
+    repair_project_method,
     retry_material_learning,
     retry_material_preparation,
     resume_expert_project,
@@ -234,6 +235,32 @@ async def start_project_orientation_route(
         raise HTTPException(
             status_code=503,
             detail="项目方法版本已保存，但后台任务暂时无法投递；Worker 恢复后会继续",
+        ) from exc
+
+
+@expert_projects.post("/{project_id}/method/repair")
+async def repair_project_method_route(
+    project_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """依据初始小样 Review 创建校准版本并复跑同一批小样。"""
+
+    try:
+        method_version = await repair_project_method(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+        )
+        await enqueue_method_calibration(project_id, method_version)
+        return {"project_id": project_id, "method_version": method_version, "status": "running"}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to enqueue expert method repair {}", project_id)
+        raise HTTPException(
+            status_code=503,
+            detail="方法修复版本已保存，但后台任务暂时无法投递；Worker 恢复后会继续",
         ) from exc
 
 
