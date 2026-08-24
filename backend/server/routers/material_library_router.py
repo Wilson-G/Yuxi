@@ -21,6 +21,7 @@ from yuxi.material_library.service import (
     mark_material_unit_enqueue_failed,
     reset_material_source_file,
     reset_material_source_units,
+    UNIT_MODE_MODEL_CONFIRM,
 )
 from yuxi.material_library.worker import enqueue_material_source_file, enqueue_material_source_units
 from yuxi.storage.postgres.models_business import User
@@ -144,6 +145,7 @@ async def upload_material_source_file_route(
     library_id: str,
     file: UploadFile = File(...),
     relative_path: str = Form(""),
+    unit_mode: str = Form(UNIT_MODE_MODEL_CONFIRM),
     current_user: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -163,6 +165,7 @@ async def upload_material_source_file_route(
             filename=filename,
             content=content,
             created_by=str(current_user.uid),
+            unit_mode=unit_mode,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

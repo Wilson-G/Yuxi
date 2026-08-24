@@ -17,6 +17,14 @@
 
       <a-segmented v-model:value="uploadMode" :options="uploadModeOptions" />
 
+      <div class="unit-mode-row">
+        <a-switch v-model:checked="splitByModel" :disabled="hasPending" size="small" />
+        <span class="unit-mode-label">调用模型切分主题单元</span>
+        <span class="unit-mode-hint">
+          {{ splitByModel ? '按自然主题拆成多个可独立学习的单元' : '整个文件作为一个单元直接入库，不调用模型' }}
+        </span>
+      </div>
+
       <a-upload-dragger
         :multiple="true"
         :directory="uploadMode === 'folder'"
@@ -91,6 +99,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:open', 'complete'])
 const uploadMode = ref('file')
+const splitByModel = ref(true)
 const uploadItems = ref([])
 let queue = null
 let completionEmitted = false
@@ -146,7 +155,7 @@ const resetQueue = () => {
   queue = createMaterialUploadQueue({
     upload: (file, relativePath, onProgress) => {
       const targetPath = [props.directoryPath, relativePath].filter(Boolean).join('/')
-      return materialLibraryApi.upload(props.libraryId, file, targetPath, onProgress)
+      return materialLibraryApi.upload(props.libraryId, file, targetPath, onProgress, splitByModel.value ? 'model_confirm' : 'whole_file')
     },
     onChange: (items) => {
       uploadItems.value = items
@@ -212,6 +221,23 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.unit-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+
+  .unit-mode-label {
+    color: var(--gray-900);
+  }
+
+  .unit-mode-hint {
+    min-width: 0;
+    color: var(--gray-500);
+    font-size: 12px;
+  }
 }
 
 .upload-prompt {

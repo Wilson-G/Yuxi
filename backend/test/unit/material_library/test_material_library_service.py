@@ -185,6 +185,60 @@ async def test_parse_failure_never_marks_source_ready(
     assert source_file.error_message == "document conversion failed"
 
 
+async def test_whole_file_mode_creates_single_ready_unit_without_model(
+    material_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    async with material_env() as db:
+        item = await service.create_material_source_file(
+            db,
+            library_id="library-1",
+            relative_path="books/notes.md",
+            filename="notes.md",
+            content=b"raw source",
+            created_by="admin-1",
+            minio_client=fake_minio,
+            unit_mode=service.UNIT_MODE_WHOLE_FILE,
+        )
+
+    async def fake_parse_document(source: str, params: dict | None = None) -> str:
+        return "第一行\n第二行\n"
+
+    monkeypatch.setattr(service, "parse_document", fake_parse_document)
+    monkeypatch.setattr(service, "get_minio_client", lambda: fake_minio)
+
+    result = await service.process_material_source_file(item["file_id"])
+
+    assert result == {"file_id": item["file_id"], "status": "ready", "unit_status": "ready"}
+    async with material_env() as db:
+        source_file = await MaterialLibraryRepository(db).get_source_file(item["file_id"])
+        units = (await db.execute(select(MaterialUnit).where(MaterialUnit.file_id == item["file_id"]))).scalars().all()
+    assert source_file.unit_mode == "whole_file"
+    assert source_file.unit_status == "ready"
+    assert [(unit.title, unit.start_line, unit.end_line, unit.status) for unit in units] == [
+        ("notes", 1, 2, "ready")
+    ]
+
+
+async def test_create_source_file_rejects_unknown_unit_mode(material_env) -> None:
+    await _create_library(material_env)
+    fake_minio = FakeMinio()
+    async with material_env() as db:
+        with pytest.raises(ValueError, match="未知的单元确认方式"):
+            await service.create_material_source_file(
+                db,
+                library_id="library-1",
+                relative_path="books/notes.md",
+                filename="notes.md",
+                content=b"raw source",
+                created_by="admin-1",
+                minio_client=fake_minio,
+                unit_mode="fast",
+            )
+
+
 async def test_delete_source_removes_private_objects_and_database_fact(material_env) -> None:
     await _create_library(material_env)
     fake_minio = FakeMinio()

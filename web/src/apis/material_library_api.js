@@ -3,12 +3,13 @@ import { useUserStore } from '@/stores/user'
 
 const BASE_URL = '/api/material-libraries'
 
-/** 上传一份资料并持续报告浏览器上传进度。 */
-export const uploadMaterialSourceFile = (libraryId, file, relativePath, onProgress = () => {}) =>
+/** 上传一份资料并持续报告浏览器上传进度。unitMode: model_confirm=模型切分单元, whole_file=整文件直接入库 */
+export const uploadMaterialSourceFile = (libraryId, file, relativePath, onProgress = () => {}, unitMode = 'model_confirm') =>
   new Promise((resolve, reject) => {
     const formData = new FormData()
     formData.append('file', file, file.name)
     formData.append('relative_path', relativePath)
+    formData.append('unit_mode', unitMode)
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', `${BASE_URL}/${encodeURIComponent(libraryId)}/files`)

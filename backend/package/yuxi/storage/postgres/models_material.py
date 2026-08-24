@@ -115,6 +115,13 @@ class MaterialSourceFile(Base):
     markdown_object = Column(String(1024), nullable=True, comment="规范化 Markdown MinIO object")
     status = Column(String(32), nullable=False, default="pending", index=True, comment="文件处理状态")
     unit_status = Column(String(32), nullable=False, default="pending", index=True, comment="材料单元确认状态")
+    unit_mode = Column(
+        String(32),
+        nullable=False,
+        default="model_confirm",
+        server_default="model_confirm",
+        comment="单元确认方式: model_confirm=模型确认边界, whole_file=整文件单单元直接就绪",
+    )
     progress = Column(Integer, nullable=False, default=0, comment="文件处理进度")
     line_count = Column(Integer, nullable=False, default=0, comment="规范化 Markdown 行数")
     error_message = Column(Text, nullable=True, comment="需要处理的具体原因")
@@ -143,6 +150,7 @@ class MaterialSourceFile(Base):
             "file_size": self.file_size,
             "status": self.status,
             "unit_status": self.unit_status,
+            "unit_mode": self.unit_mode,
             "progress": self.progress,
             "line_count": self.line_count,
             "error_message": self.error_message,

@@ -26,6 +26,10 @@ UNIT_PROCESSING_STATUS = "processing"
 UNIT_READY_STATUS = "ready"
 UNIT_ATTENTION_STATUS = "needs_attention"
 
+UNIT_MODE_MODEL_CONFIRM = "model_confirm"
+UNIT_MODE_WHOLE_FILE = "whole_file"
+UNIT_MODE_CHOICES = frozenset({UNIT_MODE_MODEL_CONFIRM, UNIT_MODE_WHOLE_FILE})
+
 
 async def create_material_library(db: AsyncSession, *, name: str, created_by: str) -> dict[str, Any]:
     """创建一个空资料库。"""
@@ -119,8 +123,12 @@ async def create_material_source_file(
     content: bytes,
     created_by: str,
     minio_client: MinIOClient | None = None,
+    unit_mode: str = UNIT_MODE_MODEL_CONFIRM,
 ) -> dict[str, Any]:
     """保存一份原始文件并建立等待处理的 PostgreSQL 事实。"""
+
+    if unit_mode not in UNIT_MODE_CHOICES:
+        raise ValueError(f"未知的单元确认方式: {unit_mode}")
 
     normalized_path = _normalize_source_relative_path(relative_path or filename)
     original_filename = PurePosixPath(normalized_path).name
@@ -152,6 +160,7 @@ async def create_material_source_file(
         source_object=source_object,
         status=SOURCE_PENDING_STATUS,
         unit_status=UNIT_PENDING_STATUS,
+        unit_mode=unit_mode,
         progress=0,
         line_count=0,
         error_message=None,
@@ -361,6 +370,8 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
             "library_id": source_file.library_id,
             "source_bucket": source_file.source_bucket,
             "source_object": source_file.source_object,
+            "relative_path": source_file.relative_path,
+            "unit_mode": source_file.unit_mode,
         }
 
     try:
@@ -386,15 +397,34 @@ async def process_material_source_file(file_id: str) -> dict[str, Any]:
             content_type="text/markdown",
         )
 
+        line_count = len(normalized_markdown.splitlines())
+        whole_file_mode = snapshot["unit_mode"] == UNIT_MODE_WHOLE_FILE
+
         async with pg_manager.get_async_session_context() as db:
-            source_file = await MaterialLibraryRepository(db).update_source_file(
+            repo = MaterialLibraryRepository(db)
+            if whole_file_mode:
+                # 跳过模型确认：整份文件作为一个自然单元直接就绪。
+                await repo.create_material_units(
+                    file_id,
+                    [
+                        {
+                            "unit_id": uuid4().hex,
+                            "title": PurePosixPath(snapshot["relative_path"]).stem
+                            or snapshot["relative_path"],
+                            "start_line": 1,
+                            "end_line": line_count,
+                            "status": UNIT_READY_STATUS,
+                        }
+                    ],
+                )
+            source_file = await repo.update_source_file(
                 file_id,
                 status=SOURCE_READY_STATUS,
-                unit_status=UNIT_PENDING_STATUS,
+                unit_status=UNIT_READY_STATUS if whole_file_mode else UNIT_PENDING_STATUS,
                 progress=100,
                 markdown_bucket=markdown_bucket,
                 markdown_object=markdown_object,
-                line_count=len(normalized_markdown.splitlines()),
+                line_count=line_count,
                 error_message=None,
             )
             await db.commit()

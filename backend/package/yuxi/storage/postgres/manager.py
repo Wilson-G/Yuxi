@@ -555,6 +555,10 @@ class PostgresManager(metaclass=SingletonMeta):
                 "ALTER TABLE IF EXISTS material_source_files ADD COLUMN IF NOT EXISTS "
                 "unit_status VARCHAR(32) NOT NULL DEFAULT 'pending'"
             ),
+            (
+                "ALTER TABLE IF EXISTS material_source_files ADD COLUMN IF NOT EXISTS "
+                "unit_mode VARCHAR(32) NOT NULL DEFAULT 'model_confirm'"
+            ),
             ("CREATE INDEX IF NOT EXISTS ix_material_source_files_unit_status ON material_source_files(unit_status)"),
             ("ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS material_unit_id VARCHAR(64)"),
             ("ALTER TABLE IF EXISTS expert_materials ADD COLUMN IF NOT EXISTS source_file_id VARCHAR(64)"),
