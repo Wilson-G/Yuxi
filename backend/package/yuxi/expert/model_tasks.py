@@ -28,8 +28,7 @@ from yuxi.expert.contracts import (
     MethodCalibrationResult,
     NavigationResult,
     PlanningGroupsResult,
-    ProjectMethodResult,
-    ProjectOrientationResult,
+    ProjectPlanResult,
     ProjectPromptPack,
     SkillBodyResult,
     TopicEvidencePack,
@@ -86,7 +85,7 @@ class ExpertModelTasks:
         self._prompt_cache_namespace = prompt_cache_namespace
         self._compiler_profile = compiler_profile
 
-    async def orient_project(
+    async def plan_project_method(
         self,
         *,
         model_spec: str,
@@ -95,18 +94,20 @@ class ExpertModelTasks:
         material_catalog: str,
         samples: list[dict[str, str]],
         feedback: str = "",
-    ) -> ProjectOrientationResult:
-        """根据目录和用户选定的完整样本形成项目定向报告。"""
+    ) -> ProjectPlanResult:
+        """一趟完成项目定向与项目专属编译方法，减少串行模型往返。"""
 
         compiler_profile = self._get_compiler_profile()
         templates = "\n\n".join(
             f"## {path.name}\n{path.read_text(encoding='utf-8').strip()}"
             for path in sorted(compiler_profile.templates_dir.glob("*.md"))
         )
+        example = compiler_profile.structure_example_path.read_text(encoding="utf-8")
         sample_text = _format_samples(samples)
         feedback_section = f"\n\n用户对上一版的反馈：\n{feedback.strip()}" if feedback.strip() else ""
         prompt = f"""
-你正在执行专家项目的第 0 阶段。这里只做项目定向，不提前学习整个材料包，也不生成正式笔记。
+你正在执行专家项目的第 0 阶段。这一趟连续完成两步：先做项目定向，再依据定向结论形成只属于当前项目的完整编译方法。
+不提前学习整个材料包，也不生成正式笔记。
 
 项目名称：{project_name}
 项目说明：{project_description or "用户未补充说明"}
@@ -117,45 +118,11 @@ class ExpertModelTasks:
 用户明确选择的代表性材料如下。必须完整阅读这些正文；材料内容不得用外部知识补齐或改写：
 {sample_text}
 
-可选的材料类型方法起点如下。请选择最贴合当前材料的一种，并在报告中说明材料如何传授判断、必要的来源差异、保真风险，以及最终读者需要怎样的专家：
+第一步（项目定向）：可选的材料类型方法起点如下。选出最贴合当前材料的一种，并在报告中说明材料如何传授判断、必要的来源差异、保真风险，以及最终读者需要怎样的专家：
 {templates}
 {feedback_section}
-""".strip()
-        return await self._invoke_structured(
-            model_spec,
-            ProjectOrientationResult,
-            system=_stage_system(compiler_profile.skill_path.read_text(encoding="utf-8")),
-            prompt=prompt,
-        )
 
-    async def design_project_method(
-        self,
-        *,
-        model_spec: str,
-        project_name: str,
-        orientation: ProjectOrientationResult,
-        material_catalog: str,
-        samples: list[dict[str, str]],
-    ) -> ProjectMethodResult:
-        """由总编模型生成项目学习方案、编译底稿和完整阶段 Prompt。"""
-
-        compiler_profile = self._get_compiler_profile()
-        selected_template = (compiler_profile.templates_dir / orientation.template_name).read_text(encoding="utf-8")
-        example = compiler_profile.structure_example_path.read_text(encoding="utf-8")
-        prompt = f"""
-你是“{project_name}”专家作品的总编模型。请依据项目定向报告，把中央方法改写成只属于当前项目的完整编译方法。
-
-项目定向报告：
-{orientation.report_markdown}
-
-材料目录：
-{material_catalog}
-
-用于验证方向的完整代表材料：
-{_format_samples(samples)}
-
-当前材料类型模板只提供提问方向，不能直接复制：
-{selected_template}
+第二步（项目专属编译方法）：你是“{project_name}”专家作品的总编模型。请依据你在第一步形成的定向结论，把中央方法改写成只属于当前项目的完整编译方法。你在第一步选中的材料类型模板只提供提问方向，不能直接复制；它就在上面第一步的候选清单里。
 
 下面的通用示例只展示 Prompt 的阶段结构、阶段交接和必要材料纪律，不携带领域术语、判断顺序或章节结构：
 {example}
@@ -174,7 +141,7 @@ class ExpertModelTasks:
 """.strip()
         return await self._invoke_structured(
             model_spec,
-            ProjectMethodResult,
+            ProjectPlanResult,
             system=_stage_system(compiler_profile.skill_path.read_text(encoding="utf-8")),
             prompt=prompt,
         )

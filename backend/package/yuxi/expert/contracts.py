@@ -60,6 +60,10 @@ class ProjectMethodResult(ExpertContract):
     method_sample_aliases: list[str] = Field(min_length=1, max_length=5)
 
 
+class ProjectPlanResult(ProjectOrientationResult, ProjectMethodResult):
+    """总编一次调用同时交付项目定向与项目专属编译方法。"""
+
+
 class MethodCalibrationResult(ExpertContract):
     """总编根据小样 Review 收敛后的下一版项目方法。"""
 

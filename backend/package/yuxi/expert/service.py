@@ -558,7 +558,7 @@ async def run_project_orientation(
         sample_material_ids = project_snapshot["method_sample_material_ids"]
         _validate_method_contract(learning_plan, project_snapshot["compilation_brief"], prompt_pack)
     else:
-        orientation = await tasks.orient_project(
+        plan = await tasks.plan_project_method(
             model_spec=project_snapshot["model_spec"],
             project_name=project_snapshot["name"],
             project_description=project_snapshot["description"],
@@ -566,14 +566,7 @@ async def run_project_orientation(
             samples=samples,
             feedback=project_snapshot["feedback"],
         )
-        method = await tasks.design_project_method(
-            model_spec=project_snapshot["model_spec"],
-            project_name=project_snapshot["name"],
-            orientation=orientation,
-            material_catalog=catalog,
-            samples=samples,
-        )
-        selected_aliases = set(method.method_sample_aliases)
+        selected_aliases = set(plan.method_sample_aliases)
         available_aliases = {sample["alias"] for sample in samples}
         required_sample_count = min(MIN_REPRESENTATIVE_MATERIALS, len(samples))
         maximum_sample_count = min(MAX_METHOD_SAMPLES, len(samples))
@@ -589,8 +582,8 @@ async def run_project_orientation(
             for material, sample in zip(representative_materials, samples, strict=True)
             if sample["alias"] in selected_aliases
         ]
-        learning_plan = method.learning_plan_markdown
-        prompt_pack = method.prompt_pack
+        learning_plan = plan.learning_plan_markdown
+        prompt_pack = plan.prompt_pack
 
         async with pg_manager.get_async_session_context() as db:
             project = await ExpertRepository(db).lock_project(project_id)
@@ -601,8 +594,8 @@ async def run_project_orientation(
                 or project.status != "running"
             ):
                 return {"project_id": project_id, "ignored": True}
-            project.orientation_report = orientation.report_markdown
-            project.compilation_brief = method.compilation_brief_markdown
+            project.orientation_report = plan.report_markdown
+            project.compilation_brief = plan.compilation_brief_markdown
             project.learning_plan = learning_plan
             project.prompt_pack = prompt_pack.model_dump()
             project.method_sample_material_ids = sample_material_ids
@@ -610,7 +603,7 @@ async def run_project_orientation(
             await db.flush()
 
         # 方法候选先落库、后校验：校验失败时保留已生成的总编产物供诊断，恢复路径可复用，不重复消耗模型调用。
-        _validate_method_contract(learning_plan, method.compilation_brief_markdown, prompt_pack)
+        _validate_method_contract(learning_plan, plan.compilation_brief_markdown, prompt_pack)
 
     if not sample_material_ids:
         raise ValueError("项目方法缺少试跑小样选择")

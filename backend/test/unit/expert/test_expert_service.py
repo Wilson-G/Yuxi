@@ -19,8 +19,7 @@ from yuxi.expert.contracts import (
     MaterialAutoResolutionResult,
     MaterialNoteResult,
     MaterialReviewResult,
-    ProjectMethodResult,
-    ProjectOrientationResult,
+    ProjectPlanResult,
     ProjectPromptPack,
 )
 from yuxi.repositories.expert_repository import ExpertRepository
@@ -217,19 +216,14 @@ class OrientationModelTasks:
         self.failed_review = False
         self.call_counts: Counter[str] = Counter()
 
-    async def orient_project(self, **_kwargs) -> ProjectOrientationResult:
-        self.call_counts["orientation"] += 1
-        return ProjectOrientationResult(
+    async def plan_project_method(self, *, samples: list[dict[str, str]], **_kwargs) -> ProjectPlanResult:
+        self.call_counts["plan"] += 1
+        return ProjectPlanResult(
             template_name="mentor-oral-teaching.md",
             material_type="老师口述案例",
             expert_identity="能说明判断条件和停止线的老师",
             report_markdown="# 项目定向报告",
             source_risks=["转写不确定"],
-        )
-
-    async def design_project_method(self, *, samples: list[dict[str, str]], **_kwargs) -> ProjectMethodResult:
-        self.call_counts["method"] += 1
-        return ProjectMethodResult(
             learning_plan_markdown="# 项目学习方案",
             compilation_brief_markdown="# 项目专属编译底稿",
             prompt_pack=_prompt_pack(),
@@ -790,8 +784,7 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         method_version,
         model_tasks=model_tasks,
     )
-    assert model_tasks.call_counts["orientation"] == 1
-    assert model_tasks.call_counts["method"] == 1
+    assert model_tasks.call_counts["plan"] == 1
     assert model_tasks.call_counts["note:02-material"] == 2
     assert model_tasks.call_counts["review:02-material"] == 2
     for title in persisted_titles:
@@ -895,8 +888,7 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
 
     assert result["status"] == "awaiting_confirmation"
     assert tasks.call_counts == {
-        "orientation": 1,
-        "method": 1,
+        "plan": 1,
         "note:01-material": 1,
         "review:01-material": 1,
         "note:02-material": 1,
@@ -1844,9 +1836,14 @@ async def test_contract_failure_keeps_generated_method_candidate(expert_env) -> 
     material_ids = await _make_materials_ready(expert_env, project_id)
 
     class WhitespacePackTasks(OrientationModelTasks):
-        async def design_project_method(self, *, samples, **_kwargs):
-            self.call_counts["method"] += 1
-            return ProjectMethodResult(
+        async def plan_project_method(self, *, samples, **_kwargs):
+            self.call_counts["plan"] += 1
+            return ProjectPlanResult(
+                template_name="mentor-oral-teaching.md",
+                material_type="老师口述案例",
+                expert_identity="能说明判断条件和停止线的老师",
+                report_markdown="# 项目定向报告",
+                source_risks=["转写不确定"],
                 learning_plan_markdown="# 项目学习方案",
                 compilation_brief_markdown="# 项目专属编译底稿",
                 prompt_pack=ProjectPromptPack(
