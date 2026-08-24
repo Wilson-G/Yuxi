@@ -1576,6 +1576,7 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
         project = await ExpertRepository(db).get_project(project_id)
         assert project is not None
         original_samples = list(project.method_samples)
+        original_report = project.orientation_report
         original_plan = project.learning_plan
         original_sample_ids = list(project.method_sample_material_ids)
 
@@ -1583,6 +1584,11 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
         with pytest.raises(ValueError, match="没有等待修复"):
             await service.repair_project_method(db, project_id=project_id, created_by="user-1")
         project.status = "needs_attention"
+
+        project.orientation_report = ""
+        with pytest.raises(ValueError, match="缺少定向报告"):
+            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        project.orientation_report = original_report
 
         project.learning_plan = ""
         with pytest.raises(ValueError, match="缺少学习方案"):

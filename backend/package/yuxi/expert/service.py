@@ -761,6 +761,8 @@ async def repair_project_method(
         raise ValueError("当前项目方法已经完成一次校准，请重新定向后再试")
     if project.method_calibration_baseline:
         raise ValueError("当前项目方法校准已经开始，请恢复当前校准任务")
+    if not str(project.orientation_report or "").strip():
+        raise ValueError("项目方法缺少定向报告")
 
     _validate_method_contract(
         project.learning_plan or "",
