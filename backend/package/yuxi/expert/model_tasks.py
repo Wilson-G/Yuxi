@@ -934,10 +934,16 @@ def _parse_jsonl_contract[ResultT: BaseModel](content: Any, contract: type[Resul
     if not isinstance(content, str):
         raise ExpertJsonlOutputError("模型返回内容无法读取，本次任务未完成，请重跑当前小样")
     line = content.strip()
-    if not line or "\n" in line:
+    if not line:
         raise ExpertJsonlOutputError("模型没有按约定输出完整结果，本次任务未完成，请重跑当前小样")
     try:
         return contract.model_validate_json(line)
+    except (json.JSONDecodeError, ValidationError):
+        pass
+    # 模型写长 Markdown 字符串时常保留真实换行而非 \n 转义；宽松模式接受控制字符，
+    # 让内容完整但未转义的交付物照常入库，而不是整趟作废。
+    try:
+        return contract.model_validate(json.loads(line, strict=False))
     except (json.JSONDecodeError, ValidationError) as exc:
         raise ExpertJsonlOutputError("模型没有按约定输出完整结果，本次任务未完成，请重跑当前小样") from exc
 

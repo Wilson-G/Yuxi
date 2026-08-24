@@ -577,6 +577,43 @@ async def test_jsonl_trailing_text_retries_only_the_current_model_task() -> None
 
 
 @pytest.mark.asyncio
+async def test_jsonl_with_unescaped_newlines_inside_strings_parses_without_retry() -> None:
+    """模型写长 Markdown 字符串时常保留真实换行；宽松解析应放行完整交付物，不烧第二次调用。"""
+
+    raw = '{"decision": "pass", "summary": "第一段\n\n第二段保留判断链", "issues": []}'
+    model = RecordingStructuredModel([raw])
+    tasks = model_tasks.ExpertModelTasks(RecordingModelLoader(model))
+    note = MaterialNoteResult(
+        decision="learned",
+        note_markdown="判断链",
+        routing_labels=["见信号，要判条件"],
+        evidence=[
+            {
+                "material_alias": "M001",
+                "start_line": 1,
+                "end_line": 1,
+                "supports": "当前判断",
+            }
+        ],
+    )
+
+    result = await tasks.review_material_note(
+        model_spec="provider:model",
+        learning_plan="学习方案",
+        stage_prompt="Review Prompt",
+        material_alias="M001",
+        title="材料",
+        source="来源",
+        text="原文",
+        note=note,
+    )
+
+    assert result.decision == "pass"
+    assert result.summary == "第一段\n\n第二段保留判断链"
+    assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_topic_editor_may_reject_all_notes_only_with_explicit_reasons() -> None:
     model = RecordingStructuredModel(
         [
