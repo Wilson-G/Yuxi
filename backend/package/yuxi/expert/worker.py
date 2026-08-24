@@ -42,6 +42,14 @@ def _system_retry_defer(ctx: dict) -> int:
     return 2 ** min(max(1, _job_try(ctx)), SYSTEM_TASK_MAX_RETRIES)
 
 
+def _should_retry_system_failure(exc: Exception, ctx: dict) -> bool:
+    """确定性业务失败（ValueError）重试必然复现，直接落需要处理；其余按剩余额度退避重试。"""
+
+    if isinstance(exc, ValueError):
+        return False
+    return _job_try(ctx) < SYSTEM_TASK_MAX_TRIES
+
+
 async def enqueue_project_preparation(project_id: str, *, token: str = "initial") -> None:
     """提交材料正文转换任务。"""
 
@@ -180,7 +188,7 @@ async def process_expert_project_preparation(ctx, project_id: str) -> dict:
         try:
             return await prepare_expert_project(project_id)
         except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            if _should_retry_system_failure(exc, ctx):
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -193,7 +201,7 @@ async def process_expert_project_orientation(ctx, project_id: str, method_versio
         try:
             return await run_project_orientation(project_id, method_version)
         except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            if _should_retry_system_failure(exc, ctx):
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -208,7 +216,7 @@ async def process_expert_method_calibration(ctx, project_id: str, method_version
             await enqueue_pending_material_learning(project_id, method_version)
             return result
         except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            if _should_retry_system_failure(exc, ctx):
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -254,7 +262,7 @@ async def process_expert_organization(ctx, project_id: str, organization_version
             await _enqueue_handout_compilation_handoff(project_id, organization_version)
             return result
         except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            if _should_retry_system_failure(exc, ctx):
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await mark_project_attention(project_id, str(exc))
             raise
@@ -273,7 +281,7 @@ async def process_expert_handout_compilation(ctx, project_id: str, organization_
         try:
             return await run_handout_compilation(project_id, organization_version)
         except Exception as exc:
-            if _job_try(ctx) < SYSTEM_TASK_MAX_TRIES:
+            if _should_retry_system_failure(exc, ctx):
                 raise Retry(defer=_system_retry_defer(ctx)) from exc
             await _mark_handout_compilation_attention(project_id, organization_version, str(exc))
             raise

@@ -1837,6 +1837,82 @@ async def test_resume_keeps_running_when_only_part_of_method_samples_finished(ex
 
 
 @pytest.mark.asyncio
+async def test_contract_failure_keeps_generated_method_candidate(expert_env) -> None:
+    """方法候选先落库、后校验：合同校验失败时总编产物与样本选择保留在项目事实里，可诊断、可恢复。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+
+    class WhitespacePackTasks(OrientationModelTasks):
+        async def design_project_method(self, *, samples, **_kwargs):
+            self.call_counts["method"] += 1
+            return ProjectMethodResult(
+                learning_plan_markdown="# 项目学习方案",
+                compilation_brief_markdown="# 项目专属编译底稿",
+                prompt_pack=ProjectPromptPack(
+                    note_author="作者 Prompt。",
+                    note_reviewer="审阅 Prompt。",
+                    topic_researcher="研究 Prompt。",
+                    topic_editor="总编 Prompt。",
+                    handout_editor="编讲义 Prompt。",
+                    handout_reviewer="审讲义 Prompt。",
+                    book_editor="收口 Prompt。",
+                    navigation_author="导航 Prompt。",
+                    skill_author="   ",
+                ),
+                method_sample_aliases=[sample["alias"] for sample in samples[:5]],
+            )
+
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+
+    tasks = WhitespacePackTasks()
+    with pytest.raises(ValueError, match="缺少阶段内容: skill_author"):
+        await service.run_project_orientation(project_id, method_version, model_tasks=tasks)
+
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None
+    assert project.learning_plan == "# 项目学习方案"
+    assert project.compilation_brief == "# 项目专属编译底稿"
+    assert project.prompt_pack["note_author"] == "作者 Prompt。"
+    assert project.method_sample_material_ids
+
+
+@pytest.mark.asyncio
+async def test_resume_reruns_orientation_when_candidate_complete_but_samples_missing(expert_env) -> None:
+    """校验失败修复后的合法恢复入口：候选齐备且小样未启动时，暂停项目恢复为继续试跑当前版本，
+    不被遗留 error_message 卡死。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_project(
+            project_id,
+            method_version=3,
+            orientation_report="# 项目定向报告",
+            compilation_brief="# 项目专属编译底稿",
+            learning_plan="# 项目学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+            status="needs_attention",
+            error_message="项目 Prompt 包缺少阶段内容: skill_author",
+        )
+        await db.commit()
+        paused = await service.pause_expert_project(db, project_id=project_id, created_by="user-1")
+        assert paused.status == "paused"
+        resumed = await service.resume_expert_project(db, project_id=project_id, created_by="user-1")
+
+    assert resumed.status == "running"
+    assert resumed.message == "项目方法候选已就绪，正在继续试跑小样"
+
+
+@pytest.mark.asyncio
 async def test_delete_project_rejects_running_and_enabled_then_removes_paused_workspace(expert_env) -> None:
     running_id, [material_id] = await _create_project(expert_env, count=1, status="running")
     running_root = storage.get_project_root(running_id)

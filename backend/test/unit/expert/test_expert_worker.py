@@ -711,6 +711,36 @@ async def test_orientation_retry_backs_off_exponentially_then_marks_attention(
     assert project.error_message == "网络抖动连接中断"
 
 
+@pytest.mark.asyncio
+async def test_orientation_value_error_goes_directly_to_attention(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """确定性业务失败（ValueError）重试必然复现：首次失败即落需要处理，不再烧重试额度。"""
+
+    project_id = "orientation-value-error-attention"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="running",
+        method_version=1,
+    )
+
+    async def fail_orientation(_project_id: str, _method_version: int) -> dict:
+        raise ValueError("项目 Prompt 包缺少阶段内容: skill_author")
+
+    monkeypatch.setattr(worker, "run_project_orientation", fail_orientation)
+
+    with pytest.raises(ValueError, match="缺少阶段内容"):
+        await worker.process_expert_project_orientation({"job_try": 1}, project_id, 1)
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert project.error_message == "项目 Prompt 包缺少阶段内容: skill_author"
+
+
 def _anthropic_status_error(error_type, status_code: int):
     request = httpx.Request("POST", "https://model.example/v1/messages")
     response = httpx.Response(status_code, request=request)

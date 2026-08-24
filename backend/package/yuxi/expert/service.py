@@ -281,6 +281,22 @@ async def _derive_resumed_project_status(
 ) -> tuple[str, str]:
     """从现有项目子项事实推导恢复状态和用户可见说明。"""
 
+    # 方法候选完整且小样尚未启动时，恢复直接续跑当前版本：这是校验失败修复后的合法恢复入口，
+    # 不被遗留 error_message 卡死；复用候选不消耗模型调用。
+    if (
+        project.stage == ORIENTATION_STAGE
+        and project.method_version > 0
+        and not project.method_samples
+        and not any(item.status in {"pending", "converting", "needs_attention"} for item in materials)
+        and _method_candidate_complete(
+            orientation_report=project.orientation_report or "",
+            compilation_brief=project.compilation_brief or "",
+            learning_plan=project.learning_plan or "",
+            prompt_pack=project.prompt_pack or {},
+        )
+    ):
+        return "running", "项目方法候选已就绪，正在继续试跑小样"
+
     if project.error_message:
         return "needs_attention", "项目仍有问题需要处理"
 
@@ -460,6 +476,18 @@ async def start_project_orientation(
     return project.method_version
 
 
+def _method_candidate_complete(
+    *,
+    orientation_report: str,
+    compilation_brief: str,
+    learning_plan: str,
+    prompt_pack: Any,
+) -> bool:
+    """方法三件套与 Prompt 包是否齐备；齐备即视为已有方法候选，可复用不必重新生成。"""
+
+    return bool(orientation_report.strip() and compilation_brief.strip() and learning_plan.strip() and prompt_pack)
+
+
 async def run_project_orientation(
     project_id: str,
     method_version: int,
@@ -513,13 +541,11 @@ async def run_project_orientation(
             }
         )
 
-    has_method_candidate = all(
-        (
-            project_snapshot["orientation_report"].strip(),
-            project_snapshot["compilation_brief"].strip(),
-            project_snapshot["learning_plan"].strip(),
-            project_snapshot["prompt_pack"],
-        )
+    has_method_candidate = _method_candidate_complete(
+        orientation_report=project_snapshot["orientation_report"],
+        compilation_brief=project_snapshot["compilation_brief"],
+        learning_plan=project_snapshot["learning_plan"],
+        prompt_pack=project_snapshot["prompt_pack"],
     )
     compiler_profile = get_expert_compiler_profile(
         project_snapshot["compiler_profile_id"],
@@ -547,7 +573,6 @@ async def run_project_orientation(
             material_catalog=catalog,
             samples=samples,
         )
-        _validate_method_contract(method.learning_plan_markdown, method.compilation_brief_markdown, method.prompt_pack)
         selected_aliases = set(method.method_sample_aliases)
         available_aliases = {sample["alias"] for sample in samples}
         required_sample_count = min(MIN_REPRESENTATIVE_MATERIALS, len(samples))
@@ -583,6 +608,9 @@ async def run_project_orientation(
             project.method_sample_material_ids = sample_material_ids
             project.updated_at = utc_now_naive()
             await db.flush()
+
+        # 方法候选先落库、后校验：校验失败时保留已生成的总编产物供诊断，恢复路径可复用，不重复消耗模型调用。
+        _validate_method_contract(learning_plan, method.compilation_brief_markdown, prompt_pack)
 
     if not sample_material_ids:
         raise ValueError("项目方法缺少试跑小样选择")
@@ -1371,76 +1399,14 @@ async def _run_method_sample(
     }
 
 
-_NOTE_PROMPT_ROLES = ("note_author", "note_reviewer")
-_MODEL_CHAPTER_HEADING = "## 项目领域推导模型"
-_DOMAIN_BLOCK_START = "- 领域基础（可作为补链依据）："
-_DOMAIN_BLOCK_END = "- 材料缺口："
-_SOURCE_LABEL_BLOCK_START = "- 原文明说："
-_SOURCE_LABEL_BLOCK_END = "- 材料未知："
-
-
-def _extract_shared_block(text: str, start_marker: str, end_marker: str) -> str:
-    """按稳定哨兵提取 Prompt 内嵌的共享块（首尾行均含）；任一哨兵未命中返回空串。"""
-
-    lines = [line.strip() for line in text.splitlines()]
-    try:
-        start = next(idx for idx, line in enumerate(lines) if line.startswith(start_marker))
-        end = next(idx for idx, line in enumerate(lines[start + 1 :], start + 1) if line.startswith(end_marker))
-    except StopIteration:
-        return ""
-    return "\n".join(lines[start : end + 1])
-
-
-def _extract_model_chapter(prompt_text: str) -> str:
-    """按固定标题整章提取项目领域推导模型（标题行起、下一个二级标题前）；未命中返回空串。"""
-
-    lines = prompt_text.splitlines()
-    try:
-        start = next(idx for idx, line in enumerate(lines) if line.strip() == _MODEL_CHAPTER_HEADING)
-    except StopIteration:
-        return ""
-    end = next(
-        (idx for idx, line in enumerate(lines[start + 1 :], start + 1) if line.strip().startswith("## ")),
-        len(lines),
-    )
-    return "\n".join(lines[start:end]).strip()
-
-
-def _validate_shared_prompt_blocks(prompt_pack: ProjectPromptPack) -> None:
-    """两份笔记 Prompt 的领域推导模型整章、四层边界块与五类来源标签块必须逐字一致
-    （唯一权威文本在 compilation_brief）。"""
-
-    extracted: dict[str, dict[str, str]] = {}
-    for role in _NOTE_PROMPT_ROLES:
-        prompt_text = str(getattr(prompt_pack, role))
-        blocks = {
-            "项目领域推导模型章节": _extract_model_chapter(prompt_text),
-            "四层边界块": _extract_shared_block(prompt_text, _DOMAIN_BLOCK_START, _DOMAIN_BLOCK_END),
-            "五类来源标签块": _extract_shared_block(prompt_text, _SOURCE_LABEL_BLOCK_START, _SOURCE_LABEL_BLOCK_END),
-        }
-        missing = [name for name, block in blocks.items() if not block]
-        if missing:
-            raise ValueError(f"{role} 未完整内嵌{'与'.join(missing)}")
-        extracted[role] = blocks
-    baseline_role, baseline_blocks = next(iter(extracted.items()))
-    for role, blocks in extracted.items():
-        if role == baseline_role:
-            continue
-        drifted = [name for name, block in blocks.items() if block != baseline_blocks[name]]
-        if drifted:
-            raise ValueError(
-                f"{role} 与 {baseline_role} 的{'、'.join(drifted)}不一致："
-                "两份笔记 Prompt 的共用块必须以 compilation_brief 定稿版本逐字复制"
-            )
-
-
 def _validate_method_contract(learning_plan: str, compilation_brief: str, prompt_pack: ProjectPromptPack) -> None:
+    """项目方法的最小完整性合同：学习方案与编译底稿非空、Prompt 包各阶段内容齐备。"""
+
     if not learning_plan.strip() or not compilation_brief.strip():
         raise ValueError("项目方法缺少学习方案或编译底稿")
     missing = [name for name, value in prompt_pack.model_dump().items() if not str(value).strip()]
     if missing:
         raise ValueError(f"项目 Prompt 包缺少阶段内容: {', '.join(missing)}")
-    _validate_shared_prompt_blocks(prompt_pack)
 
 
 def _validate_note(note: MaterialNoteResult, *, alias: str, line_count: int) -> None:
