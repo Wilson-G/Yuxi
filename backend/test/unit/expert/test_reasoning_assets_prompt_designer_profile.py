@@ -106,7 +106,7 @@ def test_reasoning_assets_requires_embedding_of_project_domain_model():
     skill, example = _read_assets()
 
     assert "编译底稿、中央 SKILL 和项目定向报告对下游任务不可见" in skill
-    assert "必须完整写进 `note_author` 与\n`note_reviewer` 的 Prompt 本身" in skill
+    assert "项目领域推导模型的全文只保证进入 `note_author`\n与 `note_reviewer` 的 Prompt 本身" in skill
     assert "下游任务实际拿不到模型" in skill
     assert "`## 项目领域推导模型`" in skill
 
