@@ -321,7 +321,11 @@
                       {{
                         project.status === 'running'
                           ? '下方保留当前已保存的学习方案、阶段指令和小样；后台进度仍以顶部状态为准。'
-                          : '确认后，当前学习方向会固定并用于后续逐份学习。'
+                          : project.status === 'needs_attention' && hasRepairableMethodReview
+                            ? 'Review 已指出会影响批量学习的问题。当前方法和失败证据会保留，调整后用同批小样复验。'
+                            : project.status === 'needs_attention'
+                              ? '当前结果没有可用于调整方法的 Review 问题，请填写新的学习方向后重新定向。'
+                              : '确认后，当前学习方向会固定并用于后续逐份学习。'
                       }}
                     </p>
                   </div>
@@ -336,7 +340,15 @@
                   aria-labelledby="method-decision-title"
                 >
                   <div>
-                    <h3 id="method-decision-title">确认前请核对</h3>
+                    <h3 id="method-decision-title">
+                      {{
+                        project.status === 'needs_attention' && hasRepairableMethodReview
+                          ? 'Review 已定位需要调整的方法问题'
+                          : project.status === 'needs_attention'
+                            ? '请明确新的学习方向'
+                            : '确认前请核对'
+                      }}
+                    </h3>
                     <ul>
                       <li>学习目标是否贴合这批材料真正教授的判断方法</li>
                       <li>材料边界、来源差异和不能补写的内容是否清楚</li>
@@ -345,9 +357,13 @@
                   </div>
                   <strong>
                     {{
-                      autoAdvanceEnabled && isInitialMethodConfirmation
-                        ? '确认后自动推进到候选成品'
-                        : '确认后进入后续学习'
+                      project.status === 'needs_attention' && hasRepairableMethodReview
+                        ? '调整当前方法，再复跑同批小样'
+                        : project.status === 'needs_attention'
+                          ? '填写新方向后重新生成方法'
+                          : autoAdvanceEnabled && isInitialMethodConfirmation
+                            ? '确认后自动推进到候选成品'
+                            : '确认后进入后续学习'
                     }}
                   </strong>
                 </section>
@@ -371,23 +387,45 @@
                       :disabled="Boolean(actionKey)"
                     />
                   </div>
-                  <label v-if="project.status === 'awaiting_confirmation'" class="decision-field">
-                    <span>调整意见</span>
+                  <label class="decision-field">
+                    <span>
+                      {{
+                        project.status === 'needs_attention'
+                          ? '重新定向意见（只有整体方向不对时填写）'
+                          : '调整意见'
+                      }}
+                    </span>
                     <a-textarea
                       v-model:value="methodFeedback"
                       :rows="3"
-                      placeholder="写明哪里没有贴合材料，以及希望怎样改变学习方法"
+                      :placeholder="
+                        project.status === 'needs_attention' && hasRepairableMethodReview
+                          ? '如果不是修正 Review 指出的问题，而是要改变整体学习方向，请写明新方向'
+                          : project.status === 'needs_attention'
+                            ? '写明新的学习方向，系统会从中央方法重新定向'
+                            : '写明哪里没有贴合材料，以及希望怎样改变学习方法'
+                      "
                     />
                   </label>
                   <div class="decision-actions">
                     <a-button
                       v-if="project.status === 'needs_attention'"
-                      :loading="actionKey === 'retry-method'"
-                      :disabled="Boolean(actionKey)"
-                      @click="retryMethod"
+                      :loading="actionKey === 'reorient-method'"
+                      :disabled="Boolean(actionKey) || !methodFeedback.trim()"
+                      @click="reorientMethod"
                     >
                       <RotateCcw :size="14" />
-                      重新试跑当前方法
+                      重新定向并生成新方法
+                    </a-button>
+                    <a-button
+                      v-if="project.status === 'needs_attention' && hasRepairableMethodReview"
+                      type="primary"
+                      :loading="actionKey === 'repair-method'"
+                      :disabled="Boolean(actionKey)"
+                      @click="repairMethod"
+                    >
+                      <RotateCcw :size="14" />
+                      根据 Review 调整方法并重跑小样
                     </a-button>
                     <a-button
                       v-if="project.status === 'awaiting_confirmation'"
@@ -424,7 +462,7 @@
                 <div class="subsection-heading">
                   <div>
                     <h3>真实材料笔记小样</h3>
-                    <p>每份小样都经过独立 Review；具体意见默认收起。</p>
+                    <p>每份小样都经过独立 Review；笔记与具体意见默认收起。</p>
                   </div>
                 </div>
                 <div class="artifact-list">
@@ -445,9 +483,9 @@
                         {{ getExpertMaterialStatusLabel(sample.status) }}
                       </span>
                     </header>
-                    <MarkdownPreview :content="sampleNote(sample)" compact />
-                    <details class="review-disclosure">
-                      <summary>查看 Review</summary>
+                    <details class="sample-disclosure">
+                      <summary>查看笔记与 Review</summary>
+                      <MarkdownPreview :content="sampleNote(sample)" compact />
                       <p class="review-summary">
                         {{ sampleReview(sample)?.summary || '暂无 Review 摘要' }}
                       </p>
@@ -856,9 +894,9 @@
                         {{ getExpertMaterialStatusLabel(sample.status) }}
                       </span>
                     </header>
-                    <MarkdownPreview :content="sample.handout || ''" compact />
-                    <details class="review-disclosure">
-                      <summary>查看 Review</summary>
+                    <details class="sample-disclosure">
+                      <summary>查看讲义与 Review</summary>
+                      <MarkdownPreview :content="sample.handout || ''" compact />
                       <p class="review-summary">
                         {{ sample.review?.summary || '暂无 Review 摘要' }}
                       </p>
@@ -1306,6 +1344,17 @@ const hasMethodArtifacts = computed(
   () => Boolean(project.value?.learning_plan) || Boolean(project.value?.method_samples?.length)
 )
 const hasPromptPack = computed(() => Object.keys(project.value?.prompt_pack || {}).length > 0)
+const hasRepairableMethodReview = computed(
+  () =>
+    project.value?.stage === 'orientation' &&
+    project.value?.status === 'needs_attention' &&
+    project.value?.method_calibration_completed_at == null &&
+    !(project.value?.method_calibration_baseline || []).length &&
+    (project.value?.method_samples || []).some((sample) => {
+      const review = sample?.final_review || sample?.review
+      return Array.isArray(review?.issues) && review.issues.length > 0
+    })
+)
 const isInitialMethodConfirmation = computed(() => isInitialExpertMethodConfirmation(project.value))
 const methodConfirmButtonLabel = computed(() => {
   if (!isInitialMethodConfirmation.value) return '确认并开始学习'
@@ -1528,14 +1577,31 @@ const startOrientation = async () => {
   if (completed) methodFeedback.value = ''
 }
 
-/** 重新生成当前方法版本，不复用已经失败的模型输出。 */
-const retryMethod = () =>
+/** 根据现有小样 Review 校准完整项目方法，并用同批小样复验。 */
+const repairMethod = () =>
   runAction(
-    'retry-method',
-    () =>
-      expertApi.startOrientation(projectId.value, project.value.representative_material_ids || []),
-    '已开始重新生成项目学习方案与小样'
+    'repair-method',
+    () => expertApi.repairMethod(projectId.value),
+    '已开始根据 Review 调整学习方法并重跑同批小样'
   )
+
+/** 用户明确给出新方向后，重新读取中央方法并生成全新的项目方法版本。 */
+const reorientMethod = () => {
+  const feedback = methodFeedback.value.trim()
+  if (!feedback) return
+  runAction(
+    'reorient-method',
+    () =>
+      expertApi.startOrientation(
+        projectId.value,
+        project.value.representative_material_ids || [],
+        feedback
+      ),
+    '已按新方向重新生成项目学习方案与小样'
+  ).then((completed) => {
+    if (completed) methodFeedback.value = ''
+  })
+}
 
 /** 按用户反馈重新生成方法版本，不直接进入批量学习。 */
 const reviseMethod = () => {
@@ -2562,6 +2628,7 @@ onBeforeUnmount(() => {
   }
 }
 
+.sample-disclosure,
 .review-disclosure,
 .row-details {
   margin-top: 12px;

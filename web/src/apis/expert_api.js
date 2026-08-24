@@ -41,6 +41,10 @@ export const startExpertOrientation = async (projectId, representativeMaterialId
     feedback
   })
 
+/** 根据当前小样 Review 校准完整项目方法，并用同批小样复验。 */
+export const repairExpertMethod = async (projectId) =>
+  apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/repair`, {})
+
 /** 确认当前项目方法版本，并显式提交后续推进方式。 */
 export const confirmExpertMethod = async (projectId, autoAdvance) =>
   apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/method/confirm`, {
@@ -118,6 +122,7 @@ export const expertApi = {
   get: getExpertProject,
   getMaterialText: getExpertMaterialText,
   startOrientation: startExpertOrientation,
+  repairMethod: repairExpertMethod,
   confirmMethod: confirmExpertMethod,
   retryMaterialConversion: retryExpertMaterialConversion,
   retryMaterialLearning: retryExpertMaterialLearning,
