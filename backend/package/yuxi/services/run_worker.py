@@ -16,6 +16,7 @@ from yuxi.agents.skills.service import init_builtin_skills
 from yuxi.expert.worker import (
     process_expert_handout_compilation,
     process_expert_material_learning,
+    process_expert_material_learning_reroll,
     process_expert_method_calibration,
     process_expert_organization,
     process_expert_project_orientation,
@@ -793,6 +794,10 @@ class WorkerSettings:
             process_expert_material_learning,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
             keep_result=0,
+        ),
+        func(
+            process_expert_material_learning_reroll,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
         ),
         func(
             process_expert_organization,

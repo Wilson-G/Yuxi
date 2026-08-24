@@ -1189,6 +1189,45 @@ async def exclude_material(
     return should_start_organization
 
 
+AUTO_EXCLUDED_MATERIAL_REASON = "运行失败自动排除"
+
+
+async def exclude_failed_material_for_auto_advance(
+    project_id: str,
+    material_id: str,
+    method_version: int,
+) -> bool:
+    """无人值守模式专用：传输故障烧尽重投预算后按固定原因排除失败材料并推进交接。
+
+    与用户显式排除共用同一套事实语义（status=excluded + exclusion_reason），
+    但不要求至少保留一份材料——全部失败时由收尾逻辑停在「没有材料通过 Review」。
+    返回 True 表示项目已进入组织阶段等待投递；手动推进或现场已变时返回 False 不触碰任何事实。
+    """
+
+    async with pg_manager.get_async_session_context() as db:
+        repo = ExpertRepository(db)
+        project = await repo.lock_project(project_id)
+        material = await repo.lock_material(material_id)
+        if (
+            project is None
+            or material is None
+            or material.project_id != project_id
+            or project.stage != MATERIAL_LEARNING_STAGE
+            or project.method_version != method_version
+            or project.status != "needs_attention"
+            or not bool(project.auto_advance)
+            or material.status != "needs_attention"
+        ):
+            return False
+        material.status = "excluded"
+        material.exclusion_reason = AUTO_EXCLUDED_MATERIAL_REASON
+        material.error_message = None
+        await _finish_material_learning(db, project_id, method_version)
+        should_start_organization = project.stage == "organization" and project.status == "preparing"
+        await db.commit()
+        return should_start_organization
+
+
 async def mark_project_attention(project_id: str, error: str) -> None:
     """在有限系统重试耗尽后保存可行动错误。"""
 
@@ -1666,6 +1705,7 @@ __all__ = [
     "confirm_project_method",
     "create_expert_project",
     "delete_expert_project",
+    "exclude_failed_material_for_auto_advance",
     "exclude_material",
     "get_expert_project_detail",
     "get_expert_material_text",

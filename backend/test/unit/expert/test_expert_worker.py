@@ -16,7 +16,7 @@ from arq import Retry
 from google.genai.errors import ClientError as GeminiClientError
 from google.genai.errors import ServerError as GeminiServerError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from yuxi.expert import worker
+from yuxi.expert import service, worker
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.services import task_service
 from yuxi.services.run_worker import WorkerSettings
@@ -692,6 +692,7 @@ async def test_organization_handoff_respects_project_fact_boundaries(
 @pytest.mark.asyncio
 async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     attention: list[tuple[str, str, int, str]] = []
+    scheduled: list[tuple[str, str, int]] = []
 
     async def fail_material_stage(project_id: str, material_id: str, method_version: int) -> dict:
         del project_id, material_id, method_version
@@ -700,12 +701,18 @@ async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: py
     async def record_attention(project_id: str, material_id: str, method_version: int, error: str) -> None:
         attention.append((project_id, material_id, method_version, error))
 
+    async def record_schedule(project_id: str, material_id: str, method_version: int) -> None:
+        scheduled.append((project_id, material_id, method_version))
+
     monkeypatch.setattr(worker, "run_material_learning_stage", fail_material_stage)
     monkeypatch.setattr(worker, "mark_material_learning_attention", record_attention)
+    monkeypatch.setattr(worker, "_schedule_material_learning_auto_reroll", record_schedule)
 
     with pytest.raises(Retry):
         await worker.process_expert_material_learning({"job_try": 1}, "material-retry-project", "material-1", 1)
     assert attention == []
+    # 预算未烧尽时走任务级 Retry，不安排错峰重投。
+    assert scheduled == []
 
     with pytest.raises(TimeoutError, match="数据库连接中断"):
         await worker.process_expert_material_learning(
@@ -715,6 +722,7 @@ async def test_material_stage_outer_failure_has_finite_arq_retry(monkeypatch: py
             1,
         )
     assert attention == [("material-retry-project", "material-1", 1, "材料阶段数据库连接中断")]
+    assert scheduled == [("material-retry-project", "material-1", 1)]
 
 
 @pytest.mark.asyncio
@@ -1163,3 +1171,318 @@ async def test_orientation_business_failure_does_not_auto_reroll(
         project = await ExpertRepository(db).get_project(project_id)
     assert project is not None and project.status == "needs_attention"
     assert pool.jobs == []
+
+
+async def _add_learning_material(
+    factory,
+    project_id: str,
+    material_id: str,
+    *,
+    status: str,
+) -> None:
+    async with factory() as db:
+        await ExpertRepository(db).create_materials(
+            project_id,
+            [
+                {
+                    "material_id": material_id,
+                    "title": material_id,
+                    "source_path": f"{material_id}.md",
+                    "raw_path": f"raw/{material_id}.md",
+                    "text_path": f"text/{material_id}.md",
+                    "file_type": ".md",
+                    "status": status,
+                    "line_count": 1,
+                }
+            ],
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_material_auto_reroll_schedules_one_deferred_round(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    await worker._schedule_material_learning_auto_reroll("mat-reroll-a", "m1", 4)
+
+    assert len(pool.jobs) == 1
+    args, kwargs = pool.jobs[0]
+    assert args[:4] == ("process_expert_material_learning_reroll", "mat-reroll-a", "m1", 4)
+    assert args[4] == 1
+    assert kwargs["_job_id"] == "expert:material:mat-reroll-a:m1:reroll:1"
+    assert kwargs["_defer_by"].total_seconds() == worker.MATERIAL_LEARNING_AUTO_REROLL_DEFER_SECONDS
+    counter_key = "expert:material:auto-reroll:mat-reroll-a:m1"
+    assert pool.counters[counter_key] == 1
+    assert pool.ttls[counter_key] == worker.MATERIAL_LEARNING_AUTO_REROLL_COUNTER_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_material_failure_after_budget_schedules_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "material-reroll-wired"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="running",
+        method_version=2,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+    scheduled: list[tuple[str, str, int]] = []
+
+    async def record_schedule(project_id: str, material_id: str, method_version: int) -> None:
+        scheduled.append((project_id, material_id, method_version))
+
+    async def failing_run(_project_id: str, _material_id: str, _method_version: int) -> dict:
+        raise httpx.ConnectError("上游连接被重置")
+
+    monkeypatch.setattr(worker, "run_material_learning_stage", failing_run)
+    monkeypatch.setattr(worker, "_schedule_material_learning_auto_reroll", record_schedule)
+
+    with pytest.raises(httpx.ConnectError):
+        await worker.process_expert_material_learning({"job_try": 5}, project_id, f"{project_id}-material", 2)
+
+    assert scheduled == [(project_id, f"{project_id}-material", 2)]
+    # 任务预算烧尽后项目事实仍由 mark_material_learning_attention 落库。
+    async with worker_env() as db:
+        material = await ExpertRepository(db).get_material(f"{project_id}-material")
+    assert material is not None and material.status == "needs_attention"
+
+
+@pytest.mark.asyncio
+async def test_material_business_failure_does_not_schedule_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "material-business"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="running",
+        method_version=2,
+    )
+
+    async def forbidden_schedule(project_id: str, material_id: str, method_version: int) -> None:
+        raise AssertionError("确定性业务失败不应触发错峰重投")
+
+    async def failing_run(_project_id: str, _material_id: str, _method_version: int) -> dict:
+        raise ValueError("材料正文缺失，无法学习")
+
+    monkeypatch.setattr(worker, "run_material_learning_stage", failing_run)
+    monkeypatch.setattr(worker, "_schedule_material_learning_auto_reroll", forbidden_schedule)
+
+    with pytest.raises(ValueError):
+        await worker.process_expert_material_learning({"job_try": 5}, project_id, f"{project_id}-material", 2)
+
+
+@pytest.mark.asyncio
+async def test_material_reroll_handler_rescues_failed_material(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "mat-reroll-run"
+    material_id = f"{project_id}-material"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="needs_attention",
+        method_version=3,
+    )
+    async with worker_env() as db:
+        await ExpertRepository(db).update_material(material_id, status="needs_attention", error_message="传输中断")
+        await db.commit()
+
+    enqueued: list[tuple[str, str, int]] = []
+
+    async def record_enqueue(project_id: str, material_id: str, method_version: int) -> None:
+        enqueued.append((project_id, material_id, method_version))
+
+    monkeypatch.setattr(worker, "enqueue_material_learning", record_enqueue)
+
+    result = await worker.process_expert_material_learning_reroll({}, project_id, material_id, 3, 1)
+
+    assert result["reroll"] == 1
+    assert result.get("ignored") is None
+    assert enqueued == [(project_id, material_id, 3)]
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        material = await repo.get_material(material_id)
+    assert project is not None and project.status == "running"
+    assert material is not None and material.status == "pending" and material.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_material_reroll_handler_ignores_changed_scene(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重投到期时用户已排除或处理过材料、或项目已推进：忽略且不投递。"""
+    project_id = "mat-reroll-stale"
+    material_id = f"{project_id}-material"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="needs_attention",
+        method_version=3,
+    )
+    async with worker_env() as db:
+        await ExpertRepository(db).update_material(
+            material_id,
+            status="excluded",
+            exclusion_reason="用户手动排除",
+        )
+        await db.commit()
+
+    async def forbidden_enqueue(project_id: str, material_id: str, method_version: int) -> None:
+        raise AssertionError("现场已变不应重新投递")
+
+    monkeypatch.setattr(worker, "enqueue_material_learning", forbidden_enqueue)
+
+    result = await worker.process_expert_material_learning_reroll({}, project_id, material_id, 3, 2)
+
+    assert result == {
+        "project_id": project_id,
+        "material_id": material_id,
+        "reroll": 2,
+        "ignored": True,
+    }
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_material_reroll_excludes_and_hands_off_for_auto_project(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """自动推进项目重投耗尽：按固定原因排除失败材料，剩余通过材料交接组织阶段。"""
+    project_id = "mat-exhaust-auto"
+    failed_material_id = f"{project_id}-material"
+    passed_material_id = f"{project_id}-passed"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="needs_attention",
+        method_version=3,
+    )
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        assert project is not None
+        project.auto_advance = True
+        await repo.update_material(failed_material_id, status="needs_attention", error_message="传输中断")
+        await repo.update_material(passed_material_id, status="passed")
+        await db.commit()
+    await _add_learning_material(worker_env, project_id, passed_material_id, status="passed")
+
+    enqueued_org: list[tuple[str, int]] = []
+
+    async def record_enqueue_org(project_id: str, organization_version: int) -> None:
+        enqueued_org.append((project_id, organization_version))
+
+    async def fake_initialize(project_id: str) -> int:
+        return 7
+
+    monkeypatch.setattr(worker, "initialize_organization_stage", fake_initialize)
+    monkeypatch.setattr(worker, "enqueue_organization", record_enqueue_org)
+
+    await worker._settle_exhausted_material_reroll(project_id, failed_material_id, 3)
+
+    assert enqueued_org == [(project_id, 7)]
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        failed_material = await repo.get_material(failed_material_id)
+    assert project is not None
+    assert project.stage == "organization" and project.status == "preparing"
+    assert failed_material is not None
+    assert failed_material.status == "excluded"
+    assert failed_material.exclusion_reason == service.AUTO_EXCLUDED_MATERIAL_REASON
+
+
+@pytest.mark.asyncio
+async def test_exhausted_material_reroll_keeps_attention_for_manual_project(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """手动推进项目重投耗尽：保持原地等待人工，不自动排除任何材料。"""
+    project_id = "mat-exhaust-manual"
+    failed_material_id = f"{project_id}-material"
+    passed_material_id = f"{project_id}-passed"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="needs_attention",
+        method_version=3,
+    )
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        await repo.update_material(failed_material_id, status="needs_attention", error_message="传输中断")
+        await db.commit()
+    await _add_learning_material(worker_env, project_id, passed_material_id, status="passed")
+
+    async def forbidden_initialize(project_id: str) -> int:
+        raise AssertionError("手动项目不应进入组织阶段")
+
+    async def forbidden_enqueue_org(project_id: str, organization_version: int) -> None:
+        raise AssertionError("手动项目不应投递组织任务")
+
+    monkeypatch.setattr(worker, "initialize_organization_stage", forbidden_initialize)
+    monkeypatch.setattr(worker, "enqueue_organization", forbidden_enqueue_org)
+
+    await worker._settle_exhausted_material_reroll(project_id, failed_material_id, 3)
+
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        failed_material = await repo.get_material(failed_material_id)
+    assert project is not None
+    assert project.stage == "material_learning" and project.status == "needs_attention"
+    assert failed_material is not None and failed_material.status == "needs_attention"
+
+
+@pytest.mark.asyncio
+async def test_material_auto_reroll_settles_at_daily_limit(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """24h 内重投达到上限：不再投递下一轮，改为结算。"""
+    project_id = "mat-reroll-limit"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="needs_attention",
+        method_version=3,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+    settled: list[tuple[str, str, int]] = []
+
+    async def record_settle(project_id: str, material_id: str, method_version: int) -> None:
+        settled.append((project_id, material_id, method_version))
+
+    monkeypatch.setattr(worker, "_settle_exhausted_material_reroll", record_settle)
+
+    for _ in range(worker.MATERIAL_LEARNING_AUTO_REROLL_LIMIT):
+        await worker._schedule_material_learning_auto_reroll(project_id, "m1", 3)
+    assert len(pool.jobs) == worker.MATERIAL_LEARNING_AUTO_REROLL_LIMIT
+    assert settled == []
+
+    await worker._schedule_material_learning_auto_reroll(project_id, "m1", 3)
+    assert len(pool.jobs) == worker.MATERIAL_LEARNING_AUTO_REROLL_LIMIT
+    assert settled == [(project_id, "m1", 3)]

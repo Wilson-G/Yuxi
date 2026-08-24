@@ -20,9 +20,11 @@ from yuxi.expert.compilation_service import run_handout_compilation
 from yuxi.expert.model_tasks import ExpertTransportError
 from yuxi.expert.organization_service import initialize_organization_stage, run_organization_stage
 from yuxi.expert.service import (
+    exclude_failed_material_for_auto_advance,
     mark_material_learning_attention,
     mark_project_attention,
     prepare_expert_project,
+    retry_material_learning,
     run_material_learning_stage,
     run_method_calibration,
     run_project_orientation,
@@ -43,6 +45,12 @@ SYSTEM_TASK_MAX_TRIES = 1 + SYSTEM_TASK_MAX_RETRIES
 ORIENTATION_AUTO_REROLL_LIMIT = 6
 ORIENTATION_AUTO_REROLL_DEFER_SECONDS = 45 * 60
 ORIENTATION_AUTO_REROLL_COUNTER_TTL_SECONDS = 24 * 60 * 60
+
+# 单材料学习沿用同一错峰节奏：预算内重投拉回，耗尽后按推进模式结算（auto 排除交接 / manual 留给人工）。
+MATERIAL_LEARNING_AUTO_REROLL_LIMIT = ORIENTATION_AUTO_REROLL_LIMIT
+MATERIAL_LEARNING_AUTO_REROLL_DEFER_SECONDS = ORIENTATION_AUTO_REROLL_DEFER_SECONDS
+MATERIAL_LEARNING_AUTO_REROLL_COUNTER_TTL_SECONDS = ORIENTATION_AUTO_REROLL_COUNTER_TTL_SECONDS
+
 _project_job_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -336,7 +344,110 @@ async def process_expert_material_learning(
             )
             raise Retry(defer=_system_retry_defer(ctx)) from exc
         await mark_material_learning_attention(project_id, material_id, method_version, str(exc))
+        if _is_transient_material_error(exc):
+            await _schedule_material_learning_auto_reroll(project_id, material_id, method_version)
         raise
+
+
+async def _schedule_material_learning_auto_reroll(
+    project_id: str,
+    material_id: str,
+    method_version: int,
+) -> None:
+    """单材料传输故障烧尽任务预算后安排错峰自动重投；预算耗尽按推进模式结算。"""
+
+    pool = await get_arq_pool()
+    counter_key = f"expert:material:auto-reroll:{project_id}:{material_id}"
+    rounds = int(await pool.incr(counter_key))
+    await pool.expire(counter_key, MATERIAL_LEARNING_AUTO_REROLL_COUNTER_TTL_SECONDS)
+    if rounds > MATERIAL_LEARNING_AUTO_REROLL_LIMIT:
+        logger.warning(
+            f"expert 材料学习自动重投 24h 内已达 {MATERIAL_LEARNING_AUTO_REROLL_LIMIT} 轮上限，"
+            f"开始结算 project={project_id} material={material_id}"
+        )
+        await _settle_exhausted_material_reroll(project_id, material_id, method_version)
+        return
+    logger.warning(
+        f"expert 材料学习传输故障烧尽预算，"
+        f"{MATERIAL_LEARNING_AUTO_REROLL_DEFER_SECONDS // 60} 分钟后自动重投 "
+        f"project={project_id} material={material_id} v{method_version} "
+        f"第 {rounds}/{MATERIAL_LEARNING_AUTO_REROLL_LIMIT} 轮"
+    )
+    await pool.enqueue_job(
+        "process_expert_material_learning_reroll",
+        project_id,
+        material_id,
+        method_version,
+        rounds,
+        _job_id=f"expert:material:{project_id}:{material_id}:reroll:{rounds}",
+        _defer_by=timedelta(seconds=MATERIAL_LEARNING_AUTO_REROLL_DEFER_SECONDS),
+    )
+
+
+async def _settle_exhausted_material_reroll(project_id: str, material_id: str, method_version: int) -> None:
+    """重投预算耗尽后的结算：自动推进项目排除失败材料并交接，手动推进保持原地等人工。"""
+
+    should_start_organization = await exclude_failed_material_for_auto_advance(
+        project_id, material_id, method_version
+    )
+    if not should_start_organization:
+        logger.warning(f"expert 材料学习重投耗尽，等待人工处理 project={project_id} material={material_id}")
+        return
+    organization_version = await initialize_organization_stage(project_id)
+    await enqueue_organization(project_id, organization_version)
+    logger.warning(
+        f"expert 材料学习重投耗尽，已自动排除失败材料并进入组织阶段 "
+        f"project={project_id} material={material_id} org_v{organization_version}"
+    )
+
+
+async def process_expert_material_learning_reroll(
+    ctx,
+    project_id: str,
+    material_id: str,
+    method_version: int,
+    round_index: int = 0,
+) -> dict:
+    """错峰重投：把因传输故障落 attention 的单材料学习拉回队列；现场已变时忽略。"""
+
+    del ctx
+    async with pg_manager.get_async_session_context() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        material = await repo.get_material(material_id)
+        if (
+            project is None
+            or project.stage != "material_learning"
+            or project.status != "needs_attention"
+            or project.method_version != method_version
+            or material is None
+            or material.project_id != project_id
+            or material.status != "needs_attention"
+        ):
+            return {
+                "project_id": project_id,
+                "material_id": material_id,
+                "reroll": round_index,
+                "ignored": True,
+            }
+        created_by = project.created_by
+        await retry_material_learning(
+            db,
+            project_id=project_id,
+            material_id=material_id,
+            created_by=created_by,
+        )
+    await enqueue_material_learning(project_id, material_id, method_version)
+    logger.warning(
+        f"expert 材料学习自动重投已提交 project={project_id} material={material_id} "
+        f"v{method_version} 第 {round_index} 轮"
+    )
+    return {
+        "project_id": project_id,
+        "material_id": material_id,
+        "method_version": method_version,
+        "reroll": round_index,
+    }
 
 
 async def process_expert_organization(ctx, project_id: str, organization_version: int) -> dict:
