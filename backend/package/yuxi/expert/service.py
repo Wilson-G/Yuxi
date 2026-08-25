@@ -62,15 +62,14 @@ def _apply_asset_note_structure_gate(
     *,
     uses_asset_nodes: bool,
     alias: str,
-    auto_advance: bool,
+    auto_advance: bool = False,
     synthesized_review_out: list[MaterialReviewResult] | None = None,
 ) -> None:
     """对资产方法的学习结果执行规范化与结构合同检查。
 
-    可修复的标题格式偏差已在规范化中自动补齐；规范化后仍不满足结构合同说明
-    节点目录与正文存在真实不一致，需要 Author 补内容，按自动模式分别处理：
-    无人值守时合成 revise Review 经 synthesized_review_out 交回修订循环，
-    人工模式抛错进入 needs_attention。
+    可修复的格式偏差已在规范化中自动补齐；规范化后仍不满足结构合同说明
+    节点目录与正文存在真实不一致，需要 Author 补内容，一律合成 revise Review
+    经 synthesized_review_out 交回修订循环。auto_advance 仅保留调用兼容。
     """
 
     if not uses_asset_nodes or note.decision != "learned":
@@ -82,8 +81,8 @@ def _apply_asset_note_structure_gate(
     try:
         validate_asset_note_structure(normalized, material_alias=alias)
     except ValueError as exc:
-        if not auto_advance:
-            raise
+        # 确定性格式偏差已在规范化中修复；这里剩的是节点目录与正文真实不一致，
+        # 一律合成 revise 意见交回修订循环（人工模式同样自动修复，不中断流程）。
         synthesized_review = MaterialReviewResult(
             decision="revise",
             summary=str(exc),
@@ -734,14 +733,25 @@ async def run_project_orientation(
         return result
 
     # 样本之间没有上下游依赖；每份内部仍保持笔记、Review 和定点修订的顺序。
+    # 小样是给用户校验方法方向的预览，不是质量关卡：单份失败不让整批任务作废，
+    # 成功的样本保留、失败样本带原因进入待确认，由用户决定调整方法或重跑。
     sample_outcomes = await asyncio.gather(
         *(run_sample(material, sample) for material, sample in sample_pairs),
         return_exceptions=True,
     )
-    failures = [outcome for outcome in sample_outcomes if isinstance(outcome, Exception)]
-    if failures:
-        raise failures[0]
+    fatal_failures = [
+        outcome
+        for outcome in sample_outcomes
+        if isinstance(outcome, Exception) and not isinstance(outcome, ValueError)
+    ]
+    if fatal_failures:
+        raise fatal_failures[0]
     sample_results = [outcome for outcome in sample_outcomes if isinstance(outcome, dict)]
+    degraded = [
+        {"material_alias": sample["alias"], "error": str(outcome)}
+        for (material, sample), outcome in zip(sample_pairs, sample_outcomes, strict=True)
+        if isinstance(outcome, ValueError)
+    ]
 
     needs_attention = [item for item in sample_results if item["status"] == "needs_attention"]
     async with pg_manager.get_async_session_context() as db:
@@ -755,19 +765,23 @@ async def run_project_orientation(
         ):
             return {"project_id": project_id, "ignored": True}
         project.method_samples = sample_results
-        project.status = "needs_attention" if needs_attention else "awaiting_confirmation"
+        project.status = "needs_attention" if needs_attention and not degraded else "awaiting_confirmation"
         project.message = (
             "笔记小样仍有明确问题，请调整学习方法后重新试跑"
-            if needs_attention
-            else "学习方案和真实小样已就绪，等待确认怎么学"
+            if needs_attention and not degraded
+            else (
+                f"学习方案和小样已就绪（{len(degraded)} 份小样学习降级，可确认后由批量学习阶段重学），等待确认怎么学"
+                if degraded
+                else "学习方案和真实小样已就绪，等待确认怎么学"
+            )
         )
-        project.error_message = needs_attention[0]["reason"] if needs_attention else None
+        project.error_message = needs_attention[0]["reason"] if needs_attention and not degraded else None
         project.updated_at = utc_now_naive()
         await db.flush()
     return {
         "project_id": project_id,
         "method_version": method_version,
-        "status": "needs_attention" if needs_attention else "awaiting_confirmation",
+        "status": "needs_attention" if needs_attention and not degraded else "awaiting_confirmation",
     }
 
 
