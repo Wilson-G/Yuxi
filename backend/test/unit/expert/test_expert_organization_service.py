@@ -1194,3 +1194,118 @@ async def test_organization_normalizes_repairable_note_without_model_call(organi
     assert material is not None
     assert "### N01 [输入事实][原文明说] 音乐天赋断言（结论端）" in material.note
     organization_service.validate_asset_note_structure(material.note, material_alias="N001")
+
+
+class ContractViolatingRepairTasks:
+    """病笔记修订循环：结构门合成 revise 后，修订返回引用其它材料别名的证据。"""
+
+    def __init__(self, revised_markdown: str):
+        self.revised_markdown = revised_markdown
+
+    def bind_activity_context(self, **kwargs) -> None:
+        return None
+
+    async def review_material_note(self, **kwargs) -> MaterialReviewResult:
+        return MaterialReviewResult(decision="pass", summary="内容无实质问题", issues=[])
+
+    async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
+        return MaterialNoteResult(
+            decision="learned",
+            note_markdown=self.revised_markdown,
+            routing_labels=["判断条件"],
+            evidence=[
+                # 引用了当前任务以外的材料别名：确定性输出合同违约。
+                {"material_alias": "N999", "start_line": 1, "end_line": 2, "supports": "支持材料判断"}
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_organization_repair_contract_violation_moves_note_out(organization_env) -> None:
+    """回归：修复循环内确定性合同违约只移出该笔记，不再击穿整个组织阶段。"""
+
+    material_ids = await _seed_organization_project(organization_env, material_count=2)
+    broken_note = "# 资产\n\n## 资产正文\n\n### N01 [输入事实][原文明说]\n内容\n"
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_material(material_ids[0], note=broken_note)
+        await repo.update_material(material_ids[1], note=_wellformed_asset_note())
+        project = await repo.get_project(PROJECT_ID)
+        assert project is not None
+        project.status = "running"
+        project.organization_version = 1
+        await db.commit()
+
+    tasks = ContractViolatingRepairTasks(_wellformed_asset_note())
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        rows = []
+        for material_id in material_ids:
+            row = await repo.get_material(material_id)
+            assert row is not None
+            rows.append(row)
+        healthy = await service.repair_organization_asset_notes(
+            PROJECT_ID,
+            1,
+            rows,
+            {material_ids[0]: "N001", material_ids[1]: "N002"},
+            {**_minimal_snapshot(), "auto_advance": True},
+            tasks,
+        )
+
+    # 违约笔记被移出本次组织（落单材料 needs_attention），健康笔记照常进入组织。
+    assert [item.material_id for item in healthy] == [material_ids[1]]
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        broken = await repo.get_material(material_ids[0])
+        activities = await repo.list_activities(PROJECT_ID, limit=10)
+    assert broken is not None
+    assert broken.status == "needs_attention"
+    assert "引用了当前任务以外的材料" in (broken.error_message or "")
+    warnings = [
+        item for item in activities if item.current_step == "note_structure_repair" and item.status == "warning"
+    ]
+    assert warnings and "N001 修复失败" in warnings[0].message
+
+
+@pytest.mark.asyncio
+async def test_organization_repair_transient_error_propagates(organization_env) -> None:
+    """修复循环内的瞬时传输错误必须上抛，交由阶段级重试与错峰重投接管。"""
+
+    from yuxi.expert.model_tasks import ExpertTransportError
+
+    material_ids = await _seed_organization_project(organization_env, material_count=1)
+    broken_note = "# 资产\n\n## 资产正文\n\n### N01 [输入事实][原文明说]\n内容\n"
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_material(material_ids[0], note=broken_note)
+        project = await repo.get_project(PROJECT_ID)
+        assert project is not None
+        project.status = "running"
+        project.organization_version = 1
+        await db.commit()
+
+    class TransportFailingTasks(ContractViolatingRepairTasks):
+        async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
+            raise ExpertTransportError("peer closed connection")
+
+    tasks = TransportFailingTasks("")
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        row = await repo.get_material(material_ids[0])
+        assert row is not None
+        with pytest.raises(ExpertTransportError):
+            await service.repair_organization_asset_notes(
+                PROJECT_ID,
+                1,
+                [row],
+                {material_ids[0]: "N001"},
+                {**_minimal_snapshot(), "auto_advance": True},
+                tasks,
+            )
+
+    # 瞬时错误不落任何材料事实，留给阶段级处理。
+    async with organization_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_ids[0])
+    assert material is not None
+    assert material.status == "passed"

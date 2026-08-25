@@ -2125,23 +2125,58 @@ async def _repair_one_asset_note(
         line_count=material.line_count,
     )
     text = await read_expert_material_text(material)
-    result = await _run_method_sample(
-        tasks=tasks,
-        model_spec=snapshot["model_spec"],
-        learning_plan=snapshot["learning_plan"],
-        prompt_pack=snapshot["prompt_pack"],
-        material=material_view,
-        alias=alias,
-        text=text,
-        starting_note=(
-            MaterialNoteResult.model_validate(material.note_contract)
-            if material.note_contract
-            else None
-        ),
-        starting_revision_count=int(material.revision_count or 0),
-        auto_advance=bool(snapshot.get("auto_advance")),
-        uses_asset_nodes=True,
-    )
+    try:
+        result = await _run_method_sample(
+            tasks=tasks,
+            model_spec=snapshot["model_spec"],
+            learning_plan=snapshot["learning_plan"],
+            prompt_pack=snapshot["prompt_pack"],
+            material=material_view,
+            alias=alias,
+            text=text,
+            starting_note=(
+                MaterialNoteResult.model_validate(material.note_contract)
+                if material.note_contract
+                else None
+            ),
+            starting_revision_count=int(material.revision_count or 0),
+            auto_advance=bool(snapshot.get("auto_advance")),
+            uses_asset_nodes=True,
+        )
+    except ValueError as exc:
+        # 修订响应违反确定性输出合同（如证据引用了当前任务以外的材料）。
+        # 瞬时传输错误都不是 ValueError，会自然上抛交由阶段级重试与错峰重投接管；
+        # 这里只终结这一份笔记的修复：材料落 needs_attention 并移出本次组织，
+        # 不再击穿整个组织阶段（与「修复未成功」的既有语义一致）。
+        logger.warning(
+            f"expert 组织阶段笔记修复确定性失败 project={project_id} "
+            f"material={material.material_id} alias={alias}: {exc}"
+        )
+        async with pg_manager.get_async_session_context() as db:
+            repo = ExpertRepository(db)
+            project = await repo.get_project(project_id)
+            current = await repo.get_material(material.material_id)
+            if (
+                project is not None
+                and project.status == "running"
+                and project.organization_version == organization_version
+                and current is not None
+                and current.status == "passed"
+            ):
+                current.status = "needs_attention"
+                current.error_message = str(exc)
+        failure_event = {
+            "stage": "organization",
+            "current_step": "note_structure_repair",
+            "status": "warning",
+            "material_id": material.material_id,
+            "message": f"笔记 {alias} 修复失败（{exc}），已移出本次组织",
+        }
+        if getattr(tasks, "activity_events", None):
+            await _drain_material_activity(project_id, material.material_id, tasks, extra=[failure_event])
+        else:
+            await _append_activity(project_id, failure_event)
+        return None
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
