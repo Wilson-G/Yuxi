@@ -2670,6 +2670,75 @@ async def test_update_project_model_applies_immediately_for_new_tasks(expert_env
     assert len(concurrency_switches) == 1
 
 
+def _trace_commit_and_activity(db, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """记录同一会话上 commit 与进展流水写入的先后顺序，供持锁路径回归断言。"""
+
+    order: list[str] = []
+    real_commit = db.commit
+
+    async def traced_commit():
+        order.append("commit")
+        await real_commit()
+
+    monkeypatch.setattr(db, "commit", traced_commit)
+    real_append = service._append_activity
+
+    async def traced_append(project_id, *events):
+        order.append("activity")
+        await real_append(project_id, *events)
+
+    monkeypatch.setattr(service, "_append_activity", traced_append)
+    return order
+
+
+@pytest.mark.asyncio
+async def test_model_switch_commits_before_activity_write(expert_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：换模型持锁路径必须先提交释放行锁，再写进展流水。
+
+    流水经独立连接写入，外键检查要对项目行加 FOR KEY SHARE；
+    若调用方事务仍持有 FOR UPDATE 行锁，两条连接互相等待即自死锁
+    （表现为换模型保存永久转圈、后续暂停/换模型全部排队无响应）。
+    SQLite 无行锁语义，故以调用顺序作为回归断言。
+    """
+
+    project_id, _ = await _create_project(expert_env, count=1)
+    async with expert_env.factory() as db:
+        order = _trace_commit_and_activity(db, monkeypatch)
+        await service.update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            model_spec="provider:other",
+        )
+
+    assert order == ["commit", "activity"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_method_commits_before_activity_write(expert_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：确认方法进入材料学习（_start_material_learning）同样先提交再写 stage_start 流水。"""
+
+    project_id, material_ids = await _create_project(expert_env, count=2)
+    async with expert_env.factory() as db:
+        await ExpertRepository(db).update_project(
+            project_id,
+            status="awaiting_confirmation",
+            learning_plan="# 学习方案",
+            compilation_brief="# 编译底稿",
+            prompt_pack=_prompt_pack().model_dump(),
+            method_sample_material_ids=material_ids,
+            method_samples=[{"material_id": material_ids[0], "status": "passed", "note": {"decision": "learned"}}],
+            method_calibration_completed_at=service.utc_now_naive(),
+        )
+        await db.commit()
+
+    async with expert_env.factory() as db:
+        order = _trace_commit_and_activity(db, monkeypatch)
+        await service.confirm_project_method(db, project_id=project_id, created_by="user-1")
+
+    assert order == ["commit", "activity"]
+
+
 async def _enter_material_learning(expert_env, *, count: int = 2) -> tuple[str, list[str]]:
     """直接把测试项目推进到材料学习 running 态，返回项目与材料 ID。"""
 

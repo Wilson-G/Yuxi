@@ -999,6 +999,9 @@ async def update_expert_project_model(
     if not updates:
         return project
     project.updated_at = utc_now_naive()
+    # 必须先提交释放项目行锁，再写进展流水：流水走独立连接，
+    # 其外键检查要对项目行加 FOR KEY SHARE，与本事务未提交的 FOR UPDATE 互斥会自死锁。
+    await db.commit()
     await _append_activity(
         project.project_id,
         {
@@ -1007,7 +1010,6 @@ async def update_expert_project_model(
             "message": "；".join(updates) + "，从下一批任务起生效",
         },
     )
-    await db.commit()
     return project
 
 
@@ -1032,6 +1034,8 @@ async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertR
     project.message = _material_learning_progress(materials=included, done=0)
     project.error_message = None
     project.updated_at = utc_now_naive()
+    # 同换模型路径：先提交释放调用方持有的项目行锁，再写独立连接的进展流水，避免自死锁。
+    await db.commit()
     await _append_activity(
         project.project_id,
         {
@@ -1040,7 +1044,6 @@ async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertR
             "message": f"开始逐份学习 {len(included)} 份材料",
         },
     )
-    await db.commit()
     return project.method_version
 
 
