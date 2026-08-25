@@ -33,6 +33,8 @@ from yuxi.utils.datetime_utils import utc_now_naive
 # 组织阶段结构校验失败后的带反馈重试次数：校验错误是「模型没按合同交」，
 # 交给模型修正而不是判死整阶段；耗尽后仍维持原 needs_attention 语义。
 ORGANIZATION_VALIDATION_FEEDBACK_RETRIES = 2
+# 校验反馈附带完整笔记目录，帮助总编把遗漏的别名归位而不是猜。
+_TOPIC_MAP_FEEDBACK_CATALOG = "笔记目录（全部已通过笔记的唯一合法别名）：{aliases}"
 
 
 async def initialize_organization_stage(project_id: str, *, feedback: str = "") -> int:
@@ -379,7 +381,12 @@ async def _edit_topic_map_with_feedback(
             _validate_topic_map(topic_map, known_aliases)
             return topic_map
         except ValueError as exc:
-            validation_feedback = str(exc)
+            validation_feedback = "\n".join(
+                (
+                    str(exc),
+                    _TOPIC_MAP_FEEDBACK_CATALOG.format(aliases=", ".join(sorted(known_aliases))),
+                )
+            )
             if attempt == ORGANIZATION_VALIDATION_FEEDBACK_RETRIES:
                 raise
 
@@ -654,6 +661,7 @@ async def write_topic_handout(
             notes=snapshot["notes"],
             evidence_pack=evidence_pack,
         )
+        handout = reconcile_citations_with_evidence(handout, evidence_pack, snapshot["topic_key"])
         validate_handout_contract(handout, snapshot["topic_key"], evidence_pack)
         review = await tasks.review_handout(
             model_spec=snapshot["model_spec"],
@@ -681,6 +689,7 @@ async def write_topic_handout(
                 review=review,
             )
             validate_handout_contract(revision, snapshot["topic_key"], evidence_pack)
+            revision = reconcile_citations_with_evidence(revision, evidence_pack, snapshot["topic_key"])
             final_review = await tasks.review_handout(
                 model_spec=snapshot["model_spec"],
                 learning_plan=snapshot["learning_plan"],
@@ -719,7 +728,8 @@ async def write_topic_handout(
         topic.handout = final_handout.handout_markdown
         topic.handout_contract = final_handout.model_dump()
         topic.review = final_review.model_dump()
-        topic.revision_count = 1 if revision else 0
+        # 修订次数按累计口径保留：重跑只重写讲义，不重置全书修订预算。
+        topic.revision_count = max(topic.revision_count, 1 if revision else 0)
         topic.error_message = reason or None
         if status == "passed":
             project.editorial_plan = final_handout.editorial_plan_markdown
@@ -810,8 +820,16 @@ def _validate_topic_map(result: TopicMapResult, known_aliases: set[str]) -> None
     unassigned = set(unassigned_aliases)
     if assigned & unassigned:
         raise ValueError("同一笔记不能同时进入正式主题和未分配清单")
-    if not unassigned <= known_aliases or assigned | unassigned != known_aliases:
-        raise ValueError("主题地图没有明确交代全部已通过笔记")
+    if not unassigned <= known_aliases:
+        unknown = ", ".join(sorted(unassigned - known_aliases))
+        raise ValueError(f"未分配清单引用了未知笔记：{unknown}")
+    missing = known_aliases - assigned - unassigned
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        raise ValueError(
+            f"主题地图没有明确交代全部已通过笔记：{missing_list} "
+            f"既没有进入任何正式主题，也没有列入 unassigned_notes 说明原因"
+        )
 
 
 def _build_topic_evidence_pack(topic_key: str, materials: list[Any], aliases: dict[str, str]) -> TopicEvidencePack:
@@ -848,6 +866,41 @@ def _validate_evidence_pack(pack: TopicEvidencePack, topic_key: str, materials: 
         }
         if not set(range(item.start_line, item.end_line + 1)) <= covered_lines:
             raise ValueError("主题证据没有落在已通过笔记的原文依据内")
+
+
+def reconcile_citations_with_evidence(
+    handout: HandoutDraftResult,
+    evidence_pack: TopicEvidencePack,
+    topic_key: str,
+) -> HandoutDraftResult:
+    """讲义引用与获准证据包的确定性对齐。
+
+    证据包是获准原文锚点的权威事实；模型抄写行号时的越界引用按逐字 supports
+    匹配回写到正确锚点，避免一次行号笔误烧掉整篇讲义的重试预算。
+    """
+
+    anchor_lines_by_alias: dict[str, set[int]] = {}
+    exact_by_key: dict[tuple[str, str], tuple[int, int]] = {}
+    for item in evidence_pack.evidence:
+        lines = anchor_lines_by_alias.setdefault(item.note_alias, set())
+        lines.update(range(item.start_line, item.end_line + 1))
+        exact_by_key.setdefault((item.note_alias, item.supports.strip()), (item.start_line, item.end_line))
+
+    changed = False
+    citations = []
+    for citation in handout.citations:
+        citation_lines = set(range(citation.start_line, citation.end_line + 1))
+        if citation_lines <= anchor_lines_by_alias.get(citation.note_alias, set()):
+            citations.append(citation)
+            continue
+        exact = exact_by_key.get((citation.note_alias, citation.supports.strip()))
+        if exact is not None:
+            citation = citation.model_copy(update={"start_line": exact[0], "end_line": exact[1]})
+            changed = True
+        citations.append(citation)
+    if not changed:
+        return handout
+    return handout.model_copy(update={"citations": citations, "topic_key": topic_key})
 
 
 def validate_handout_contract(

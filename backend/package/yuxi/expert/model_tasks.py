@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from openai import (
     APIConnectionError,
+    APIError,
     APITimeoutError,
     InternalServerError,
     RateLimitError,
@@ -129,7 +130,21 @@ def is_transient_expert_error(exc: Exception) -> bool:
         return exc.retryable
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 429 or exc.response.status_code in {502, 503, 504}
-    return False
+    if isinstance(exc, json.JSONDecodeError):
+        # openai SDK 在 SSE 分片内解析 data 时抛裸 json.JSONDecodeError（半截 JSON 注入流）。
+        # 这是传输层损坏，不是模型业务判断：按瞬时故障重放/重投，不能判死业务阶段。
+        return True
+    return _is_openai_unexpected_stream_end(exc)
+
+
+def _is_openai_unexpected_stream_end(exc: Exception) -> bool:
+    """openai SDK 的泛型 APIError 中，流被上游中途掐断（unexpected EOF）属于传输故障。
+
+    泛型 APIError 不区分业务 4xx，这里只按消息识别这一种已知死法，避免把
+    供应商明确返回的 API 状态错误误判成可重试。
+    """
+
+    return isinstance(exc, APIError) and "unexpected EOF" in str(exc)
 
 
 class ExpertActivityEvent:
@@ -1082,6 +1097,8 @@ class ExpertModelTasks:
                 # 连接 TCP 层存活但长时间不出分片，同样按传输故障重放。
                 TimeoutError,
                 httpx.TransportError,
+                # openai SDK 解析 SSE 分片 data 时的半截 JSON 同属传输损坏，直接重放。
+                json.JSONDecodeError,
             ) as exc:
                 last_failure = exc
                 continue

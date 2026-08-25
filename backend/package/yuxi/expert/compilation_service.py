@@ -36,6 +36,7 @@ from yuxi.expert.model_tasks import (
     is_transient_expert_error,
 )
 from yuxi.expert.organization_service import (
+    reconcile_citations_with_evidence,
     format_handout_notes_with_evidence,
     format_topic_definition,
     prepare_topic_evidence,
@@ -633,6 +634,7 @@ async def _revise_topic_from_book_review(
             handout=snapshot["handout"],
             review=review,
         )
+        revised = reconcile_citations_with_evidence(revised, snapshot["evidence_pack"], snapshot["handout"].topic_key)
         validate_handout_contract(revised, snapshot["handout"].topic_key, snapshot["evidence_pack"])
         final_review = await tasks.review_handout(
             model_spec=snapshot["model_spec"],

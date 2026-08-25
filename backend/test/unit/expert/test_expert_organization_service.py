@@ -566,6 +566,88 @@ def test_handout_citations_may_select_subranges_of_evidence_pack() -> None:
     organization_service.validate_handout_contract(handout, "topic-a", evidence_pack)
 
 
+def test_reconcile_citations_rewrites_misaligned_lines_to_exact_evidence_anchor() -> None:
+    """模型抄错行号但 supports 逐字对应证据锚点时，确定性回写而不是判死。"""
+
+    evidence_pack = TopicEvidencePack(
+        topic_key="category_screening_framework_and_form_choice",
+        evidence=[
+            {
+                "note_alias": "N005",
+                "start_line": 7,
+                "end_line": 7,
+                "supports": "‘只要尽早进入就可以了’，支持N24",
+            },
+            {
+                "note_alias": "N005",
+                "start_line": 9,
+                "end_line": 9,
+                "supports": "窗口开启即尽早进入的残余风险明示",
+            },
+        ],
+    )
+    handout = HandoutDraftResult(
+        topic_key="category_screening_framework_and_form_choice",
+        handout_markdown="# 讲义",
+        citations=[
+            {
+                "note_alias": "N005",
+                "start_line": 7,
+                "end_line": 7,
+                "supports": "‘只要尽早进入就可以了’，支持N24",
+            },
+            {
+                "note_alias": "N005",
+                "start_line": 12,
+                "end_line": 12,
+                "supports": "窗口开启即尽早进入的残余风险明示",
+            },
+            {
+                "note_alias": "N005",
+                "start_line": 3,
+                "end_line": 3,
+                "supports": "没有逐字对应的自由引用",
+            },
+        ],
+        editorial_plan_markdown="# 编辑方案",
+    )
+
+    reconciled = organization_service.reconcile_citations_with_evidence(
+        handout,
+        evidence_pack,
+        "category_screening_framework_and_form_choice",
+    )
+
+    assert reconciled.citations[1].start_line == 9
+    assert reconciled.citations[1].end_line == 9
+    # 自由引用不在证据包逐字范围内，保持原样，由合同校验继续把关。
+    assert reconciled.citations[2].start_line == 3
+    with pytest.raises(ValueError):
+        organization_service.validate_handout_contract(
+            reconciled,
+            "category_screening_framework_and_form_choice",
+            evidence_pack,
+        )
+
+
+def test_reconcile_citations_returns_unchanged_when_aligned() -> None:
+    evidence_pack = TopicEvidencePack(
+        topic_key="topic-a",
+        evidence=[{"note_alias": "N001", "start_line": 2, "end_line": 6, "supports": "获准原文范围"}],
+    )
+    handout = HandoutDraftResult(
+        topic_key="topic-a",
+        handout_markdown="# 讲义",
+        citations=[{"note_alias": "N001", "start_line": 4, "end_line": 5, "supports": "精确行"}],
+        editorial_plan_markdown="# 编辑方案",
+    )
+
+    assert (
+        organization_service.reconcile_citations_with_evidence(handout, evidence_pack, "topic-a")
+        is handout
+    )
+
+
 def test_topic_definition_passes_retry_feedback_to_editor() -> None:
     topic = SimpleNamespace(
         topic_key="topic-a",
@@ -1091,7 +1173,12 @@ async def test_topic_map_retries_with_validation_feedback() -> None:
     )
 
     assert result == valid
-    assert tasks.feedbacks == ["", "主题地图没有明确交代全部已通过笔记"]
+    assert tasks.feedbacks == [
+        "",
+        "主题地图没有明确交代全部已通过笔记：N002 "
+        "既没有进入任何正式主题，也没有列入 unassigned_notes 说明原因\n"
+        "笔记目录（全部已通过笔记的唯一合法别名）：N001, N002",
+    ]
 
 
 class RepairLoopTasks:
