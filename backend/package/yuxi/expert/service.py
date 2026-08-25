@@ -565,8 +565,13 @@ async def run_project_orientation(
     *,
     model_tasks: ExpertModelTasks | None = None,
     auto_advance: bool = False,
+    review_deferred: bool = True,
 ) -> dict[str, Any]:
-    """生成当前方法版本的定向、专属 Prompt、笔记小样与 Review。"""
+    """生成当前方法版本的定向、专属 Prompt、笔记小样与 Review。
+
+    首次定向默认只出小样初稿供用户确认方向（review_deferred）；
+    方法校准复跑同批小样时传 review_deferred=False 跑完整 Review 以对比收敛效果。
+    """
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -712,6 +717,7 @@ async def run_project_orientation(
             text=sample["text"],
             auto_advance=auto_advance,
             uses_asset_nodes=uses_asset_nodes,
+            review_deferred=review_deferred,
         )
         async with pg_manager.get_async_session_context() as db:
             project = await ExpertRepository(db).lock_project(project_id)
@@ -766,15 +772,12 @@ async def run_project_orientation(
             return {"project_id": project_id, "ignored": True}
         project.method_samples = sample_results
         project.status = "needs_attention" if needs_attention and not degraded else "awaiting_confirmation"
-        project.message = (
-            "笔记小样仍有明确问题，请调整学习方法后重新试跑"
-            if needs_attention and not degraded
-            else (
-                f"学习方案和小样已就绪（{len(degraded)} 份小样学习降级，可确认后由批量学习阶段重学），等待确认怎么学"
-                if degraded
-                else "学习方案和真实小样已就绪，等待确认怎么学"
-            )
+        ready_message = (
+            f"小样初稿已就绪（{len(degraded)} 份降级，可在放行后由校准重跑），确认方向后自动校准并批量学习"
+            if degraded
+            else "小样初稿已就绪，请确认方向；放行后自动校准并批量学习"
         )
+        project.message = "笔记小样仍有明确问题，请调整学习方法后重新试跑" if needs_attention and not degraded else ready_message
         project.error_message = needs_attention[0]["reason"] if needs_attention and not degraded else None
         project.updated_at = utc_now_naive()
         await db.flush()
@@ -816,7 +819,14 @@ async def confirm_project_method(
         raise ValueError("方法校准正在完成，不能再次确认")
     project.auto_advance = auto_advance
     sample_ids = list(project.method_sample_material_ids or [])
-    if not _method_calibration_issues(project.method_samples):
+    samples_have_review = any(
+        isinstance(review, dict) and review.get("issues")
+        for sample in project.method_samples or []
+        if isinstance(sample, dict)
+        for review in (sample.get("review"), sample.get("final_review"))
+    )
+    if samples_have_review and not _method_calibration_issues(project.method_samples):
+        # 小样已带完整 Review 且没有可执行问题：无需校准，直接进入批量学习。
         project.method_confirmed_at = utc_now_naive()
         await _start_material_learning(db, project, repo)
         return project.method_version
@@ -864,7 +874,7 @@ async def repair_project_method(
         raise ValueError("项目方法缺少固定的小样材料清单")
     samples = list(project.method_samples or [])
     baseline = _build_method_calibration_samples(samples, sample_ids)
-    if not _method_calibration_issues(samples):
+    if not _method_calibration_issues(samples) and not samples:
         raise ValueError("项目方法小样没有可执行的 Review 问题")
 
     project.method_version += 1
@@ -937,7 +947,6 @@ async def run_method_calibration(
         needs_method_calibration = project.method_calibration_completed_at is None
         v2_samples_ready = not needs_method_calibration and project.status == "awaiting_confirmation"
         if needs_method_calibration:
-            _method_calibration_issues(project.method_samples)
             samples = _build_method_calibration_samples(project.method_samples, sample_ids)
         snapshot = {
             "name": project.name,
@@ -987,6 +996,7 @@ async def run_method_calibration(
             method_version,
             model_tasks=tasks,
             auto_advance=snapshot["auto_advance"],
+            review_deferred=False,
         )
         if result.get("status") != "awaiting_confirmation":
             # 小样复跑仍失败：自动模式开启下一轮或宣告预算耗尽；手动模式保持原有停机结果。
@@ -1062,16 +1072,11 @@ async def run_method_calibration(
             project.updated_at = utc_now_naive()
             await db.commit()
             return {"project_id": project_id, "method_version": method_version, "status": "needs_attention"}
-        if project.auto_advance:
-            project.method_confirmed_at = utc_now_naive()
-            await _start_material_learning(db, project, repo)
-            return {"project_id": project_id, "method_version": method_version, "status": "running"}
-        project.method_confirmed_at = None
-        project.message = "校准后的学习方案和真实小样已就绪，等待再次确认怎么学"
-        project.error_message = None
-        project.updated_at = utc_now_naive()
-        await db.commit()
-    return {"project_id": project_id, "method_version": method_version, "status": "awaiting_confirmation"}
+        # 方向已由用户在初稿阶段确认，校准（压 Review 问题）是机器自己的质量圈：
+        # 通过即直接进入批量学习，不再要求二次确认（auto_advance 与否相同处理）。
+        project.method_confirmed_at = utc_now_naive()
+        await _start_material_learning(db, project, repo)
+        return {"project_id": project_id, "method_version": method_version, "status": "running"}
 
 
 async def _settle_failed_auto_calibration(
@@ -1551,6 +1556,7 @@ async def _run_method_sample(
     starting_revision_count: int = 0,
     auto_advance: bool = False,
     uses_asset_nodes: bool = False,
+    review_deferred: bool = False,
 ) -> dict[str, Any]:
     def _structure_gate(candidate: MaterialNoteResult) -> MaterialReviewResult | None:
         """规范化并校验资产结构；不合格时返回合成 revise 意见供修订循环消费。"""
@@ -1580,6 +1586,23 @@ async def _run_method_sample(
         _validate_note(note, alias=alias, line_count=material.line_count)
         if note.decision == "needs_attention":
             review = None
+        elif review_deferred:
+            # 定向预览模式：小样初稿直接给用户校验方向，结构门先规范化，
+            # Review 与修订留给用户放行后的方法校准阶段执行。
+            review = _structure_gate(note)
+            return {
+                "material_id": material.material_id,
+                "material_alias": alias,
+                "title": material.title,
+                "source": material.source_path,
+                "status": "passed" if note.decision == "learned" else "needs_attention",
+                "note": note.model_dump(),
+                "review": None,
+                "revision": None,
+                "revision_count": 0,
+                "final_review": None,
+                "reason": note.reason,
+            }
         else:
             review = await tasks.review_material_note(
                 model_spec=model_spec,
@@ -1595,6 +1618,23 @@ async def _run_method_sample(
             structure_issue = _structure_gate(note)
             if structure_issue is not None and review.decision == "pass":
                 review = structure_issue
+    elif review_deferred and starting_review is None:
+        # 预览模式的恢复路径：仍无 Review，继续按预览结果返回。
+        note = starting_note
+        review = None
+        return {
+            "material_id": material.material_id,
+            "material_alias": alias,
+            "title": material.title,
+            "source": material.source_path,
+            "status": "passed" if note.decision == "learned" else "needs_attention",
+            "note": note.model_dump(),
+            "review": None,
+            "revision": None,
+            "revision_count": starting_revision_count,
+            "final_review": None,
+            "reason": note.reason,
+        }
     else:
         note = starting_note
         review = starting_review
@@ -1742,12 +1782,18 @@ def _method_calibration_issues(samples: list[Any]) -> list[dict[str, Any]]:
 
 
 def _validate_method_samples_ready(samples: list[Any]) -> None:
-    """确认小样可交接；可修 Review 问题交给后续材料 Repair，no_value 须是自动终裁结论。"""
+    """确认小样可交接；可修 Review 问题交给后续材料 Repair，no_value 须是自动终裁结论。
+
+    首次定向的预览小样尚无 Review（final_review 为空），属于正常交接状态，
+    Review 与修订由用户放行后的方法校准阶段补跑。
+    """
 
     if not samples or any(
         not isinstance(sample, dict)
         or sample.get("status") not in {"passed", "review_revise", "no_value"}
-        or (sample.get("final_review") or {}).get("decision") not in {"pass", "revise", "no_value"}
+        or (
+            (sample.get("final_review") or {}).get("decision") not in {None, "pass", "revise", "no_value"}
+        )
         for sample in samples
     ):
         raise ValueError("项目方法小样存在无法自动修复的问题")

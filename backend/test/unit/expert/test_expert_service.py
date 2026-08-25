@@ -209,11 +209,11 @@ async def _make_materials_ready(expert_env, project_id: str) -> list[str]:
 
 
 class OrientationModelTasks:
-    """记录第 0 阶段调用，并让指定小样的首次 Review 可重试失败。"""
+    """记录第 0 阶段调用，并让指定小样的首次 Author 可重试失败。"""
 
-    def __init__(self, *, fail_review_title: str | None = None):
-        self.fail_review_title = fail_review_title
-        self.failed_review = False
+    def __init__(self, *, fail_note_title: str | None = None):
+        self.fail_note_title = fail_note_title
+        self.failed_note = False
         self.call_counts: Counter[str] = Counter()
 
     async def plan_project_method(self, *, samples: list[dict[str, str]], **_kwargs) -> ProjectPlanResult:
@@ -232,6 +232,9 @@ class OrientationModelTasks:
 
     async def write_material_note(self, *, material_alias: str, title: str, **_kwargs) -> MaterialNoteResult:
         self.call_counts[f"note:{title}"] += 1
+        if title == self.fail_note_title and not self.failed_note:
+            self.failed_note = True
+            raise RuntimeError("sample note failed")
         return MaterialNoteResult(
             decision="learned",
             note_markdown=(
@@ -305,24 +308,15 @@ class CalibrationModelTasks(OrientationModelTasks):
 
 
 class InitialAttentionCalibrationTasks(CalibrationModelTasks):
-    """让 V1 小样在两次修订后仍失败，V2 使用校准方法后通过。"""
+    """让 V1 小样初稿带 needs_attention 问题，V2 使用校准方法后通过。"""
 
-    async def review_material_note(self, *, title: str, **_kwargs) -> MaterialReviewResult:
-        self.review_rounds[title] += 1
-        if not self.calibration_inputs and title == "01-material":
-            return MaterialReviewResult(
-                decision="revise",
-                summary="当前方法仍会遗漏改变处理的条件",
-                issues=[
-                    {
-                        "problem": "遗漏改变处理的条件",
-                        "affected_part": "判断链",
-                        "source_lines": ["L3"],
-                        "revision_direction": "让 Author 和 Reviewer 明确保留原文条件",
-                    }
-                ],
+    async def write_material_note(self, **kwargs) -> MaterialNoteResult:
+        if not self.calibration_inputs and kwargs["title"] == "01-material":
+            result = await super().write_material_note(**kwargs)
+            return result.model_copy(
+                update={"decision": "needs_attention", "reason": "当前方法仍会遗漏改变处理的条件"}
             )
-        return MaterialReviewResult(decision="pass", summary="通过", issues=[])
+        return await super().write_material_note(**kwargs)
 
 
 class AttentionCalibrationTasks(CalibrationModelTasks):
@@ -869,8 +863,8 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
             await service.confirm_project_method(db, project_id=project_id, created_by="user-1")
         await db.rollback()
 
-    model_tasks = OrientationModelTasks(fail_review_title="02-material")
-    with pytest.raises(RuntimeError, match="sample review failed"):
+    model_tasks = OrientationModelTasks(fail_note_title="02-material")
+    with pytest.raises(RuntimeError, match="sample note failed"):
         await service.run_project_orientation(
             project_id,
             method_version,
@@ -898,10 +892,8 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
     )
     assert model_tasks.call_counts["plan"] == 1
     assert model_tasks.call_counts["note:02-material"] == 2
-    assert model_tasks.call_counts["review:02-material"] == 2
     for title in persisted_titles:
         assert model_tasks.call_counts[f"note:{title}"] == 1
-        assert model_tasks.call_counts[f"review:{title}"] == 1
 
     async with expert_env.factory() as db:
         repo = ExpertRepository(db)
@@ -915,7 +907,6 @@ async def test_orientation_retry_reuses_completed_work_and_preserves_samples(exp
         assert project.prompt_pack == _prompt_pack().model_dump()
         assert len(project.method_samples) == 3
         assert all(sample["status"] == "passed" for sample in project.method_samples)
-        assert all(sample["final_review"]["decision"] == "pass" for sample in project.method_samples)
         assert [material.material_id for material in materials if material.is_representative] == material_ids
 
     assert result == {
@@ -999,16 +990,13 @@ async def test_orientation_runs_independent_samples_concurrently(expert_env) -> 
     result = await runner
 
     assert result["status"] == "awaiting_confirmation"
+    # 预览模式只跑 Author 初稿，Review 留给确认后的方法校准。
     assert tasks.call_counts == {
         "plan": 1,
         "note:01-material": 1,
-        "review:01-material": 1,
         "note:02-material": 1,
-        "review:02-material": 1,
         "note:03-material": 1,
-        "review:03-material": 1,
         "note:04-material": 1,
-        "review:04-material": 1,
     }
 
 
@@ -1589,6 +1577,7 @@ async def test_initial_attention_repair_calibrates_current_method_without_reorie
             representative_material_ids=material_ids,
         )
     result = await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    # 预览模式：小样初稿带明确问题进入 needs_attention，repair 依据该初稿起校准版本。
     assert result["status"] == "needs_attention"
 
     async with expert_env.factory() as db:
@@ -1626,7 +1615,7 @@ async def test_initial_attention_repair_calibrates_current_method_without_reorie
     assert result == {
         "project_id": project_id,
         "method_version": repaired_version,
-        "status": "awaiting_confirmation",
+        "status": "running",
     }
     assert model_tasks.call_counts["plan"] == 1
     assert len(model_tasks.calibration_inputs) == 1
@@ -1691,18 +1680,12 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
             await service.repair_project_method(db, project_id=project_id, created_by="user-1")
         project.method_sample_material_ids = original_sample_ids
 
+        # 新流程里 needs_attention 初稿样本没有独立 Review：没有可执行 Review 问题时
+        # repair 仍应放行（needs_attention 初稿本身就是校准输入），不能卡死人工出口。
         project.method_samples = [
-            {
-                **sample,
-                "review": ({**sample["review"], "issues": []} if sample.get("review") else None),
-                "final_review": (
-                    {**sample["final_review"], "issues": []} if sample.get("final_review") else None
-                ),
-            }
-            for sample in original_samples
+            {**sample, "review": None, "final_review": None} for sample in original_samples
         ]
-        with pytest.raises(ValueError, match="没有可执行的 Review 问题"):
-            await service.repair_project_method(db, project_id=project_id, created_by="user-1")
+        assert service._method_calibration_issues(project.method_samples) == []
         project.method_samples = original_samples
 
         project.method_calibration_completed_at = service.utc_now_naive()
@@ -1718,8 +1701,8 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
 
 
 @pytest.mark.asyncio
-async def test_method_calibration_compares_samples_and_waits_for_second_confirmation(expert_env) -> None:
-    """校准将 V1 与 V2 小样交给残余评估，并等待用户确认 V2 方法。"""
+async def test_method_calibration_compares_samples_and_starts_learning(expert_env) -> None:
+    """校准将 V1 与 V2 小样交给残余评估；方向已在初稿确认，评估通过直接进入批量学习。"""
 
     project_id, _ = await _create_project(expert_env, count=2)
     material_ids = await _make_materials_ready(expert_env, project_id)
@@ -1746,7 +1729,7 @@ async def test_method_calibration_compares_samples_and_waits_for_second_confirma
     assert result == {
         "project_id": project_id,
         "method_version": 2,
-        "status": "awaiting_confirmation",
+        "status": "running",
     }
     assert len(model_tasks.calibration_inputs) == 1
     calibration_input = model_tasks.calibration_inputs[0]
@@ -1762,26 +1745,13 @@ async def test_method_calibration_compares_samples_and_waits_for_second_confirma
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
         assert project is not None
-        assert project.stage == service.ORIENTATION_STAGE
-        assert project.status == "awaiting_confirmation"
+        assert project.stage == service.MATERIAL_LEARNING_STAGE
+        assert project.status == "running"
         assert project.learning_plan == "# 校准后的项目学习方案"
         assert project.method_sample_material_ids == material_ids
         assert [sample["material_id"] for sample in project.method_samples] == material_ids
-        assert project.method_confirmed_at is None
-        assert project.method_calibration_baseline == []
-        confirmed_version = await service.confirm_project_method(
-            db,
-            project_id=project_id,
-            created_by="user-1",
-            auto_advance=True,
-        )
-        assert confirmed_version == calibrated_version
-        project = await ExpertRepository(db).get_project(project_id)
-        assert project is not None
-        assert project.stage == service.MATERIAL_LEARNING_STAGE
-        assert project.status == "running"
         assert project.method_confirmed_at is not None
-        assert project.auto_advance is False
+        assert project.method_calibration_baseline == []
         with pytest.raises(ValueError, match="当前项目状态不能开始项目定向"):
             await service.start_project_orientation(
                 db,
@@ -1899,19 +1869,21 @@ async def test_method_calibration_retry_only_repeats_assessment(
             assert project.status == "running"
             assert all(material.status == "pending" for material in materials)
         else:
-            assert result["status"] == "awaiting_confirmation"
-            assert project.stage == service.ORIENTATION_STAGE
-            assert project.status == "awaiting_confirmation"
-            assert project.method_confirmed_at is None
+            # 方向已在初稿确认：人工模式校准通过同样直接进入批量学习。
+            materials = await repo.list_project_materials(project_id)
+            assert result["status"] == "running"
+            assert project.stage == service.MATERIAL_LEARNING_STAGE
+            assert project.status == "running"
+            assert all(material.status == "pending" for material in materials)
 
 
 @pytest.mark.asyncio
 async def test_method_confirmation_without_review_issue_starts_learning_directly(expert_env) -> None:
-    """没有可泛化 Review 问题时，确认方向后直接进入批量学习。"""
+    """没有可泛化 Review 问题时，确认方向后直接进入批量学习（校准版小样复跑无意见）。"""
 
     project_id, _ = await _create_project(expert_env, count=2)
     material_ids = await _make_materials_ready(expert_env, project_id)
-    model_tasks = OrientationModelTasks()
+    model_tasks = CalibrationModelTasks()
     async with expert_env.factory() as db:
         method_version = await service.start_project_orientation(
             db,
@@ -1922,17 +1894,19 @@ async def test_method_confirmation_without_review_issue_starts_learning_directly
     await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
 
     async with expert_env.factory() as db:
-        method_version = await service.confirm_project_method(
+        calibrated_version = await service.confirm_project_method(
             db,
             project_id=project_id,
             created_by="user-1",
             auto_advance=True,
         )
+    # 预览小样无 Review：确认后先跑一轮校准（复跑小样带完整 Review）再评估。
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert result["status"] == "running"
+    async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
         detail = await service.get_expert_project_detail(db, project_id=project_id, created_by="user-1")
     assert project is not None
-    assert project.method_version == 1
-    assert method_version == 1
     assert project.stage == service.MATERIAL_LEARNING_STAGE
     assert project.status == "running"
     assert project.auto_advance is True
@@ -2161,11 +2135,7 @@ def test_validate_method_samples_ready_accepts_auto_resolved_no_value_only() -> 
         ]
     )
     with pytest.raises(ValueError, match="无法自动修复"):
-        service._validate_method_samples_ready(
-            [{"status": "needs_attention", "final_review": {"decision": "no_value"}}]
-        )
-    with pytest.raises(ValueError, match="无法自动修复"):
-        service._validate_method_samples_ready([{"status": "no_value", "final_review": None}])
+        service._validate_method_samples_ready([{"status": "needs_attention", "final_review": {"decision": "no_value"}}])
 
 
 @pytest.mark.asyncio
@@ -2261,7 +2231,7 @@ async def test_reorientation_can_replace_auto_advance_selection(expert_env) -> N
 
     assert project is not None
     assert reoriented_version > calibrated_version
-    assert confirmed_version == reoriented_version
+    assert confirmed_version == reoriented_version + 1
     assert project.auto_advance is False
 
 
@@ -2446,11 +2416,11 @@ async def test_method_calibration_automatically_repairs_v2_review_issue(expert_e
         )
 
     result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
-    assert result["status"] == "awaiting_confirmation"
+    assert result["status"] == "running"
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
     assert project is not None
-    assert project.stage == service.ORIENTATION_STAGE
-    assert project.status == "awaiting_confirmation"
+    assert project.stage == service.MATERIAL_LEARNING_STAGE
+    assert project.status == "running"
     assert project.method_samples[0]["status"] == "passed"
     assert project.method_samples[0]["final_review"]["decision"] == "pass"

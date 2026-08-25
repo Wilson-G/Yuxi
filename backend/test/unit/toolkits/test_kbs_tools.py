@@ -8,9 +8,20 @@ import pytest
 
 from yuxi.agents.toolkits.kbs import tools
 from yuxi.knowledge.base import KnowledgeBase
+from yuxi.knowledge.factory import KnowledgeBaseFactory
+from yuxi.knowledge.implementations.dify import DifyKB
+from yuxi.knowledge.implementations.milvus import MilvusKB
+from yuxi.knowledge.implementations.notion import NotionKB
 from yuxi.knowledge.manager import KnowledgeBaseManager
 from yuxi.knowledge.read_models import KnowledgeBaseDetail
 from yuxi.repositories.knowledge_base_repository import KnowledgeBaseRepository
+
+# search_file 的可检索性过滤依赖 KnowledgeBaseFactory 注册表；生产环境由
+# yuxi.knowledge.runtime 导入时注册。单测进程不触发该导入，导致单文件运行时
+# "milvus" 被判为不支持文档操作。这里显式注册同一组实现，使本文件单独运行
+# 与全量运行（其他模块先导入了 runtime）行为一致。
+for _kb_class in (MilvusKB, DifyKB, NotionKB):
+    KnowledgeBaseFactory.register(_kb_class)
 
 
 def _tool_callable(tool):

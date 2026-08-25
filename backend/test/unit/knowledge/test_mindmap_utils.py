@@ -93,6 +93,13 @@ async def test_generate_database_mindmap_loads_selected_file_ids_directly(monkey
     )
     monkeypatch.setattr(mm, "select_model", lambda model_spec: FakeModel())
 
+    # select_model 的 model_spec 参数在调用前求值：system_options.get() 必须被隔离，
+    # 否则会打到真实 Redis/Postgres。
+    async def get_system_options(_option, _db=None):
+        return {"default_model": "test-provider:test-model"}
+
+    monkeypatch.setattr(type(mm.system_options), "get", get_system_options)
+
     result = await mm.generate_database_mindmap("kb_1", file_ids=["outside-page"])
 
     assert result["file_count"] == 1
