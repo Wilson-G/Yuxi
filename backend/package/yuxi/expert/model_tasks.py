@@ -9,10 +9,22 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
+from anthropic import InternalServerError as AnthropicInternalServerError
+from anthropic import RateLimitError as AnthropicRateLimitError
+from google.genai.errors import ClientError as GeminiClientError
+from google.genai.errors import ServerError as GeminiServerError
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately
-from openai import APIConnectionError, APITimeoutError
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import OperationalError
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ProtocolError, ReadTimeoutError
 
 from yuxi.agents.models import load_chat_model
 from yuxi.expert.compiler_profiles import (
@@ -39,6 +51,7 @@ from yuxi.expert.contracts import (
     TopicResearchResult,
 )
 from yuxi.models.providers.cache import model_cache
+from yuxi.storage.minio.client import StorageError
 from yuxi.utils.logging_config import logger
 
 ContractT = TypeVar("ContractT", bound=BaseModel)
@@ -80,6 +93,43 @@ class ExpertJsonlOutputError(ValueError):
 
 class ExpertTransportError(Exception):
     """模型调用在传输层失败或被上游包装成空响应；按瞬时故障自动重放，不是业务失败。"""
+
+
+def is_transient_expert_error(exc: Exception) -> bool:
+    """只识别当前供应商调用中可明确重试的瞬时失败；供任务层和服务层共同分流。"""
+
+    if isinstance(
+        exc,
+        (
+            OperationalError,
+            ConnectionError,
+            TimeoutError,
+            asyncio.TimeoutError,
+            httpx.TransportError,
+            APIConnectionError,
+            APITimeoutError,
+            RateLimitError,
+            InternalServerError,
+            AnthropicAPIConnectionError,
+            AnthropicRateLimitError,
+            AnthropicInternalServerError,
+            GeminiServerError,
+            ConnectTimeoutError,
+            MaxRetryError,
+            ProtocolError,
+            ReadTimeoutError,
+            # 专家调用层重放耗尽后抛出的统一传输失败信号。
+            ExpertTransportError,
+        ),
+    ):
+        return True
+    if isinstance(exc, GeminiClientError):
+        return exc.code == 429
+    if isinstance(exc, StorageError):
+        return exc.retryable
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code in {502, 503, 504}
+    return False
 
 
 class ExpertActivityEvent:
@@ -471,6 +521,7 @@ class ExpertModelTasks:
         stage_prompt: str,
         note_catalog: str,
         include_asset_nodes: bool = False,
+        validation_feedback: str = "",
     ) -> PlanningGroupsResult:
         """让模型依据 Labels 形成有意义的规划范围。"""
 
@@ -486,6 +537,11 @@ class ExpertModelTasks:
 不能按文件顺序、固定数量、字符数或 token 数切批，也不能只取一部分笔记。
 每份笔记至少属于一个分组；无法合理归组时明确写入 unresolved，不要猜测。
 """.strip()
+        feedback_section = (
+            f"\n\n上一次输出未通过系统结构校验，请修正后重新输出：\n{validation_feedback.strip()}"
+            if validation_feedback.strip()
+            else ""
+        )
         prompt = f"""
 
 已确认的项目学习方案：
@@ -493,6 +549,7 @@ class ExpertModelTasks:
 
 已通过 Review 的笔记目录：
 {note_catalog}
+{feedback_section}
 """.strip()
         return await self._invoke_structured(
             model_spec,
@@ -540,10 +597,16 @@ class ExpertModelTasks:
         candidate_research: str,
         excluded_materials: str,
         feedback: str = "",
+        validation_feedback: str = "",
     ) -> TopicMapResult:
         """由项目内唯一总编判断入口形成主题地图和编辑方案。"""
 
         feedback_section = f"\n\n用户对上一版组织方式的反馈：\n{feedback.strip()}" if feedback.strip() else ""
+        validation_section = (
+            f"\n\n上一次输出未通过系统结构校验，请修正后重新输出：\n{validation_feedback.strip()}"
+            if validation_feedback.strip()
+            else ""
+        )
         task_instruction = """
 你是当前项目唯一的总编模型。候选研究只是输入，不是目录；由你统一决定主题边界、
 来源冲突口径、讲义顺序和导航思路。每份已审笔记都必须进入至少一个正式主题，
@@ -562,7 +625,7 @@ class ExpertModelTasks:
 
 未纳入材料：
 {excluded_materials or "无"}
-{feedback_section}
+{feedback_section}{validation_section}
 """.strip()
         return await self._invoke_structured(
             model_spec,
@@ -1003,7 +1066,10 @@ class ExpertModelTasks:
                 # 重放逐条落流水：用户能看出批处理停在哪一步、是否在自愈。
                 self._emit_activity(
                     "model_retry",
-                    f"模型调用传输失败，第 {replay}/{len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS)} 次重放：{last_failure!r}",
+                    (
+                        f"模型调用传输失败，第 {replay}/{len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS)} "
+                        f"次重放：{last_failure!r}"
+                    ),
                     status="warning",
                 )
                 await asyncio.sleep(delay)
@@ -1130,5 +1196,6 @@ __all__ = [
     "ExpertJsonlOutputError",
     "ExpertModelTasks",
     "ExpertTransportError",
+    "is_transient_expert_error",
     "number_material_lines",
 ]

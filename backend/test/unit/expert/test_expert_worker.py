@@ -17,6 +17,7 @@ from google.genai.errors import ClientError as GeminiClientError
 from google.genai.errors import ServerError as GeminiServerError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from yuxi.expert import service, worker
+from yuxi.expert.model_tasks import is_transient_expert_error
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.services import task_service
 from yuxi.services.run_worker import WorkerSettings
@@ -200,11 +201,11 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         ),
         (
             ("process_expert_method_calibration", "calibration", 2),
-            {"_job_id": "expert:method-calibration:calibration:v2"},
+            {"_job_id": "expert:method-calibration:calibration:v2:initial"},
         ),
         (
             ("process_expert_method_calibration", "repair-calibration", 3),
-            {"_job_id": "expert:method-calibration:repair-calibration:v3"},
+            {"_job_id": "expert:method-calibration:repair-calibration:v3:initial"},
         ),
         (
             ("process_expert_material_learning", "learning", "learning-material", 3),
@@ -212,7 +213,7 @@ async def test_recovery_only_requeues_unfinished_project_facts_without_tasker(
         ),
         (
             ("process_expert_organization", "organization", 2),
-            {"_job_id": "expert:organization:organization:v2"},
+            {"_job_id": "expert:organization:organization:v2:initial"},
         ),
         (
             ("process_expert_handout_compilation", "handouts", 2),
@@ -815,11 +816,11 @@ def _anthropic_status_error(error_type, status_code: int):
     ],
 )
 def test_supported_model_and_minio_transient_errors_are_retryable(error: Exception) -> None:
-    assert worker._is_transient_material_error(error) is True
+    assert is_transient_expert_error(error) is True
 
 
 def test_deterministic_minio_error_is_not_retryable() -> None:
-    assert worker._is_transient_material_error(StorageError("规范化正文对象不存在")) is False
+    assert is_transient_expert_error(StorageError("规范化正文对象不存在")) is False
 
 
 @pytest.mark.asyncio
@@ -1561,3 +1562,389 @@ async def test_enqueue_pending_material_learning_respects_project_concurrency(
             f"{project_id}-m5",
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# 阶段级（方法校准 / 组织 / 讲义）瞬时故障错峰重投
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stage_transient_attention_and_reroll_schedules_one_deferred_round(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "stage-reroll-a",
+        stage="organization",
+        status="needs_attention",
+        method_version=1,
+        organization_version=2,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    await worker._mark_transient_attention_and_reroll(
+        "stage-reroll-a",
+        error="上游断连",
+        counter_scope="organization",
+        reroll_job="process_expert_organization_reroll",
+        reroll_args=("stage-reroll-a", 2),
+    )
+
+    assert len(pool.jobs) == 1
+    args, kwargs = pool.jobs[0]
+    assert args[:3] == ("process_expert_organization_reroll", "stage-reroll-a", 2)
+    assert args[3] == 1
+    assert kwargs["_job_id"] == "expert:organization:stage-reroll-a:reroll:1"
+    assert kwargs["_defer_by"].total_seconds() == worker.TRANSIENT_AUTO_REROLL_DEFER_SECONDS
+    counter_key = "expert:organization:auto-reroll:stage-reroll-a"
+    assert pool.counters[counter_key] == 1
+    assert pool.ttls[counter_key] == worker.TRANSIENT_AUTO_REROLL_COUNTER_TTL_SECONDS
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project("stage-reroll-a")
+    assert project is not None and project.status == "needs_attention"
+    assert "45 分钟后自动重试" in (project.message or "")
+
+
+@pytest.mark.asyncio
+async def test_stage_transient_attention_and_reroll_stops_at_daily_limit(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _add_project(
+        worker_env,
+        "stage-reroll-limit",
+        stage="organization",
+        status="needs_attention",
+        method_version=1,
+        organization_version=2,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    for _ in range(worker.TRANSIENT_AUTO_REROLL_LIMIT):
+        await worker._mark_transient_attention_and_reroll(
+            "stage-reroll-limit",
+            error="上游断连",
+            counter_scope="organization",
+            reroll_job="process_expert_organization_reroll",
+            reroll_args=("stage-reroll-limit", 2),
+        )
+    assert len(pool.jobs) == worker.TRANSIENT_AUTO_REROLL_LIMIT
+
+    await worker._mark_transient_attention_and_reroll(
+        "stage-reroll-limit",
+        error="上游断连",
+        counter_scope="organization",
+        reroll_job="process_expert_organization_reroll",
+        reroll_args=("stage-reroll-limit", 2),
+    )
+    assert len(pool.jobs) == worker.TRANSIENT_AUTO_REROLL_LIMIT
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project("stage-reroll-limit")
+    assert project is not None and "已达" in (project.message or "")
+
+
+@pytest.mark.asyncio
+async def test_method_calibration_final_transport_failure_schedules_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "calib-transport"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="running",
+        method_version=8,
+        calibration_pending=True,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    async def failing_run(_project_id: str, _method_version: int) -> dict:
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    monkeypatch.setattr(worker, "run_method_calibration", failing_run)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await worker.process_expert_method_calibration({"job_try": 5}, project_id, 8)
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert len(pool.jobs) == 1
+    assert pool.jobs[0][0][0] == "process_expert_method_calibration_reroll"
+
+
+@pytest.mark.asyncio
+async def test_organization_final_transport_failure_schedules_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "org-transport"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="organization",
+        status="running",
+        method_version=1,
+        organization_version=3,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    async def failing_run(_project_id: str, _organization_version: int) -> dict:
+        raise httpx.ConnectError("上游连接被重置")
+
+    monkeypatch.setattr(worker, "run_organization_stage", failing_run)
+
+    with pytest.raises(httpx.ConnectError):
+        await worker.process_expert_organization({"job_try": 5}, project_id, 3)
+
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "needs_attention"
+    assert len(pool.jobs) == 1
+    assert pool.jobs[0][0][0] == "process_expert_organization_reroll"
+
+
+@pytest.mark.asyncio
+async def test_handout_final_transport_failure_schedules_reroll_without_pinning_topic(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "handout-transport"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="handout_compilation",
+        status="running",
+        method_version=1,
+        organization_version=1,
+    )
+    await _add_topic(worker_env, project_id, topic_id="t1", status="writing")
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+
+    async def failing_run(_project_id: str, _organization_version: int) -> dict:
+        raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+    async def forbidden_topic_attention(*_args, **_kwargs) -> None:
+        raise AssertionError("瞬时故障不应把主题钉成 needs_attention")
+
+    monkeypatch.setattr(worker, "run_handout_compilation", failing_run)
+    monkeypatch.setattr(worker, "_mark_handout_compilation_attention", forbidden_topic_attention)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await worker.process_expert_handout_compilation({"job_try": 5}, project_id, 1)
+
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        topics = await repo.list_topics(project_id, 1)
+    assert project is not None and project.status == "needs_attention"
+    assert topics[0].status == "writing"
+    assert len(pool.jobs) == 1
+    assert pool.jobs[0][0][0] == "process_expert_handout_compilation_reroll"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "run_name", "attention_name", "call_version", "method_version"),
+    [
+        ("orientation", "run_method_calibration", "mark_project_attention", None, 8),
+        ("organization", "run_organization_stage", "mark_project_attention", 2, 1),
+        ("handout_compilation", "run_handout_compilation", "_mark_handout_compilation_attention", 3, 1),
+    ],
+)
+async def test_stage_business_failure_does_not_schedule_reroll(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    run_name: str,
+    attention_name: str,
+    call_version: int | None,
+    method_version: int,
+) -> None:
+    project_id = "stage-business"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage=stage,
+        status="running",
+        method_version=method_version,
+        organization_version=call_version or 0,
+    )
+    pool = RerollCountingPool()
+    _install_reroll_pool(monkeypatch, pool)
+    attention_calls: list[tuple] = []
+
+    async def failing_run(*_args, **_kwargs) -> dict:
+        raise ValueError("确定性业务失败")
+
+    async def record_attention(*args, **kwargs) -> None:
+        attention_calls.append((args, kwargs))
+
+    monkeypatch.setattr(worker, run_name, failing_run)
+    monkeypatch.setattr(worker, attention_name, record_attention)
+
+    with pytest.raises(ValueError, match="确定性业务失败"):
+        if stage == "orientation":
+            await worker.process_expert_method_calibration({"job_try": 5}, project_id, method_version)
+        elif stage == "organization":
+            await worker.process_expert_organization({"job_try": 5}, project_id, call_version)
+        else:
+            await worker.process_expert_handout_compilation({"job_try": 5}, project_id, call_version)
+
+    assert pool.jobs == []
+    assert len(attention_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_method_calibration_reroll_handler_rescues_project(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "calib-reroll-run"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="orientation",
+        status="needs_attention",
+        method_version=6,
+        calibration_pending=True,
+    )
+    enqueued: list[tuple[str, int, str]] = []
+
+    async def record_enqueue(project_id: str, method_version: int, *, token: str) -> None:
+        enqueued.append((project_id, method_version, token))
+
+    monkeypatch.setattr(worker, "enqueue_method_calibration", record_enqueue)
+
+    result = await worker.process_expert_method_calibration_reroll({}, project_id, 6, 2)
+
+    assert result == {"project_id": project_id, "method_version": 6, "reroll": 2}
+    assert enqueued == [(project_id, 6, "reroll2")]
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "running"
+    assert "错峰重投" in (project.message or "")
+
+
+@pytest.mark.asyncio
+async def test_organization_reroll_handler_rescues_project(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "org-reroll-run"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="organization",
+        status="needs_attention",
+        method_version=1,
+        organization_version=5,
+    )
+    enqueued: list[tuple[str, int, str]] = []
+
+    async def record_enqueue(project_id: str, organization_version: int, *, token: str) -> None:
+        enqueued.append((project_id, organization_version, token))
+
+    monkeypatch.setattr(worker, "enqueue_organization", record_enqueue)
+
+    result = await worker.process_expert_organization_reroll({}, project_id, 5, 3)
+
+    assert result == {"project_id": project_id, "organization_version": 5, "reroll": 3}
+    assert enqueued == [(project_id, 5, "reroll3")]
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_handout_reroll_handler_rescues_project(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "handout-reroll-run"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="handout_compilation",
+        status="needs_attention",
+        method_version=1,
+        organization_version=6,
+    )
+    enqueued: list[tuple[str, int, str]] = []
+
+    async def record_enqueue(project_id: str, organization_version: int, *, token: str) -> None:
+        enqueued.append((project_id, organization_version, token))
+
+    monkeypatch.setattr(worker, "enqueue_handout_compilation", record_enqueue)
+
+    result = await worker.process_expert_handout_compilation_reroll({}, project_id, 6, 4)
+
+    assert result == {"project_id": project_id, "organization_version": 6, "reroll": 4}
+    assert enqueued == [(project_id, 6, "reroll4")]
+    async with worker_env() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None and project.status == "running"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "handler", "enqueue_name", "version_arg"),
+    [
+        ("orientation", "process_expert_method_calibration_reroll", "enqueue_method_calibration", 6),
+        ("organization", "process_expert_organization_reroll", "enqueue_organization", 5),
+        ("handout_compilation", "process_expert_handout_compilation_reroll", "enqueue_handout_compilation", 6),
+    ],
+)
+async def test_stage_reroll_handler_ignores_moved_on_projects(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    handler: str,
+    enqueue_name: str,
+    version_arg: int,
+) -> None:
+    """现场已变（用户已处理、版本已推进）的旧重投任务必须安全忽略。"""
+
+    project_id = "stage-reroll-stale"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage=stage,
+        status="needs_attention",
+        method_version=6,
+        organization_version=version_arg,
+        calibration_pending=(stage == "orientation"),
+    )
+
+    async def forbidden_enqueue(*_args, **_kwargs) -> None:
+        raise AssertionError("现场已变时不应重新投递")
+
+    monkeypatch.setattr(worker, enqueue_name, forbidden_enqueue)
+    handler_fn = getattr(worker, handler)
+
+    for mutate_status, mutate_version in [
+        ("running", version_arg),
+        ("needs_attention", version_arg + 1),
+        ("ready", version_arg),
+    ]:
+        async with worker_env() as db:
+            repo = ExpertRepository(db)
+            project = await repo.get_project(project_id)
+            assert project is not None
+            project.status = mutate_status
+            if stage == "orientation":
+                project.method_version = mutate_version
+            else:
+                project.organization_version = mutate_version
+            await db.commit()
+
+        result = await handler_fn({}, project_id, version_arg, 1)
+        assert result["ignored"] is True

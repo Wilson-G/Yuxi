@@ -15,10 +15,13 @@ from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.agents.skills.service import init_builtin_skills
 from yuxi.expert.worker import (
     process_expert_handout_compilation,
+    process_expert_handout_compilation_reroll,
     process_expert_material_learning,
     process_expert_material_learning_reroll,
     process_expert_method_calibration,
+    process_expert_method_calibration_reroll,
     process_expert_organization,
+    process_expert_organization_reroll,
     process_expert_project_orientation,
     process_expert_project_orientation_reroll,
     process_expert_project_preparation,
@@ -791,6 +794,10 @@ class WorkerSettings:
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
         ),
         func(
+            process_expert_method_calibration_reroll,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
             process_expert_material_learning,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
             keep_result=0,
@@ -805,7 +812,15 @@ class WorkerSettings:
             keep_result=0,
         ),
         func(
+            process_expert_organization_reroll,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
             process_expert_handout_compilation,
+            timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
+        ),
+        func(
+            process_expert_handout_compilation_reroll,
             timeout=EXPERT_STAGE_TIMEOUT_SECONDS,
         ),
         func(

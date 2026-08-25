@@ -116,7 +116,9 @@ services:
       - .env
     environment:
       <<: *api-worker-env
-    command: watchfiles --filter python "arq server.worker_main.WorkerSettings" /app/server /app/package
+    # 不热重载启动，避免改代码 SIGINT 打断 arq 任务；需热重载时改回:
+    # watchfiles --filter python "arq server.worker_main.WorkerSettings" /app/server /app/package
+    command: arq server.worker_main.WorkerSettings
     restart: unless-stopped
     depends_on:
       postgres:

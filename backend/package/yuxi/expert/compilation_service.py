@@ -30,7 +30,11 @@ from yuxi.expert.contracts import (
     TopicEvidencePack,
 )
 from yuxi.expert.materials import load_expert_material_source_texts
-from yuxi.expert.model_tasks import ExpertContextLimitError, ExpertModelTasks
+from yuxi.expert.model_tasks import (
+    ExpertContextLimitError,
+    ExpertModelTasks,
+    is_transient_expert_error,
+)
 from yuxi.expert.organization_service import (
     format_handout_notes_with_evidence,
     format_topic_definition,
@@ -642,6 +646,9 @@ async def _revise_topic_from_book_review(
         )
         validate_handout_review(final_review)
     except Exception as exc:  # noqa: BLE001
+        if is_transient_expert_error(exc):
+            # 瞬时故障交给任务级重试与错峰重投，不吞成讲义级永久失败。
+            raise
         await _mark_topic_attention(topic_id, str(exc))
         return False
     if final_review.decision != "pass":

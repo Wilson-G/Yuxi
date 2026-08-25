@@ -24,11 +24,15 @@ from yuxi.expert.contracts import (
     TopicResearchResult,
 )
 from yuxi.expert.materials import format_expert_material_excerpt, load_expert_material_source_texts
-from yuxi.expert.model_tasks import ExpertModelTasks
+from yuxi.expert.model_tasks import ExpertModelTasks, is_transient_expert_error
 from yuxi.expert.storage import read_material_text as read_legacy_material_text
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
+
+# 组织阶段结构校验失败后的带反馈重试次数：校验错误是「模型没按合同交」，
+# 交给模型修正而不是判死整阶段；耗尽后仍维持原 needs_attention 语义。
+ORGANIZATION_VALIDATION_FEEDBACK_RETRIES = 2
 
 
 async def initialize_organization_stage(project_id: str, *, feedback: str = "") -> int:
@@ -89,29 +93,28 @@ async def run_organization_stage(
         )
         include_asset_nodes = compiler_profile.includes_asset_node_catalog
         if include_asset_nodes:
-            async with pg_manager.get_async_session_context() as db:
-                repo = ExpertRepository(db)
-                for material in materials:
-                    if not material.note:
-                        continue
-                    normalized_note = normalize_asset_note_markdown(
-                        material.note, material_alias=note_aliases[material.material_id]
-                    )
-                    if normalized_note != material.note:
-                        await repo.update_material(material.material_id, note=normalized_note)
-                        material.note = normalized_note
-        grouping = await tasks.plan_note_groups(
-            model_spec=snapshot["model_spec"],
-            learning_plan=snapshot["learning_plan"],
-            stage_prompt=snapshot["prompt_pack"].topic_researcher,
+            # 结构门上线前学习的存量病笔记在这里自动修复；延迟导入避免 service 环。
+            from yuxi.expert.service import repair_organization_asset_notes
+
+            materials = await repair_organization_asset_notes(
+                project_id,
+                organization_version,
+                materials,
+                note_aliases,
+                snapshot,
+                tasks,
+            )
+        grouping = await _plan_groups_with_feedback(
+            tasks,
+            snapshot=snapshot,
             note_catalog=_build_note_catalog(
                 materials,
                 note_aliases,
                 include_asset_nodes=include_asset_nodes,
             ),
             include_asset_nodes=include_asset_nodes,
+            known_aliases=set(note_aliases.values()),
         )
-        _validate_planning_groups(grouping, set(note_aliases.values()))
         await _save_planning_groups(project_id, organization_version, grouping, note_aliases)
         snapshot["planning_groups"] = grouping.model_dump()["groups"]
 
@@ -148,15 +151,16 @@ async def run_organization_stage(
         if not topics:
             raise ValueError("主题地图存在但正式主题记录缺失")
     else:
-        topic_map = await tasks.edit_topic_map(
-            model_spec=snapshot["model_spec"],
-            learning_plan=snapshot["learning_plan"],
-            stage_prompt=snapshot["prompt_pack"].topic_editor,
-            candidate_research=json.dumps([batch.result for batch in batches], ensure_ascii=False, indent=2),
+        topic_map = await _edit_topic_map_with_feedback(
+            tasks,
+            snapshot=snapshot,
+            candidate_research=json.dumps(
+                [batch.result for batch in batches], ensure_ascii=False, indent=2
+            ),
             excluded_materials=_format_excluded_materials(snapshot["excluded_materials"]),
             feedback=snapshot["organization_feedback"],
+            known_aliases=set(note_aliases.values()),
         )
-        _validate_topic_map(topic_map, set(note_aliases.values()))
         topics = await _save_topic_map(project_id, organization_version, topic_map, note_aliases)
         if topics is None:
             return {"project_id": project_id, "ignored": True}
@@ -307,6 +311,7 @@ async def _load_organization_inputs(project_id: str, organization_version: int) 
         snapshot = {
             "model_spec": project.model_spec,
             "compiler_profile_id": project.compiler_profile_id,
+            "auto_advance": bool(project.auto_advance),
             "learning_plan": project.learning_plan or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "planning_groups": list(project.planning_groups or []),
@@ -317,6 +322,66 @@ async def _load_organization_inputs(project_id: str, organization_version: int) 
             ],
         }
         return snapshot, materials
+
+
+async def _plan_groups_with_feedback(
+    tasks: ExpertModelTasks,
+    *,
+    snapshot: dict[str, Any],
+    note_catalog: str,
+    include_asset_nodes: bool,
+    known_aliases: set[str],
+) -> Any:
+    """规划分组带结构校验反馈的有界重试；只有失败的子步骤重跑，已落库产物不受影响。"""
+
+    feedback = ""
+    for attempt in range(ORGANIZATION_VALIDATION_FEEDBACK_RETRIES + 1):
+        grouping = await tasks.plan_note_groups(
+            model_spec=snapshot["model_spec"],
+            learning_plan=snapshot["learning_plan"],
+            stage_prompt=snapshot["prompt_pack"].topic_researcher,
+            note_catalog=note_catalog,
+            include_asset_nodes=include_asset_nodes,
+            validation_feedback=feedback,
+        )
+        try:
+            _validate_planning_groups(grouping, known_aliases)
+            return grouping
+        except ValueError as exc:
+            feedback = str(exc)
+            if attempt == ORGANIZATION_VALIDATION_FEEDBACK_RETRIES:
+                raise
+
+
+async def _edit_topic_map_with_feedback(
+    tasks: ExpertModelTasks,
+    *,
+    snapshot: dict[str, Any],
+    candidate_research: str,
+    excluded_materials: str,
+    feedback: str,
+    known_aliases: set[str],
+) -> Any:
+    """主题地图带结构校验反馈的有界重试；校验错误直接喂回总编模型而不是判死阶段。"""
+
+    validation_feedback = ""
+    for attempt in range(ORGANIZATION_VALIDATION_FEEDBACK_RETRIES + 1):
+        topic_map = await tasks.edit_topic_map(
+            model_spec=snapshot["model_spec"],
+            learning_plan=snapshot["learning_plan"],
+            stage_prompt=snapshot["prompt_pack"].topic_editor,
+            candidate_research=candidate_research,
+            excluded_materials=excluded_materials,
+            feedback=feedback,
+            validation_feedback=validation_feedback,
+        )
+        try:
+            _validate_topic_map(topic_map, known_aliases)
+            return topic_map
+        except ValueError as exc:
+            validation_feedback = str(exc)
+            if attempt == ORGANIZATION_VALIDATION_FEEDBACK_RETRIES:
+                raise
 
 
 async def _save_planning_groups(
@@ -402,6 +467,9 @@ async def _research_one_batch(
         except ValueError as exc:
             result = None
             error = exc
+    if result is None and is_transient_expert_error(error):
+        # 瞬时故障交给任务级重试与错峰重投，不沉淀为批次 needs_attention。
+        raise error
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
@@ -494,6 +562,8 @@ async def prepare_topic_evidence(
         evidence_pack = _build_topic_evidence_pack(topic.topic_key, selected, note_aliases)
         _validate_evidence_pack(evidence_pack, topic.topic_key, allowed_materials)
     except Exception as exc:  # noqa: BLE001
+        if is_transient_expert_error(exc):
+            raise
         return await _save_topic_failure(topic_id, str(exc))
 
     async with pg_manager.get_async_session_context() as db:
@@ -623,6 +693,10 @@ async def write_topic_handout(
             )
             validate_handout_review(final_review)
     except Exception as exc:  # noqa: BLE001
+        if is_transient_expert_error(exc):
+            # 瞬时故障（429/断连/超时）交给任务级重试与错峰重投；主题保持 writing 以便续跑，
+            # 不能把传输错误吞成主题级永久失败。
+            raise
         return await _save_topic_failure(topic_id, str(exc))
 
     final_handout = revision or handout

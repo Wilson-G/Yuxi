@@ -745,7 +745,10 @@ async def _run_project_orientation(
         _emit_activity(
             tasks,
             "plan",
-            f"定向计划已生成：选定 {len(sample_material_ids)} 份小样（{', '.join(sorted(sample['alias'] for sample in samples if sample['alias'] in selected_aliases))}）",
+            (
+                f"定向计划已生成：选定 {len(sample_material_ids)} 份小样"
+                f"（{', '.join(sorted(sample['alias'] for sample in samples if sample['alias'] in selected_aliases))}）"
+            ),
         )
 
     if not sample_material_ids:
@@ -836,7 +839,11 @@ async def _run_project_orientation(
             if degraded
             else "小样初稿已就绪，请确认方向；放行后自动校准并批量学习"
         )
-        project.message = "笔记小样仍有明确问题，请调整学习方法后重新试跑" if needs_attention and not degraded else ready_message
+        project.message = (
+            "笔记小样仍有明确问题，请调整学习方法后重新试跑"
+            if needs_attention and not degraded
+            else ready_message
+        )
         project.error_message = needs_attention[0]["reason"] if needs_attention and not degraded else None
         project.updated_at = utc_now_naive()
         await db.flush()
@@ -1135,7 +1142,7 @@ async def run_method_calibration(
         _emit_activity(
             tasks,
             "calibration_failed",
-            f"方法校准任务失败，将按重试策略续跑",
+            "方法校准任务失败，将按重试策略续跑",
             status="warning",
         )
         raise
@@ -2040,6 +2047,141 @@ async def _run_method_sample(
         "final_review": final_review.model_dump() if final_review else None,
         "reason": reason,
     }
+
+
+async def repair_organization_asset_notes(
+    project_id: str,
+    organization_version: int,
+    materials: list[Any],
+    note_aliases: dict[str, str],
+    snapshot: dict[str, Any],
+    tasks: ExpertModelTasks,
+) -> list[Any]:
+    """组织入口的病笔记修复：结构不合格的已通过笔记按学习阶段同一修订模式自动修复。
+
+    结构合同是确定性输出合同（见 _apply_asset_note_structure_gate），修复不分人工/自动模式。
+    规范化即可修复的偏差直接回写；仍不合格的材料落 needs_attention 并从本次组织输入移除；
+    全部不可用时以明确原因停止组织阶段。
+    """
+
+    from yuxi.expert.organization_service import normalize_asset_note_markdown, validate_asset_note_structure
+
+    healthy: list[Any] = []
+    for material in materials:
+        alias = note_aliases[material.material_id]
+        normalized = normalize_asset_note_markdown(material.note or "", material_alias=alias)
+        try:
+            validate_asset_note_structure(normalized, material_alias=alias)
+        except ValueError as exc:
+            repaired = await _repair_one_asset_note(
+                project_id,
+                organization_version,
+                material,
+                alias,
+                structure_error=str(exc),
+                snapshot=snapshot,
+                tasks=tasks,
+            )
+            if repaired is None:
+                continue
+            material = repaired
+            normalized = material.note or ""
+        if normalized != (material.note or ""):
+            async with pg_manager.get_async_session_context() as db:
+                await ExpertRepository(db).update_material(material.material_id, note=normalized)
+            material.note = normalized
+        healthy.append(material)
+    if not healthy:
+        raise ValueError("全部通过笔记的资产结构修复失败，没有可用于主题组织的笔记")
+    return healthy
+
+
+async def _repair_one_asset_note(
+    project_id: str,
+    organization_version: int,
+    material: Any,
+    alias: str,
+    *,
+    structure_error: str,
+    snapshot: dict[str, Any],
+    tasks: ExpertModelTasks,
+) -> Any:
+    """把一份结构不合格笔记交回学习修订循环；返回修复后的材料，不可修复返回 None。"""
+
+    logger.warning(
+        f"expert 组织阶段发现结构不合格笔记，开始自动修复 project={project_id} "
+        f"material={material.material_id} alias={alias}: {structure_error}"
+    )
+    bind_activity = getattr(tasks, "bind_activity_context", None)
+    if bind_activity is not None:
+        bind_activity(stage="organization", material_id=material.material_id)
+    material_view = SimpleNamespace(
+        material_id=material.material_id,
+        title=material.title,
+        source_path=material.source_path,
+        line_count=material.line_count,
+    )
+    text = await read_expert_material_text(material)
+    result = await _run_method_sample(
+        tasks=tasks,
+        model_spec=snapshot["model_spec"],
+        learning_plan=snapshot["learning_plan"],
+        prompt_pack=snapshot["prompt_pack"],
+        material=material_view,
+        alias=alias,
+        text=text,
+        starting_note=(
+            MaterialNoteResult.model_validate(material.note_contract)
+            if material.note_contract
+            else None
+        ),
+        starting_revision_count=int(material.revision_count or 0),
+        auto_advance=bool(snapshot.get("auto_advance")),
+        uses_asset_nodes=True,
+    )
+
+    async with pg_manager.get_async_session_context() as db:
+        repo = ExpertRepository(db)
+        project = await repo.get_project(project_id)
+        current = await repo.get_material(material.material_id)
+        if (
+            project is None
+            or project.status != "running"
+            or project.organization_version != organization_version
+            or current is None
+            or current.status != "passed"
+        ):
+            return None
+        final_note = result["revision"] or result["note"]
+        current.status = result["status"]
+        current.note = final_note.get("note_markdown") or None
+        current.note_contract = final_note
+        current.review = result["final_review"]
+        current.revision_count = result["revision_count"]
+        current.error_message = result["reason"] or None
+
+    if getattr(tasks, "activity_events", None):
+        await _drain_material_activity(
+            project_id,
+            material.material_id,
+            tasks,
+            extra=[
+                {
+                    "stage": "organization",
+                    "current_step": "note_structure_repair",
+                    "status": "info" if result["status"] == "passed" else "warning",
+                    "material_id": material.material_id,
+                    "message": (
+                        f"笔记 {alias} 结构自动修复完成"
+                        if result["status"] == "passed"
+                        else f"笔记 {alias} 结构修复未成功（{result['status']}），已移出本次组织"
+                    ),
+                }
+            ],
+        )
+    if result["status"] == "passed":
+        return current
+    return None
 
 
 def _validate_method_contract(learning_plan: str, compilation_brief: str, prompt_pack: ProjectPromptPack) -> None:

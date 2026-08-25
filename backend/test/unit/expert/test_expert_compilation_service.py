@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import event
@@ -247,6 +248,38 @@ class CompilationModelTasks:
             ],
             editorial_plan_markdown="# 已确认的编辑方案",
         )
+
+
+class TransportBrokenModelTasks(CompilationModelTasks):
+    """指定主题的讲义写入遇到上游传输故障（瞬时错误，不是内容意见）。"""
+
+    def __init__(self, failing_topic: str = "topic-b"):
+        super().__init__()
+        self.failing_topic = failing_topic
+
+    async def write_handout(self, *, topic: str, notes: str, **_kwargs) -> HandoutDraftResult:
+        topic_key = self._topic_key(topic)
+        self.editor_started.append(topic_key)
+        if topic_key == self.failing_topic:
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+        return self._draft(topic_key, suffix="正式候选")
+
+
+@pytest.mark.asyncio
+async def test_handout_transport_failure_propagates_and_keeps_topic_writing(compilation_env) -> None:
+    """讲义写入遇到 429/断连：异常向上抛给任务层重试，主题保持 writing 供断点续跑。"""
+    _, topic_keys = await _seed_compilation_project(compilation_env)
+    tasks = TransportBrokenModelTasks()
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await compilation_service.run_handout_compilation(PROJECT_ID, 1, model_tasks=tasks)
+
+    async with compilation_env.factory() as db:
+        topics = await ExpertRepository(db).list_topics(PROJECT_ID, 1)
+    statuses = {topic.topic_key: topic.status for topic in topics}
+    assert statuses["topic-a"] == "passed"
+    assert statuses["topic-b"] == "writing"
+    assert tasks.editor_started == topic_keys[:2]
 
 
 class GroupedBookModelTasks(CompilationModelTasks):

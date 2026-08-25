@@ -12,10 +12,12 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from yuxi.expert import organization_service, storage
+from yuxi.expert import organization_service, service, storage
 from yuxi.expert.contracts import (
     HandoutDraftResult,
     HandoutReviewResult,
+    MaterialNoteResult,
+    MaterialReviewResult,
     PlanningGroupsResult,
     TopicEvidencePack,
     TopicMapResult,
@@ -950,3 +952,245 @@ def test_validate_asset_note_structure_reports_first_body_heading():
 
     with pytest.raises(ValueError, match="正文首个标题: 'N01"):
         organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+# ---------------------------------------------------------------------------
+# 组织阶段结构校验失败的带反馈重试与存量病笔记自动修复
+# ---------------------------------------------------------------------------
+
+
+def _minimal_snapshot() -> dict:
+    return {
+        "model_spec": "provider:model",
+        "learning_plan": "# 方案",
+        "prompt_pack": SimpleNamespace(
+            note_author="note author prompt",
+            note_reviewer="note reviewer prompt",
+            topic_researcher="topic researcher prompt",
+            topic_editor="topic editor prompt",
+        ),
+    }
+
+
+class FeedbackGroupingTasks:
+    """第一次输出的分组未覆盖全部笔记，收到校验反馈后补全。"""
+
+    def __init__(self, invalid: PlanningGroupsResult, valid: PlanningGroupsResult):
+        self.invalid = invalid
+        self.valid = valid
+        self.feedbacks: list[str] = []
+
+    async def plan_note_groups(self, **kwargs) -> PlanningGroupsResult:
+        self.feedbacks.append(kwargs.get("validation_feedback") or "")
+        return self.valid if kwargs.get("validation_feedback") else self.invalid
+
+
+@pytest.mark.asyncio
+async def test_planning_groups_retries_with_validation_feedback() -> None:
+    """规划分组结构校验失败：错误信息喂回模型重试，成功后返回完整分组。"""
+    invalid = PlanningGroupsResult(
+        groups=[{"group_key": "g1", "title": "方法", "rationale": "判断路标", "note_aliases": ["N001"]}]
+    )
+    valid = PlanningGroupsResult(
+        groups=[{"group_key": "g1", "title": "方法", "rationale": "判断路标", "note_aliases": ["N001", "N002"]}]
+    )
+    tasks = FeedbackGroupingTasks(invalid, valid)
+
+    result = await organization_service._plan_groups_with_feedback(
+        tasks,
+        snapshot=_minimal_snapshot(),
+        note_catalog="N001、N002",
+        include_asset_nodes=False,
+        known_aliases={"N001", "N002"},
+    )
+
+    assert result == valid
+    assert tasks.feedbacks == ["", "主题规划没有覆盖全部已通过笔记"]
+
+
+class AlwaysBrokenGroupingTasks:
+    """任何反馈下都返回未覆盖全部分组的规划。"""
+
+    def __init__(self, grouping: PlanningGroupsResult):
+        self.grouping = grouping
+        self.calls = 0
+
+    async def plan_note_groups(self, **kwargs) -> PlanningGroupsResult:
+        self.calls += 1
+        return self.grouping
+
+
+@pytest.mark.asyncio
+async def test_planning_groups_feedback_retry_exhausts_budget() -> None:
+    """带反馈重试预算耗尽后仍抛 ValueError，维持原 needs_attention 语义。"""
+    broken = PlanningGroupsResult(
+        groups=[{"group_key": "g1", "title": "方法", "rationale": "判断路标", "note_aliases": ["N001"]}]
+    )
+    tasks = AlwaysBrokenGroupingTasks(broken)
+
+    with pytest.raises(ValueError, match="没有覆盖全部已通过笔记"):
+        await organization_service._plan_groups_with_feedback(
+            tasks,
+            snapshot=_minimal_snapshot(),
+            note_catalog="N001、N002",
+            include_asset_nodes=False,
+            known_aliases={"N001", "N002"},
+        )
+
+    assert tasks.calls == 1 + organization_service.ORGANIZATION_VALIDATION_FEEDBACK_RETRIES
+
+
+class FeedbackTopicMapTasks:
+    """第一次输出的主题地图未交代全部笔记，收到校验反馈后补全。"""
+
+    def __init__(self, invalid: TopicMapResult, valid: TopicMapResult):
+        self.invalid = invalid
+        self.valid = valid
+        self.feedbacks: list[str] = []
+
+    async def edit_topic_map(self, **kwargs) -> TopicMapResult:
+        self.feedbacks.append(kwargs.get("validation_feedback") or "")
+        return self.valid if kwargs.get("validation_feedback") else self.invalid
+
+
+def _topic_map(topics: list[dict]) -> TopicMapResult:
+    return TopicMapResult(
+        plan_markdown="# 规划",
+        editorial_plan_markdown="# 编辑方案",
+        topics=topics,
+        unassigned_notes=[],
+        sample_topic_keys=[topics[0]["topic_key"]],
+        sample_selection_reason="代表核心方法",
+    )
+
+
+@pytest.mark.asyncio
+async def test_topic_map_retries_with_validation_feedback() -> None:
+    """主题地图遗漏笔记类校验失败：错误信息喂回总编模型重试。"""
+    topic = {
+        "topic_key": "topic-a",
+        "title": "主题 A",
+        "section": "方法",
+        "reader_question": "如何判断？",
+        "purpose": "形成判断",
+        "boundaries": "材料不足时停止",
+        "note_aliases": ["N001"],
+        "order": 1,
+    }
+    invalid = _topic_map([topic])
+    valid = _topic_map([{**topic, "note_aliases": ["N001", "N002"]}])
+    tasks = FeedbackTopicMapTasks(invalid, valid)
+
+    result = await organization_service._edit_topic_map_with_feedback(
+        tasks,
+        snapshot=_minimal_snapshot(),
+        candidate_research="{}",
+        excluded_materials="无",
+        feedback="",
+        known_aliases={"N001", "N002"},
+    )
+
+    assert result == valid
+    assert tasks.feedbacks == ["", "主题地图没有明确交代全部已通过笔记"]
+
+
+class RepairLoopTasks:
+    """病笔记修订循环：首次结构门判 revise，修订返回良构资产笔记后通过。"""
+
+    def __init__(self, revised_markdown: str):
+        self.revised_markdown = revised_markdown
+        self.review_count = 0
+        self.revise_count = 0
+        self.synthesized_review: MaterialReviewResult | None = None
+
+    def bind_activity_context(self, **kwargs) -> None:
+        return None
+
+    async def review_material_note(self, **kwargs) -> MaterialReviewResult:
+        self.review_count += 1
+        return MaterialReviewResult(decision="pass", summary="内容无实质问题", issues=[])
+
+    async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
+        self.revise_count += 1
+        self.synthesized_review = kwargs.get("review")
+        return MaterialNoteResult(
+            decision="learned",
+            note_markdown=self.revised_markdown,
+            routing_labels=["判断条件"],
+            evidence=[
+                {"material_alias": "N001", "start_line": 1, "end_line": 2, "supports": "支持材料判断"}
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_organization_repairs_broken_asset_note_via_learning_loop(organization_env) -> None:
+    """组织入口发现结构不合格的已通过笔记：按学习阶段同一修订模式自动修复并回写。"""
+    material_id = (await _seed_organization_project(organization_env, material_count=1))[0]
+    broken_note = "# 资产\n\n## 资产正文\n\n### N01 [输入事实][原文明说]\n内容\n"
+    async with organization_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.update_material(material_id, note=broken_note)
+        project = await repo.get_project(PROJECT_ID)
+        assert project is not None
+        project.status = "running"
+        project.organization_version = 1
+        await db.commit()
+
+    tasks = RepairLoopTasks(_wellformed_asset_note())
+    async with organization_env.factory() as db:
+        material_row = await ExpertRepository(db).get_material(material_id)
+        assert material_row is not None
+        healthy = await service.repair_organization_asset_notes(
+            PROJECT_ID,
+            1,
+            [material_row],
+            {material_id: "N001"},
+            {**_minimal_snapshot(), "auto_advance": False},
+            tasks,
+        )
+
+    assert [item.material_id for item in healthy] == [material_id]
+    assert tasks.revise_count == 1
+    assert tasks.review_count == 2
+    assert tasks.synthesized_review is not None and tasks.synthesized_review.decision == "revise"
+    async with organization_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_id)
+    assert material is not None
+    assert material.status == "passed"
+    # 规范化脚本按 join 语义剥离末尾换行，回写的笔记与良构样例去掉结尾换行一致。
+    assert material.note == _wellformed_asset_note().rstrip("\n")
+    assert material.revision_count == 1
+
+
+@pytest.mark.asyncio
+async def test_organization_normalizes_repairable_note_without_model_call(organization_env) -> None:
+    """规范化即可修复的偏差直接回写，不进入模型修订循环。"""
+    material_id = (await _seed_organization_project(organization_env, material_count=1))[0]
+    repairable = _wellformed_asset_note().replace(
+        "### N01 [输入事实][原文明说]",
+        "### N01 音乐天赋断言（结论端）",
+    )
+    async with organization_env.factory() as db:
+        await ExpertRepository(db).update_material(material_id, note=repairable)
+        await db.commit()
+
+    tasks = SimpleNamespace()
+    async with organization_env.factory() as db:
+        material_row = await ExpertRepository(db).get_material(material_id)
+        assert material_row is not None
+        healthy = await service.repair_organization_asset_notes(
+            PROJECT_ID,
+            1,
+            [material_row],
+            {material_id: "N001"},
+            {**_minimal_snapshot(), "auto_advance": True},
+            tasks,
+        )
+
+    assert [item.material_id for item in healthy] == [material_id]
+    async with organization_env.factory() as db:
+        material = await ExpertRepository(db).get_material(material_id)
+    assert material is not None
+    assert "### N01 [输入事实][原文明说] 音乐天赋断言（结论端）" in material.note
+    organization_service.validate_asset_note_structure(material.note, material_alias="N001")
