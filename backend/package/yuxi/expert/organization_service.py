@@ -844,21 +844,39 @@ def extract_asset_node_catalog(note_markdown: str) -> list[str]:
 _ASSET_NODE_ENTRY_PATTERN = re.compile(
     r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\] .+$"
 )
+_ASSET_NODE_ENTRY_LOOSE_PATTERN = re.compile(
+    r"^(?P<prefix>[A-Za-z])(?P<digits>\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\] .+$"
+)
 _ASSET_BODY_HEADING_PATTERN = re.compile(
     r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\](?: (?P<trailing>.+))?$"
 )
 _ASSET_BODY_HEADING_LOOSE_PATTERN = re.compile(r"^(?P<node_id>N\d{2})(?P<rest>.*)$")
 
 
-def normalize_asset_note_markdown(note_markdown: str, *, material_alias: str) -> str:
-    """按目录条目机械修复正文三级标题的节点类型与来源标签。
+_ASSET_NODE_PREFIX_PATTERN = re.compile(r"^(#+\s+|(?:[-*+]\s+)?)([A-Za-z])(\d{2})\b")
 
-    仅处理确定性格式偏差：标题缺标签时按同 ID 目录条目补齐、标签重复或标签后
-    悬挂多余方括号时修剪。保留模型自然写出的标题短语（放在标签之后），
-    ID 集合或顺序不一致不在此修复，仍由结构校验 fail-fast 交回内容修订。
+
+def _canonicalize_asset_node_prefix(text: str) -> str:
+    """把模型自创的节点编号前缀（A01/B01 等）机械归一为 N 序列。"""
+
+    return _ASSET_NODE_PREFIX_PATTERN.sub(
+        lambda m: f"{m.group(1)}N{m.group(3)}" if m.group(2) != "N" else m.group(0), text
+    )
+
+
+def normalize_asset_note_markdown(note_markdown: str, *, material_alias: str) -> str:
+    """机械修复资产笔记的确定性结构偏差。
+
+    覆盖三类偏差：目录条目与正文标题的编号前缀漂移（A01/B01 归一为 N01）、
+    正文标题缺失或多余的节点类型/来源标签（按同 ID 目录条目补齐或修剪）、
+    标题标签后保留模型自然写出的短语。节点集合或顺序不一致不在此修复，
+    仍由结构校验 fail-fast 交回内容修订。
     """
 
-    lines = str(note_markdown or "").splitlines()
+    lines = [
+        _canonicalize_asset_node_prefix(raw_line) if raw_line.lstrip().startswith(("#", "- ", "* ", "+ ")) else raw_line
+        for raw_line in str(note_markdown or "").splitlines()
+    ]
     catalog_by_id: dict[str, tuple[str, str]] = {}
     in_catalog = False
     for raw_line in lines:
@@ -881,7 +899,7 @@ def normalize_asset_note_markdown(note_markdown: str, *, material_alias: str) ->
         )
 
     if not catalog_by_id:
-        return note_markdown
+        return "\n".join(lines)
 
     normalized: list[str] = []
     for raw_line in lines:

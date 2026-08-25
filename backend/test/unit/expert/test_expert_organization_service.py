@@ -919,9 +919,21 @@ def test_normalize_asset_note_repairs_missing_heading_labels():
 
 
 def test_normalize_asset_note_keeps_note_when_catalog_missing():
-    note = "# 资产\n\n## 资产正文\n\n### N01 仅有正文\n"
+    note = "# 资产\n\n## 资产正文\n\n正文内容。\n"
 
-    assert organization_service.normalize_asset_note_markdown(note, material_alias="N001") == note
+    # 无目录可依据时仅做前缀归一，内容原样保留（末尾换行由 join 语义丢弃）。
+    assert organization_service.normalize_asset_note_markdown(note, material_alias="N001") == note.rstrip("\n")
+
+
+def test_normalize_asset_note_canonicalizes_node_prefix_drift():
+    note = _wellformed_asset_note().replace("- N01 ", "- A01 ").replace("- N02 ", "- A02 ").replace(
+        "### N01 ", "### A01 "
+    ).replace("### N02 ", "### A02 ")
+
+    normalized = organization_service.normalize_asset_note_markdown(note, material_alias="N001")
+
+    assert "- A01 " not in normalized and "### A01" not in normalized
+    organization_service.validate_asset_note_structure(normalized, material_alias="N001")
 
 
 def test_validate_asset_note_structure_accepts_trailing_heading_text():
