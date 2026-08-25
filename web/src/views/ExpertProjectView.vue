@@ -169,6 +169,20 @@
               </a-button>
             </template>
           </a-alert>
+          <details v-if="recentActivities.length" class="disclosure-block activity-feed">
+            <summary>最近进展（{{ recentActivities.length }} 条）</summary>
+            <ol class="activity-list">
+              <li
+                v-for="activity in recentActivities"
+                :key="activity.id"
+                :class="{ 'activity-warning': activity.status === 'warning' }"
+              >
+                <span class="activity-step">{{ activityStepLabel(activity.current_step) }}</span>
+                <span class="activity-message">{{ activity.message }}</span>
+                <small class="activity-time">{{ formatActivityTime(activity.created_at) }}</small>
+              </li>
+            </ol>
+          </details>
           <section v-if="isReviewingHistory" class="project-section stage-history-section">
             <div class="history-toolbar">
               <div>
@@ -1316,6 +1330,29 @@ const currentStageMessage = computed(() => {
   }
   return currentProject.message || getExpertStatusLabel(currentProject.status)
 })
+// 流水步骤的人话映射：不把英文枚举直接展示给用户。
+const ACTIVITY_STEP_LABELS = {
+  stage_start: '阶段开始',
+  note_draft: '写笔记',
+  review: 'Review 中',
+  material_done: '材料完成',
+  material_failed: '材料失败',
+  model_retry: '自动重试'
+}
+const activityStepLabel = (step) => {
+  if (step in ACTIVITY_STEP_LABELS) return ACTIVITY_STEP_LABELS[step]
+  // revise:2 这类带轮次的步骤
+  const match = /^revise(?::(\d+))?$/.exec(step || '')
+  if (match) return match[1] ? `第 ${match[1]} 轮修订` : '修订'
+  return step || '进展'
+}
+const recentActivities = computed(() => (project.value?.activities || []).slice().reverse())
+const formatActivityTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
 const showProjectError = computed(
   () => project.value?.status === 'needs_attention' && Boolean(project.value?.error_message)
 )
@@ -2497,6 +2534,45 @@ onBeforeUnmount(() => {
   > :not(summary) {
     margin-top: 14px;
     margin-bottom: 16px;
+  }
+}
+
+.activity-feed .activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+
+  > li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--gray-800);
+
+    .activity-step {
+      flex: none;
+      min-width: 72px;
+      font-weight: 600;
+    }
+
+    .activity-message {
+      flex: 1;
+    }
+
+    .activity-time {
+      flex: none;
+      color: var(--gray-500);
+    }
+
+    &.activity-warning {
+      color: #b54708;
+
+      .activity-step::after {
+        content: ' ⚠';
+      }
+    }
   }
 }
 

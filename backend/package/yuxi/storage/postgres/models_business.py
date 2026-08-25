@@ -1373,3 +1373,42 @@ Index(
     AgentRunRequest.created_at,
     AgentRunRequest.id,
 )
+
+
+class ExpertActivity(Base):
+    """专家项目的阶段性进展流水：给项目页展示"现在做到哪一步"。
+
+    只记阶段级翻转和模型判定结论，不落 Prompt 与响应全文；
+    项目删除时随 CASCADE 一并清除。
+    """
+
+    __tablename__ = "expert_activities"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Primary key")
+    project_id = Column(
+        String(64),
+        ForeignKey("expert_projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="所属专家项目 ID",
+    )
+    stage = Column(String(32), nullable=False, comment="发生时的项目阶段")
+    status = Column(String(32), nullable=False, default="info", comment="流水级别: info/warning")
+    current_step = Column(String(32), nullable=False, comment="当前细粒度步骤，如 note_draft/review/revise")
+    material_id = Column(String(64), nullable=True, comment="关联材料 ID，项目级流水为空")
+    message = Column(Text, nullable=False, comment="带模型判定结论的一句话说明")
+    created_at = Column(DateTime, nullable=False, default=utc_now_naive, comment="发生时间")
+
+    def to_dict(self) -> dict[str, Any]:
+        """返回项目页渲染流水所需的字段。"""
+
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "stage": self.stage,
+            "status": self.status,
+            "current_step": self.current_step,
+            "material_id": self.material_id,
+            "message": self.message,
+            "created_at": format_utc_datetime(self.created_at),
+        }

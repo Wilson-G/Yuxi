@@ -40,6 +40,7 @@ from yuxi.expert.organization_service import (
     write_topic_handout,
 )
 from yuxi.expert.publisher import build_candidate_skill, get_project_skill_slug, validate_candidate_skill
+from yuxi.expert.service import trim_expert_project_activities
 from yuxi.expert.storage import get_project_root
 from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.storage.postgres.manager import pg_manager
@@ -103,6 +104,7 @@ async def activate_expert_skill(
     project.error_message = None
     project.updated_at = utc_now_naive()
     await db.commit()
+    await trim_expert_project_activities(project_id)
     return installed.to_dict()
 
 
@@ -322,6 +324,8 @@ async def run_handout_compilation(
         project.error_message = None
         project.updated_at = utc_now_naive()
         await db.flush()
+    # 成书完成是终态：一次性截断项目流水到保留上限。
+    await trim_expert_project_activities(project_id)
     return {"project_id": project_id, "status": "ready", "skill_slug": project.skill_slug}
 
 

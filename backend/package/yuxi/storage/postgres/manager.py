@@ -174,6 +174,20 @@ class PostgresManager(metaclass=SingletonMeta):
                 "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
                 "method_calibration_rounds INTEGER NOT NULL DEFAULT 0"
             ),
+            """
+            CREATE TABLE IF NOT EXISTS expert_activities (
+                id SERIAL PRIMARY KEY,
+                project_id VARCHAR(64) NOT NULL
+                    REFERENCES expert_projects(project_id) ON DELETE CASCADE,
+                stage VARCHAR(32) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'info',
+                current_step VARCHAR(32) NOT NULL,
+                material_id VARCHAR(64),
+                message TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_expert_activities_project_id ON expert_activities (project_id)",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS embedding_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS llm_model_spec VARCHAR(512)",
             "ALTER TABLE IF EXISTS knowledge_bases DROP COLUMN IF EXISTS embed_info",

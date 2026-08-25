@@ -35,11 +35,14 @@ from yuxi.repositories.expert_repository import ExpertRepository
 from yuxi.repositories.material_library_repository import MaterialLibraryRepository
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils.datetime_utils import utc_now_naive
+from yuxi.utils.logging_config import logger
 
 MAX_MATERIAL_REVISIONS = 2
 MIN_REPRESENTATIVE_MATERIALS = 4
 MAX_REPRESENTATIVE_MATERIALS = 20
 MAX_METHOD_SAMPLES = 5
+# 项目流水只在进入终态时一次性截断，正常运行不做写入时懒清理。
+EXPERT_ACTIVITY_RETAIN_LIMIT = 200
 
 # 编译方法是否含资产节点目录的判定缓存，避免修复/校准流程重复读取中央 Profile。
 _ASSET_NODE_PROFILE_CACHE: dict[str, bool] = {}
@@ -243,6 +246,8 @@ async def get_expert_project_detail(
     else:
         data["research_batches"] = []
         data["topics"] = []
+    activities = await repo.list_activities(project_id, limit=20)
+    data["activities"] = [activity.to_dict() for activity in reversed(activities)]
     return data
 
 
@@ -287,6 +292,8 @@ async def pause_expert_project(
     project.message = "项目已暂停，等待显式恢复"
     project.updated_at = utc_now_naive()
     await db.commit()
+    # 暂停是停机终态：一次性截断流水，避免长期项目无限累积。
+    await trim_expert_project_activities(project_id)
     return project
 
 
@@ -906,11 +913,98 @@ async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertR
 
     project.stage = MATERIAL_LEARNING_STAGE
     project.status = "running"
-    project.message = f"正在学习 {len(included)} 份材料"
+    project.message = _material_learning_progress(materials=included, done=0)
     project.error_message = None
     project.updated_at = utc_now_naive()
+    await _append_activity(
+        project.project_id,
+        {
+            "stage": MATERIAL_LEARNING_STAGE,
+            "current_step": "stage_start",
+            "message": f"开始逐份学习 {len(included)} 份材料",
+        },
+    )
     await db.commit()
     return project.method_version
+
+
+def _material_learning_progress(*, materials: list[Any], done: int) -> str:
+    """材料学习进度的统一措辞：总数与已完成数一眼可读。"""
+
+    return f"正在学习 {len(materials)} 份材料（已完成 {done}）"
+
+
+async def _refresh_learning_progress(repo: ExpertRepository, project: Any) -> None:
+    """按材料事实刷新 expert_projects.message 的学习进度措辞。"""
+
+    if project.stage != MATERIAL_LEARNING_STAGE:
+        return
+    materials = await repo.list_project_materials(project.project_id)
+    active = [item for item in materials if item.status != "excluded"]
+    done = [item for item in active if item.status in {"passed", "no_value", "needs_attention"}]
+    project.message = _material_learning_progress(materials=active, done=len(done))
+
+
+async def _append_activity(project_id: str, *events: dict[str, Any]) -> None:
+    """把一批进展流水写入项目；失败只告警，不阻塞主流程。"""
+
+    if not events:
+        return
+    try:
+        async with pg_manager.get_async_session_context() as db:
+            await ExpertRepository(db).append_activities(project_id, [dict(event) for event in events])
+    except Exception as exc:  # noqa: BLE001 - 流水是旁路观测，任何失败都不能影响业务事实
+        logger.warning(f"写入专家项目进展流水失败 project={project_id}: {exc!r}")
+
+
+def _drain_activity_events(tasks: ExpertModelTasks) -> list[dict[str, Any]]:
+    """读走调用层积累的流水事件并清空，避免重复落库。"""
+
+    events = tasks.activity_events
+    tasks.activity_events = []
+    return [
+        {
+            "stage": event.stage,
+            "status": event.status,
+            "current_step": event.current_step,
+            "material_id": event.material_id,
+            "message": event.message,
+        }
+        for event in events
+    ]
+
+
+async def _drain_material_activity(
+    project_id: str,
+    material_id: str,
+    tasks: ExpertModelTasks,
+    *,
+    extra: list[dict[str, Any]] | None = None,
+) -> None:
+    """落库一份材料任务积累的流水事件，材料 ID 由当前任务上下文提供。"""
+
+    events = _drain_activity_events(tasks)
+    for event in events:
+        event.setdefault("material_id", material_id)
+    await _append_activity(project_id, *(events + list(extra or [])))
+
+
+async def trim_expert_project_activities(project_id: str) -> None:
+    """项目进入终态时一次性截断流水到保留上限。"""
+
+    try:
+        async with pg_manager.get_async_session_context() as db:
+            await ExpertRepository(db).trim_activities(project_id, keep=EXPERT_ACTIVITY_RETAIN_LIMIT)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"截断专家项目进展流水失败 project={project_id}: {exc!r}")
+
+
+def _is_terminal_project_state(project: Any) -> bool:
+    """编译完成或停机终态：enabled/failed/paused 与 release 阶段的 ready/enabled。"""
+
+    if project.status in {"enabled", "failed", "paused"}:
+        return True
+    return project.stage == "release" and project.status in {"ready", "enabled"}
 
 
 async def run_method_calibration(
@@ -1201,7 +1295,20 @@ async def run_material_learning_stage(
     """在一个独立 Worker 工作中完成一份材料的笔记与 Review。"""
 
     tasks = model_tasks or ExpertModelTasks(prompt_cache_namespace=f"expert:{project_id}:method:{method_version}")
+    # 测试桩可能不是 ExpertModelTasks 子类：无流水能力时静默跳过。
+    bind_activity = getattr(tasks, "bind_activity_context", None)
+    if bind_activity is not None:
+        bind_activity(stage=MATERIAL_LEARNING_STAGE, material_id=material_id)
     await _learn_one_material(project_id, material_id, method_version, tasks)
+    if bind_activity is not None:
+        await _drain_material_activity(
+            project_id,
+            material_id,
+            tasks,
+            extra=[
+                {"stage": MATERIAL_LEARNING_STAGE, "current_step": "material_done", "message": "材料学习任务结束"}
+            ],
+        )
     async with pg_manager.get_async_session_context() as db:
         status = await _finish_material_learning(db, project_id, method_version)
     return {
@@ -1237,6 +1344,16 @@ async def mark_material_learning_attention(
         material.status = "needs_attention"
         material.error_message = error
         await _finish_material_learning(db, project_id, method_version)
+    await _append_activity(
+        project_id,
+        {
+            "stage": MATERIAL_LEARNING_STAGE,
+            "status": "warning",
+            "current_step": "material_failed",
+            "material_id": material_id,
+            "message": f"材料学习失败：{error}",
+        },
+    )
 
 
 async def retry_material_learning(
@@ -1542,11 +1659,11 @@ async def _finish_material_learning(db: AsyncSession, project_id: str, method_ve
     attention = [item for item in materials if item.status == "needs_attention"]
     if unfinished:
         project.status = "running"
-        project.message = f"还有 {len(unfinished)} 份材料正在学习"
+        await _refresh_learning_progress(repo, project)
         return project.status
     if attention:
         project.status = "needs_attention"
-        project.message = f"有 {len(attention)} 份材料需要处理后才能组织主题"
+        await _refresh_learning_progress(repo, project)
         project.error_message = attention[0].error_message
         return project.status
 
@@ -1925,4 +2042,5 @@ __all__ = [
     "run_method_calibration",
     "run_project_orientation",
     "start_project_orientation",
+    "trim_expert_project_activities",
 ]

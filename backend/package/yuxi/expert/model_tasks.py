@@ -82,6 +82,27 @@ class ExpertTransportError(Exception):
     """模型调用在传输层失败或被上游包装成空响应；按瞬时故障自动重放，不是业务失败。"""
 
 
+class ExpertActivityEvent:
+    """一次应落库的项目进展流水事件（阶段、步骤、一句话结论）。"""
+
+    __slots__ = ("stage", "current_step", "status", "material_id", "message")
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        current_step: str,
+        message: str,
+        status: str = "info",
+        material_id: str | None = None,
+    ):
+        self.stage = stage
+        self.current_step = current_step
+        self.status = status
+        self.material_id = material_id
+        self.message = message
+
+
 class ExpertModelTasks:
     """执行专家学习中的无状态单次模型任务。"""
 
@@ -95,6 +116,29 @@ class ExpertModelTasks:
         self._model_loader = model_loader
         self._prompt_cache_namespace = prompt_cache_namespace
         self._compiler_profile = compiler_profile
+        # 调用层产生的进展流水事件；由任务层在结算时读走并落库，调用层不直接写数据库。
+        self.activity_events: list[ExpertActivityEvent] = []
+        self._activity_project: dict[str, str | None] = {"stage": None, "material_id": None}
+
+    def bind_activity_context(self, *, stage: str, material_id: str | None = None) -> None:
+        """绑定当前任务的阶段与材料上下文，供本实例产生的事件继承。"""
+
+        self._activity_project["stage"] = stage
+        self._activity_project["material_id"] = material_id
+
+    def _emit_activity(self, current_step: str, message: str, *, status: str = "info") -> None:
+        stage = self._activity_project["stage"]
+        if not stage:
+            return
+        self.activity_events.append(
+            ExpertActivityEvent(
+                stage=stage,
+                current_step=current_step,
+                status=status,
+                material_id=self._activity_project["material_id"],
+                message=message,
+            )
+        )
 
     async def plan_project_method(
         self,
@@ -344,13 +388,26 @@ class ExpertModelTasks:
 独立 Review 的具体意见：
 {json.dumps(review.model_dump(), ensure_ascii=False, indent=2)}
 """.strip()
-        return await self._invoke_structured(
+        result = await self._invoke_structured(
             model_spec,
             MaterialNoteResult,
             system=_project_stage_system(stage_prompt, learning_plan),
             prompt=prompt,
             cacheable=True,
         )
+        # 修订轮单列一条流水：带轮次，便于用户看懂卡在第几轮。
+        self._emit_activity(f"revise:{self._next_revision_round()}", f"笔记修订：{result.decision}")
+        return result
+
+    def _next_revision_round(self) -> int:
+        """为修订流水编号：从本实例已产生的修订事件数推下一轮。"""
+
+        rounds = [
+            int(event.current_step.split(":", 1)[1])
+            for event in self.activity_events
+            if str(event.current_step).startswith("revise:")
+        ]
+        return (max(rounds) + 1) if rounds else 1
 
     async def resolve_material_automatically(
         self,
@@ -848,10 +905,14 @@ class ExpertModelTasks:
             if prompt_cache_key:
                 _log_prompt_cache_usage(model_spec, prompt_cache_key, response)
             try:
-                return _parse_jsonl_contract(response.content, contract)
+                result = _parse_jsonl_contract(response.content, contract)
             except ExpertJsonlOutputError:
+                self._emit_activity("model_retry", "模型输出不符合 JSONL 合同，要求重试一次", status="warning")
                 if attempt:
                     raise
+                continue
+            self._record_contract_decision(contract, result)
+            return result
 
         raise AssertionError("JSONL 输出重试没有返回结果")
 
@@ -859,6 +920,24 @@ class ExpertModelTasks:
         """返回定向与方法生成使用的中央资产。"""
 
         return self._compiler_profile or get_expert_compiler_profile(DEFAULT_COMPILER_PROFILE_ID)
+
+    def _record_contract_decision(self, contract: type, result: Any) -> None:
+        """把学习阶段四类调用的模型判定结论记为一条流水，不落 Prompt 与响应全文。"""
+
+        from yuxi.expert.contracts import MaterialNoteResult, MaterialReviewResult
+
+        if contract is MaterialNoteResult:
+            decision = getattr(result, "decision", "")
+            reason = str(getattr(result, "reason", "") or "").strip()
+            suffix = f"——{reason}" if reason else ""
+            self._emit_activity("note_draft", f"笔记初稿：{decision}{suffix}")
+            return
+        if contract is MaterialReviewResult:
+            decision = getattr(result, "decision", "")
+            summary = str(getattr(result, "summary", "") or "").strip()
+            suffix = f"——{summary}" if summary else ""
+            self._emit_activity("review", f"Review：{decision}{suffix}")
+            return
 
     def _build_structured_request(
         self,
@@ -920,6 +999,12 @@ class ExpertModelTasks:
                     f"Expert 模型调用传输失败，{delay:g}s 后第 {replay}/"
                     f"{len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS)} 次重放 "
                     f"model={model_spec}: {last_failure!r}"
+                )
+                # 重放逐条落流水：用户能看出批处理停在哪一步、是否在自愈。
+                self._emit_activity(
+                    "model_retry",
+                    f"模型调用传输失败，第 {replay}/{len(EXPERT_TRANSPORT_REPLAY_DELAYS_SECONDS)} 次重放：{last_failure!r}",
+                    status="warning",
                 )
                 await asyncio.sleep(delay)
             try:

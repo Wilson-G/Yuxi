@@ -208,10 +208,45 @@ async def _make_materials_ready(expert_env, project_id: str) -> list[str]:
         return [material.material_id for material in materials]
 
 
-class OrientationModelTasks:
+class ActivityRecorderMixin:
+    """给测试桩补上真实 ExpertModelTasks 的流水能力（阶段上下文 + 事件缓冲）。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.activity_events: list = []
+        self._activity_project: dict = {"stage": None, "material_id": None}
+
+    def bind_activity_context(self, *, stage: str, material_id: str | None = None) -> None:
+        self._activity_project["stage"] = stage
+        self._activity_project["material_id"] = material_id
+
+    def _emit_activity(self, current_step: str, message: str, *, status: str = "info") -> None:
+        if not self._activity_project["stage"]:
+            return
+        self.activity_events.append(
+            SimpleNamespace(
+                stage=self._activity_project["stage"],
+                current_step=current_step,
+                status=status,
+                material_id=self._activity_project["material_id"],
+                message=message,
+            )
+        )
+
+    def _next_revision_round(self) -> int:
+        rounds = [
+            int(str(event.current_step).split(":", 1)[1])
+            for event in self.activity_events
+            if str(event.current_step).startswith("revise:")
+        ]
+        return (max(rounds) + 1) if rounds else 1
+
+
+class OrientationModelTasks(ActivityRecorderMixin):
     """记录第 0 阶段调用，并让指定小样的首次 Author 可重试失败。"""
 
     def __init__(self, *, fail_note_title: str | None = None):
+        super().__init__()
         self.fail_note_title = fail_note_title
         self.failed_note = False
         self.call_counts: Counter[str] = Counter()
@@ -274,10 +309,16 @@ class CalibrationModelTasks(OrientationModelTasks):
         self.assessment_inputs: list[dict] = []
         self.review_rounds: Counter[str] = Counter()
 
+    async def write_material_note(self, **kwargs) -> MaterialNoteResult:
+        # 与真实调用层一致：Author 判定结论落一条流水。
+        result = await super().write_material_note(**kwargs)
+        self._emit_activity("note_draft", f"笔记初稿：{result.decision}")
+        return result
+
     async def review_material_note(self, *, title: str, **_kwargs) -> MaterialReviewResult:
         self.review_rounds[title] += 1
         if title == "01-material" and self.review_rounds[title] == 1:
-            return MaterialReviewResult(
+            review = MaterialReviewResult(
                 decision="revise",
                 summary="缺少判断条件的保留职责",
                 issues=[
@@ -289,10 +330,15 @@ class CalibrationModelTasks(OrientationModelTasks):
                     }
                 ],
             )
-        return MaterialReviewResult(decision="pass", summary="通过", issues=[])
+        else:
+            review = MaterialReviewResult(decision="pass", summary="通过", issues=[])
+        self._emit_activity("review", f"Review：{review.decision}——{review.summary}")
+        return review
 
     async def revise_material_note(self, **kwargs) -> MaterialNoteResult:
-        return await self.write_material_note(**kwargs)
+        result = await self.write_material_note(**kwargs)
+        self._emit_activity(f"revise:{self._next_revision_round()}", f"笔记修订：{result.decision}")
+        return result
 
     async def calibrate_project_method(self, **kwargs):
         self.calibration_inputs.append(kwargs)
@@ -2487,3 +2533,149 @@ async def test_first_calibration_backfills_review_before_calibrating(expert_env)
     assert calibration_input["samples"][0]["review"]["issues"]
     assessment_input = model_tasks.assessment_inputs[0]
     assert assessment_input["v1_samples"] == calibration_input["samples"]
+
+
+async def _enter_material_learning(expert_env, *, count: int = 2) -> tuple[str, list[str]]:
+    """直接把测试项目推进到材料学习 running 态，返回项目与材料 ID。"""
+
+    project_id, material_ids = await _create_project(expert_env, count=count)
+    await _make_materials_ready(expert_env, project_id)
+    async with expert_env.factory() as db:
+        await ExpertRepository(db).update_project(
+            project_id,
+            stage=service.MATERIAL_LEARNING_STAGE,
+            status="running",
+            method_version=1,
+            learning_plan="# 已确认的学习方案",
+            prompt_pack=_prompt_pack().model_dump(),
+        )
+        for material_id in material_ids:
+            await ExpertRepository(db).update_material(material_id, status="pending")
+        await db.commit()
+    return project_id, material_ids
+
+
+async def _list_activities(expert_env, project_id: str) -> list[dict]:
+    async with expert_env.factory() as db:
+        activities = await ExpertRepository(db).list_activities(project_id, limit=100)
+    return [item.to_dict() for item in activities]
+
+
+@pytest.mark.asyncio
+async def test_material_learning_records_activity_for_note_review_revise_and_failure(expert_env) -> None:
+    """学习阶段流水四类：note 初稿、review 结论、修订轮与失败逐条落库且带结论。"""
+
+    project_id, material_ids = await _enter_material_learning(expert_env, count=2)
+    model_tasks = CalibrationModelTasks()
+    await service.run_material_learning_stage(project_id, material_ids[0], 1, model_tasks=model_tasks)
+
+    activities = await _list_activities(expert_env, project_id)
+    messages = [(item["current_step"], item["message"]) for item in activities]
+    # 01 材料首次 review 给 revise：流水应先后出现笔记初稿、revise 结论、修订与复核。
+    assert any(step == "note_draft" and "learned" in msg for step, msg in messages)
+    assert any(step == "review" and msg.startswith("Review：revise——") for step, msg in messages)
+    assert any(step.startswith("revise:") and "learned" in msg for step, msg in messages)
+    assert any(step == "review" and msg.startswith("Review：pass") for step, msg in messages)
+    assert any(step == "material_done" for step, _ in messages)
+    # 学习阶段事件都带材料 ID 与阶段。
+    learning_events = [item for item in activities if item["current_step"] in {"note_draft", "review"}]
+    assert learning_events
+    assert all(item["material_id"] == material_ids[0] for item in learning_events)
+    assert all(item["stage"] == service.MATERIAL_LEARNING_STAGE for item in learning_events)
+
+    # 失败路径：确定性业务失败落一条 warning 流水。
+    await service.mark_material_learning_attention(
+        project_id,
+        material_ids[1],
+        1,
+        "笔记响应缺少正文",
+    )
+    activities = await _list_activities(expert_env, project_id)
+    failure = [item for item in activities if item["current_step"] == "material_failed"]
+    assert len(failure) == 1
+    assert failure[0]["status"] == "warning"
+    assert "笔记响应缺少正文" in failure[0]["message"]
+    assert failure[0]["material_id"] == material_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_material_learning_progress_message_counts_completed_materials(expert_env) -> None:
+    """expert_projects.message 呈现“正在学习 N 份（已完成 M）”并在材料完成时刷新。"""
+
+    project_id, material_ids = await _enter_material_learning(expert_env, count=2)
+    model_tasks = CalibrationModelTasks()
+    first = await service.run_material_learning_stage(project_id, material_ids[0], 1, model_tasks=model_tasks)
+    assert first["status"] == "running"
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None
+    assert project.message == "正在学习 2 份材料（已完成 1）"
+
+    second = await service.run_material_learning_stage(project_id, material_ids[1], 1, model_tasks=model_tasks)
+    assert second["status"] == "preparing"
+    async with expert_env.factory() as db:
+        project = await ExpertRepository(db).get_project(project_id)
+    assert project is not None
+    assert project.stage == "organization"
+
+
+@pytest.mark.asyncio
+async def test_project_detail_returns_recent_activities_for_owner_only(expert_env) -> None:
+    """detail 返回最近 20 条流水；非创建人仍拿不到项目。"""
+
+    project_id, _ = await _enter_material_learning(expert_env, count=2)
+    model_tasks = CalibrationModelTasks()
+    await service.run_material_learning_stage(project_id, (await _project_material_ids(expert_env, project_id))[0], 1, model_tasks=model_tasks)
+
+    async with expert_env.factory() as db:
+        detail = await service.get_expert_project_detail(db, project_id=project_id, created_by="user-1")
+    assert detail["activities"]
+    assert all("message" in item and "current_step" in item for item in detail["activities"])
+    assert len(detail["activities"]) <= 20
+
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="专家项目不存在"):
+            await service.get_expert_project_detail(db, project_id=project_id, created_by="someone-else")
+
+
+async def _project_material_ids(expert_env, project_id: str) -> list[str]:
+    async with expert_env.factory() as db:
+        materials = await ExpertRepository(db).list_project_materials(project_id)
+    return [material.material_id for material in materials]
+
+
+@pytest.mark.asyncio
+async def test_terminal_state_trims_activities_to_retention_limit(expert_env) -> None:
+    """项目进入终态（暂停）时流水一次性截断到 200 条。"""
+
+    project_id, _ = await _enter_material_learning(expert_env, count=1)
+    async with expert_env.factory() as db:
+        repo = ExpertRepository(db)
+        await repo.append_activities(
+            project_id,
+            [
+                {
+                    "stage": service.MATERIAL_LEARNING_STAGE,
+                    "current_step": "note_draft",
+                    "message": f"第 {index} 条流水",
+                }
+                for index in range(230)
+            ],
+        )
+        await db.commit()
+
+    async with expert_env.factory() as db:
+        await service.pause_expert_project(db, project_id=project_id, created_by="user-1")
+
+    remaining = await _list_activities(expert_env, project_id)
+    remaining_all = await _list_all_activities(expert_env, project_id)
+    assert len(remaining_all) == service.EXPERT_ACTIVITY_RETAIN_LIMIT
+    # 保留的是最新 200 条。
+    assert remaining_all[0]["message"] == "第 30 条流水"
+    assert remaining_all[-1]["message"] == "第 229 条流水"
+
+
+async def _list_all_activities(expert_env, project_id: str) -> list[dict]:
+    async with expert_env.factory() as db:
+        activities = await ExpertRepository(db).list_activities(project_id, limit=1000)
+    return [item.to_dict() for item in reversed(activities)]

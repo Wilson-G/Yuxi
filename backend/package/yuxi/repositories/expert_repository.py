@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.expert.compiler_profiles import DEFAULT_COMPILER_PROFILE_ID
 from yuxi.storage.postgres.models_business import (
+    ExpertActivity,
     ExpertMaterial,
     ExpertProject,
     ExpertResearchBatch,
@@ -305,6 +306,53 @@ class ExpertRepository:
         )
         await self.db.flush()
         return topic
+
+    async def append_activities(self, project_id: str, events: list[dict[str, Any]]) -> list[ExpertActivity]:
+        """写入一批项目进展流水；调用方负责先截断到保留上限。"""
+
+        rows = [
+            ExpertActivity(
+                project_id=project_id,
+                stage=event["stage"],
+                status=event.get("status") or "info",
+                current_step=event["current_step"],
+                material_id=event.get("material_id"),
+                message=event["message"],
+            )
+            for event in events
+        ]
+        self.db.add_all(rows)
+        await self.db.flush()
+        return rows
+
+    async def list_activities(self, project_id: str, *, limit: int = 20) -> list[ExpertActivity]:
+        """返回最近的项目进展流水。"""
+
+        result = await self.db.execute(
+            select(ExpertActivity)
+            .where(ExpertActivity.project_id == project_id)
+            .order_by(ExpertActivity.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def trim_activities(self, project_id: str, *, keep: int = 200) -> int:
+        """把项目流水截断到最近 keep 条，返回删除条数。"""
+
+        result = await self.db.execute(
+            select(ExpertActivity.id)
+            .where(ExpertActivity.project_id == project_id)
+            .order_by(ExpertActivity.id.desc())
+            .limit(1)
+            .offset(max(keep - 1, 0))
+        )
+        cutoff = result.scalar_one_or_none()
+        if cutoff is None:
+            return 0
+        deleted = await self.db.execute(
+            delete(ExpertActivity).where(ExpertActivity.project_id == project_id, ExpertActivity.id < cutoff)
+        )
+        return int(deleted.rowcount or 0)
 
     @staticmethod
     def _apply_changes(
