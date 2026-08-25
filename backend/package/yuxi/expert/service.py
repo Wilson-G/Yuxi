@@ -874,8 +874,6 @@ async def repair_project_method(
         raise ValueError("项目方法缺少固定的小样材料清单")
     samples = list(project.method_samples or [])
     baseline = _build_method_calibration_samples(samples, sample_ids)
-    if not _method_calibration_issues(samples) and not samples:
-        raise ValueError("项目方法小样没有可执行的 Review 问题")
 
     project.method_version += 1
     project.method_confirmed_at = None
@@ -946,18 +944,70 @@ async def run_method_calibration(
         sample_ids = list(project.method_sample_material_ids or [])
         needs_method_calibration = project.method_calibration_completed_at is None
         v2_samples_ready = not needs_method_calibration and project.status == "awaiting_confirmation"
+        materials = await repo.list_project_materials(project_id)
+        materials_by_id = {material.material_id: material for material in materials}
+        pending_review_samples = []
         if needs_method_calibration:
-            samples = _build_method_calibration_samples(project.method_samples, sample_ids)
+            # 首轮校准前需要补 Review 的 V1 预览小样：Author 已落库且 decision 为 learned。
+            pending_review_samples = [
+                item
+                for item in project.method_samples or []
+                if isinstance(item, dict)
+                and item.get("review") is None
+                and isinstance(item.get("note"), dict)
+                and item["note"].get("decision") == "learned"
+            ]
         snapshot = {
             "name": project.name,
             "model_spec": project.model_spec,
+            "compiler_profile_id": project.compiler_profile_id,
             "learning_plan": project.learning_plan or "",
             "compilation_brief": project.compilation_brief or "",
             "prompt_pack": ProjectPromptPack.model_validate(project.prompt_pack),
             "auto_advance": bool(project.auto_advance),
+            "method_samples": list(project.method_samples or []),
         }
 
     if needs_method_calibration:
+        if pending_review_samples:
+            # 放行后的第一轮校准：先对 V1 预览小样补独立 Review（不重写 Author），
+            # 让总编基于带 Review 的基线收敛方法，而不是对无意见初稿盲调。
+            backfilled: dict[str, dict[str, Any]] = {}
+            for item in pending_review_samples:
+                material = materials_by_id.get(item.get("material_id"))
+                if material is None:
+                    raise ValueError("代表性材料正文不存在")
+                backfilled[item["material_id"]] = await _run_method_sample(
+                    tasks=tasks,
+                    model_spec=snapshot["model_spec"],
+                    learning_plan=snapshot["learning_plan"],
+                    prompt_pack=snapshot["prompt_pack"],
+                    material=material,
+                    alias=item["material_alias"],
+                    text=await read_expert_material_text(material),
+                    starting_note=MaterialNoteResult.model_validate(item["note"]),
+                    auto_advance=snapshot["auto_advance"],
+                    uses_asset_nodes=_project_uses_asset_nodes(snapshot["compiler_profile_id"]),
+                )
+            async with pg_manager.get_async_session_context() as db:
+                project = await ExpertRepository(db).lock_project(project_id)
+                if (
+                    project is None
+                    or project.stage != ORIENTATION_STAGE
+                    or project.status != "running"
+                    or project.method_version != method_version
+                ):
+                    return {"project_id": project_id, "ignored": True}
+                project.method_samples = [
+                    backfilled.get(item.get("material_id"), item)
+                    for item in list(project.method_samples or [])
+                ]
+                samples = _build_method_calibration_samples(project.method_samples, sample_ids)
+                project.method_calibration_baseline = samples
+                project.updated_at = utc_now_naive()
+                await db.flush()
+        else:
+            samples = _build_method_calibration_samples(snapshot["method_samples"], sample_ids)
         calibrated = await tasks.calibrate_project_method(
             model_spec=snapshot["model_spec"],
             project_name=snapshot["name"],
@@ -1571,7 +1621,7 @@ async def _run_method_sample(
         )
         return review_holder[0] if review_holder else None
 
-    if (starting_note is None) != (starting_review is None):
+    if starting_note is None and starting_review is not None:
         raise ValueError("材料恢复缺少笔记或 Review")
     if starting_note is None:
         note = await tasks.write_material_note(
@@ -1618,26 +1668,25 @@ async def _run_method_sample(
             structure_issue = _structure_gate(note)
             if structure_issue is not None and review.decision == "pass":
                 review = structure_issue
-    elif review_deferred and starting_review is None:
-        # 预览模式的恢复路径：仍无 Review，继续按预览结果返回。
-        note = starting_note
-        review = None
-        return {
-            "material_id": material.material_id,
-            "material_alias": alias,
-            "title": material.title,
-            "source": material.source_path,
-            "status": "passed" if note.decision == "learned" else "needs_attention",
-            "note": note.model_dump(),
-            "review": None,
-            "revision": None,
-            "revision_count": starting_revision_count,
-            "final_review": None,
-            "reason": note.reason,
-        }
     else:
         note = starting_note
         review = starting_review
+        if review is None:
+            # 定向预览小样的 Review 补跑：Author 初稿已落库，这里只补独立 Review 与结构门。
+            review = await tasks.review_material_note(
+                model_spec=model_spec,
+                learning_plan=learning_plan,
+                stage_prompt=prompt_pack.note_reviewer,
+                material_alias=alias,
+                title=material.title,
+                source=material.source_path,
+                text=text,
+                note=note,
+            )
+            _validate_review(review)
+            structure_issue = _structure_gate(note)
+            if structure_issue is not None and review.decision == "pass":
+                review = structure_issue
 
     revision = None
     revision_count = starting_revision_count

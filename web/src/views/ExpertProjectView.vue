@@ -379,7 +379,7 @@
                         本次确认后，系统自动完成方法校准、逐份学习、组织和成书；候选 Skill
                         仍需预览后手动启用。
                       </span>
-                      <span v-else> 方法校准、材料问题和组织方式仍会等待你查看、调整和确认。 </span>
+                      <span v-else> 确认后系统会自动校准方法并直接开始逐份学习；需要处理的问题会停下来等你。 </span>
                     </div>
                     <a-switch
                       v-model:checked="autoAdvanceEnabled"
@@ -1641,9 +1641,9 @@ const confirmMethod = () => {
     successMessage = '学习方向已确认，系统将自动推进到候选 Skill'
   } else if (isInitialConfirmation) {
     title = '确认学习方向并保留人工跟进？'
-    content = '系统会先校准方法并复跑小样，之后继续等待你查看、调整和确认。'
+    content = '系统会自动校准方法并直接开始逐份学习全部材料，不再等待后续确认。'
     okText = '确认并开始校准'
-    successMessage = '学习方向已确认，正在校准方法并重新试跑小样'
+    successMessage = '学习方向已确认，正在自动校准方法并开始逐份学习'
   }
 
   Modal.confirm({

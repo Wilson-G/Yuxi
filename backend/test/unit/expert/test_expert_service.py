@@ -296,6 +296,7 @@ class CalibrationModelTasks(OrientationModelTasks):
 
     async def calibrate_project_method(self, **kwargs):
         self.calibration_inputs.append(kwargs)
+        self.review_rounds_at_calibration = dict(self.review_rounds)
         return SimpleNamespace(
             learning_plan_markdown="# 校准后的项目学习方案",
             compilation_brief_markdown="# 校准后的项目专属编译底稿",
@@ -1622,7 +1623,12 @@ async def test_initial_attention_repair_calibrates_current_method_without_reorie
     calibration_input = model_tasks.calibration_inputs[0]
     assert calibration_input["learning_plan"] == "# 项目学习方案"
     assert calibration_input["compilation_brief"] == "# 项目专属编译底稿"
-    assert calibration_input["samples"] == v1_baseline
+    # 放行后先补 Review：校准输入的 V1 小样带独立 Review 意见（01 材料初稿 needs_attention，跳过补跑）。
+    assert len(calibration_input["samples"]) == len(v1_baseline)
+    for backfilled_item, baseline_item in zip(calibration_input["samples"], v1_baseline, strict=True):
+        assert backfilled_item["note"] == baseline_item["note"]
+    assert calibration_input["samples"][0]["review"] is None
+    assert calibration_input["samples"][1]["review"]["decision"] == "pass"
 
     async with expert_env.factory() as db:
         project = await ExpertRepository(db).get_project(project_id)
@@ -1685,8 +1691,22 @@ async def test_initial_attention_repair_rejects_missing_or_spent_calibration_evi
         project.method_samples = [
             {**sample, "review": None, "final_review": None} for sample in original_samples
         ]
-        assert service._method_calibration_issues(project.method_samples) == []
+        reviewless_repaired_version = await service.repair_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+        project = await ExpertRepository(db).get_project(project_id)
+        assert project is not None
+        assert reviewless_repaired_version == method_version + 1
+        assert project.status == "running"
+        # 回到原始事实，继续校验死锁态出口。
+        project.stage = service.ORIENTATION_STAGE
+        project.status = "needs_attention"
         project.method_samples = original_samples
+        project.method_version = method_version
+        project.method_calibration_baseline = []
+        await db.flush()
 
         project.method_calibration_completed_at = service.utc_now_naive()
         # 校准已完成且基线为空是死锁态：repair 是预算制人工出口，应当放行并重置校准预算。
@@ -2424,3 +2444,46 @@ async def test_method_calibration_automatically_repairs_v2_review_issue(expert_e
     assert project.status == "running"
     assert project.method_samples[0]["status"] == "passed"
     assert project.method_samples[0]["final_review"]["decision"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_first_calibration_backfills_review_before_calibrating(expert_env) -> None:
+    """放行后的第一轮校准先给 V1 预览小样补 Review，再交给总编收敛方法。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    model_tasks = CalibrationModelTasks()
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    notes_after_orientation = model_tasks.call_counts.copy()
+
+    async with expert_env.factory() as db:
+        calibrated_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert result["status"] == "running"
+    # Author 没有因补 Review 被重写成新初稿：01 材料在补 Review 修订一次（note 2 次）、
+    # 02 材料直接通过（note 1 次），其余都是复跑 V2 时的预期 Author 调用。
+    assert model_tasks.call_counts["note:01-material"] == notes_after_orientation["note:01-material"] + 2
+    assert model_tasks.call_counts["note:02-material"] == notes_after_orientation["note:02-material"] + 1
+    assert model_tasks.review_rounds["01-material"] >= 1
+    assert model_tasks.review_rounds["02-material"] >= 1
+    # 补跑发生在校准之前：总编拿到基线时两份小样都已带独立 Review。
+    assert model_tasks.review_rounds_at_calibration["01-material"] >= 1
+    assert model_tasks.review_rounds_at_calibration["02-material"] >= 1
+    calibration_input = model_tasks.calibration_inputs[0]
+    # 校准输入的 V1 小样带独立 Review 意见，而不是无意见初稿。
+    assert all(item["review"] is not None for item in calibration_input["samples"])
+    assert calibration_input["samples"][0]["review"]["issues"]
+    assessment_input = model_tasks.assessment_inputs[0]
+    assert assessment_input["v1_samples"] == calibration_input["samples"]
