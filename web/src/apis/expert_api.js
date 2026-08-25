@@ -1,4 +1,4 @@
-import { apiAdminDelete, apiAdminGet, apiAdminPost } from './base'
+import { apiAdminDelete, apiAdminGet, apiAdminPatch, apiAdminPost } from './base'
 
 const BASE_URL = '/api/expert-projects'
 
@@ -107,6 +107,13 @@ export const pauseExpertProject = async (projectId) =>
 export const resumeExpertProject = async (projectId) =>
   apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/resume`, {})
 
+/** 项目运行中切换学习模型或调整材料学习并发，写库即生效。 */
+export const updateExpertProjectModel = async (projectId, modelSpec, maxConcurrency = null) =>
+  apiAdminPatch(`${BASE_URL}/${encodeURIComponent(projectId)}/model`, {
+    ...(modelSpec !== null ? { model_spec: modelSpec } : {}),
+    ...(maxConcurrency !== null ? { max_concurrency: maxConcurrency } : {})
+  })
+
 /** 卸载已启用 Skill，但保留项目候选成品。 */
 export const uninstallExpertProject = async (projectId) =>
   apiAdminPost(`${BASE_URL}/${encodeURIComponent(projectId)}/uninstall`, {})
@@ -135,6 +142,7 @@ export const expertApi = {
   activate: activateExpertProject,
   pause: pauseExpertProject,
   resume: resumeExpertProject,
+  updateModel: updateExpertProjectModel,
   uninstall: uninstallExpertProject,
   delete: deleteExpertProject
 }

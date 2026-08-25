@@ -25,6 +25,7 @@ from yuxi.expert.service import (
     retry_material_preparation,
     resume_expert_project,
     start_project_orientation,
+    update_expert_project_model,
 )
 from yuxi.expert.compilation_service import (
     activate_expert_skill,
@@ -207,6 +208,44 @@ async def create_expert_project_route(
     except Exception as exc:
         logger.exception("Failed to create expert project")
         raise HTTPException(status_code=500, detail="创建专家项目失败") from exc
+
+
+class UpdateProjectModelRequest(BaseModel):
+    """项目运行中切换学习模型或调整材料学习并发。"""
+
+    model_spec: str | None = None
+    max_concurrency: int | None = Field(default=None, ge=0, le=20)
+
+
+@expert_projects.patch("/{project_id}/model")
+async def update_expert_project_model_route(
+    project_id: str,
+    payload: UpdateProjectModelRequest,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """立即更新项目模型与并发配置；此后新发起的模型调用一律读取最新配置。"""
+
+    if payload.model_spec is None and payload.max_concurrency is None:
+        raise HTTPException(status_code=422, detail="至少提供 model_spec 或 max_concurrency 之一")
+    try:
+        project = await update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by=str(current_user.uid),
+            model_spec=payload.model_spec,
+            max_concurrency=payload.max_concurrency,
+        )
+        return {
+            "project_id": project_id,
+            "model_spec": project.model_spec,
+            "max_concurrency": int(project.max_concurrency or 0),
+            "status": project.status,
+        }
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @expert_projects.post("/{project_id}/orientation")

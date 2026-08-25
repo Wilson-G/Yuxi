@@ -109,6 +109,8 @@ def _apply_asset_note_structure_gate(
 # 每个方法确认代际允许的自动校准执行上限：首次校准加两次续跑；耗尽后停在需要处理，防止无人值守无限烧钱。
 MAX_METHOD_CALIBRATION_ROUNDS = 3
 ORIENTATION_STAGE = "orientation"
+# 材料学习并发上限的可配置上界；0 表示不限制（历史默认行为）。
+EXPERT_MAX_MATERIAL_CONCURRENCY = 20
 MATERIAL_LEARNING_STAGE = "material_learning"
 
 
@@ -580,6 +582,59 @@ async def run_project_orientation(
     方法校准复跑同批小样时传 review_deferred=False 跑完整 Review 以对比收敛效果。
     """
 
+    async def _build_tasks() -> ExpertModelTasks:
+        # 快照事实决定是否校验 Profile 资产：已有方法候选时允许资产缺失（复用旧产物）。
+        async with pg_manager.get_async_session_context() as db:
+            project = await ExpertRepository(db).get_project(project_id)
+        if project is None:
+            raise ValueError("专家项目不存在")
+        return ExpertModelTasks(
+            compiler_profile=get_expert_compiler_profile(
+                project.compiler_profile_id,
+                validate_assets=not _method_candidate_complete(
+                    orientation_report=project.orientation_report or "",
+                    compilation_brief=project.compilation_brief or "",
+                    learning_plan=project.learning_plan or "",
+                    prompt_pack=project.prompt_pack,
+                ),
+            ),
+        )
+
+    tasks = model_tasks or await _build_tasks()
+    bind_activity = getattr(tasks, "bind_activity_context", None)
+    if bind_activity is not None:
+        bind_activity(stage=ORIENTATION_STAGE)
+    try:
+        return await _run_project_orientation(
+            project_id,
+            method_version,
+            tasks,
+            auto_advance=auto_advance,
+            review_deferred=review_deferred,
+        )
+    finally:
+        # 无论成败都把本任务积累的流水落库；写库失败由 _append_activity 自行吞掉。
+        if getattr(tasks, "activity_events", None):
+            await _append_activity(project_id, *_drain_activity_events(tasks))
+
+
+def _emit_activity(tasks: Any, current_step: str, message: str, *, status: str = "info") -> None:
+    """调用层补发的流水事件走同一实例缓冲，保证与任务层事件顺序一致。"""
+
+    emit = getattr(tasks, "_emit_activity", None)
+    if emit is not None:
+        emit(current_step, message, status=status)
+
+
+async def _run_project_orientation(
+    project_id: str,
+    method_version: int,
+    tasks: ExpertModelTasks,
+    *,
+    auto_advance: bool = False,
+    review_deferred: bool = True,
+) -> dict[str, Any]:
+
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
@@ -632,14 +687,6 @@ async def run_project_orientation(
         learning_plan=project_snapshot["learning_plan"],
         prompt_pack=project_snapshot["prompt_pack"],
     )
-    if model_tasks is not None:
-        tasks = model_tasks
-    else:
-        compiler_profile = get_expert_compiler_profile(
-            project_snapshot["compiler_profile_id"],
-            validate_assets=not has_method_candidate,
-        )
-        tasks = ExpertModelTasks(compiler_profile=compiler_profile)
     if has_method_candidate:
         learning_plan = project_snapshot["learning_plan"]
         prompt_pack = ProjectPromptPack.model_validate(project_snapshot["prompt_pack"])
@@ -695,6 +742,11 @@ async def run_project_orientation(
 
         # 方法候选先落库、后校验：校验失败时保留已生成的总编产物供诊断，恢复路径可复用，不重复消耗模型调用。
         _validate_method_contract(learning_plan, plan.compilation_brief_markdown, prompt_pack)
+        _emit_activity(
+            tasks,
+            "plan",
+            f"定向计划已生成：选定 {len(sample_material_ids)} 份小样（{', '.join(sorted(sample['alias'] for sample in samples if sample['alias'] in selected_aliases))}）",
+        )
 
     if not sample_material_ids:
         raise ValueError("项目方法缺少试跑小样选择")
@@ -895,6 +947,63 @@ async def repair_project_method(
     return project.method_version
 
 
+async def update_expert_project_model(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    created_by: str,
+    model_spec: str | None = None,
+    max_concurrency: int | None = None,
+) -> Any:
+    """项目运行中切换学习模型或调整材料学习并发；写库即生效，之后新任务一律读最新配置。"""
+
+    updates: list[str] = []
+    if model_spec is not None:
+        clean_spec = str(model_spec or "").strip()
+        model_info = model_cache.get_model_info(clean_spec)
+        if model_info is None or model_info.model_type != "chat":
+            raise ValueError(f"专家项目模型不可用: {clean_spec}")
+        if not int(model_info.context_length or 0):
+            raise ValueError("专家项目模型缺少上下文长度配置，请前往「智能体 > 模型供应商 > 管理模型 > 配置」补充")
+
+    repo = ExpertRepository(db)
+    project = await repo.lock_project(project_id)
+    if project is None or project.created_by != created_by:
+        raise PermissionError("专家项目不存在")
+    if project.status in {"deleted", "enabled", "paused"}:
+        raise ValueError("项目已删除、已暂停或 Skill 已启用，不能修改模型")
+    if project.stage == "release" and project.status in {"ready", "enabled"}:
+        raise ValueError("项目已完成编译，不能修改模型")
+
+    if model_spec is not None:
+        clean_spec = str(model_spec or "").strip()
+        if clean_spec != project.model_spec:
+            project.model_spec = clean_spec
+            updates.append(f"模型已切换为 {clean_spec}")
+    if max_concurrency is not None:
+        limit = int(max_concurrency)
+        if not 0 <= limit <= EXPERT_MAX_MATERIAL_CONCURRENCY:
+            raise ValueError(f"并发数量需在 0～{EXPERT_MAX_MATERIAL_CONCURRENCY} 之间（0 表示不限制）")
+        if limit != int(project.max_concurrency or 0):
+            project.max_concurrency = limit
+            updates.append(
+                f"并发数量调整为 {limit if limit else '不限制'}，已在执行中的材料会自然跑完后按新值继续"
+            )
+    if not updates:
+        return project
+    project.updated_at = utc_now_naive()
+    await _append_activity(
+        project.project_id,
+        {
+            "stage": project.stage,
+            "current_step": "model_switch",
+            "message": "；".join(updates) + "，从下一批任务起生效",
+        },
+    )
+    await db.commit()
+    return project
+
+
 async def _start_material_learning(db: AsyncSession, project: Any, repo: ExpertRepository) -> int:
     """在已完成方法校准后初始化逐份材料学习。"""
 
@@ -1016,6 +1125,30 @@ async def run_method_calibration(
     """由总编收敛方法并复跑小样；自动模式下失败轮有界续跑，等待确认或交接。"""
 
     tasks = model_tasks or ExpertModelTasks()
+    bind_activity = getattr(tasks, "bind_activity_context", None)
+    if bind_activity is not None:
+        bind_activity(stage=ORIENTATION_STAGE)
+    _emit_activity(tasks, "calibration_start", "方法校准任务开始")
+    try:
+        return await _run_method_calibration(project_id, method_version, tasks)
+    except Exception:
+        _emit_activity(
+            tasks,
+            "calibration_failed",
+            f"方法校准任务失败，将按重试策略续跑",
+            status="warning",
+        )
+        raise
+    finally:
+        if getattr(tasks, "activity_events", None):
+            await _append_activity(project_id, *_drain_activity_events(tasks))
+
+
+async def _run_method_calibration(
+    project_id: str,
+    method_version: int,
+    tasks: ExpertModelTasks,
+) -> dict[str, Any]:
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.get_project(project_id)
@@ -1102,6 +1235,7 @@ async def run_method_calibration(
                 await db.flush()
         else:
             samples = _build_method_calibration_samples(snapshot["method_samples"], sample_ids)
+        _emit_activity(tasks, "calibration", "总编正在依据小样 Review 收敛学习方法")
         calibrated = await tasks.calibrate_project_method(
             model_spec=snapshot["model_spec"],
             project_name=snapshot["name"],
@@ -1133,6 +1267,7 @@ async def run_method_calibration(
             project.message = "已生成校准后的方法，正在使用同一批小样重新试跑"
             project.updated_at = utc_now_naive()
             await db.flush()
+        _emit_activity(tasks, "calibration", "校准后的学习方法已生成，开始用同一批小样重新试跑")
 
     if not v2_samples_ready:
         result = await run_project_orientation(
@@ -1179,6 +1314,12 @@ async def run_method_calibration(
         }
 
     assessment = await tasks.assess_method_calibration(**assessment_input)
+    _emit_activity(
+        tasks,
+        "assess",
+        f"校准评估：{assessment.decision}——{assessment.reason}",
+        status="info" if assessment.decision != "needs_attention" else "warning",
+    )
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
         project = await repo.lock_project(project_id)

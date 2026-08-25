@@ -224,3 +224,75 @@ async def test_resume_enqueue_failure_restores_paused_state(monkeypatch: pytest.
     assert exc.value.status_code == 503
     assert exc.value.detail == "项目仍保持暂停，后台任务恢复后请再次重试"
     assert statuses == ["running", "paused"]
+
+
+@pytest.mark.asyncio
+async def test_update_model_route_owner_saves_and_returns_new_spec() -> None:
+    """owner 改模型成功返回新配置。"""
+
+    async def update_model(_db, *, project_id: str, created_by: str, model_spec, max_concurrency):
+        assert (project_id, created_by, model_spec, max_concurrency) == (
+            "project-1",
+            "admin-1",
+            "provider:new",
+            None,
+        )
+        return SimpleNamespace(
+            project_id=project_id,
+            model_spec=model_spec,
+            max_concurrency=4,
+            status="running",
+        )
+
+    import server.routers.expert_project_router as router_mod
+
+    original = router_mod.update_expert_project_model
+    router_mod.update_expert_project_model = update_model
+    try:
+        response = await router_mod.update_expert_project_model_route(
+            "project-1",
+            router_mod.UpdateProjectModelRequest(model_spec="provider:new"),
+            current_user=SimpleNamespace(uid="admin-1"),
+            db=object(),
+        )
+    finally:
+        router_mod.update_expert_project_model = original
+
+    assert response == {
+        "project_id": "project-1",
+        "model_spec": "provider:new",
+        "max_concurrency": 4,
+        "status": "running",
+    }
+
+
+@pytest.mark.asyncio
+async def test_update_model_route_maps_permission_and_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 owner 返回 403；模型或项目状态不合法返回 409。"""
+
+    async def deny(_db, **_kwargs):
+        raise PermissionError("专家项目不存在")
+
+    async def reject(_db, **_kwargs):
+        raise ValueError("专家项目模型不可用: provider:missing")
+
+    monkeypatch.setattr(router, "update_expert_project_model", deny)
+    with pytest.raises(HTTPException) as exc:
+        await router.update_expert_project_model_route(
+            "project-1",
+            router.UpdateProjectModelRequest(model_spec="provider:new"),
+            current_user=SimpleNamespace(uid="other-user"),
+            db=object(),
+        )
+    assert exc.value.status_code == 403
+
+    monkeypatch.setattr(router, "update_expert_project_model", reject)
+    with pytest.raises(HTTPException) as exc:
+        await router.update_expert_project_model_route(
+            "project-1",
+            router.UpdateProjectModelRequest(model_spec="provider:missing"),
+            current_user=SimpleNamespace(uid="admin-1"),
+            db=object(),
+        )
+    assert exc.value.status_code == 409
+    assert "不可用" in exc.value.detail

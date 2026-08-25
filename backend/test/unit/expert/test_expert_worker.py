@@ -1486,3 +1486,78 @@ async def test_material_auto_reroll_settles_at_daily_limit(
     await worker._schedule_material_learning_auto_reroll(project_id, "m1", 3)
     assert len(pool.jobs) == worker.MATERIAL_LEARNING_AUTO_REROLL_LIMIT
     assert settled == [(project_id, "m1", 3)]
+
+
+@pytest.mark.asyncio
+async def test_enqueue_pending_material_learning_respects_project_concurrency(
+    worker_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """项目并发上限截断投递量：在途学习占额度，只补投剩余 pending。"""
+
+    project_id = "conc-project"
+    await _add_project(
+        worker_env,
+        project_id,
+        stage="material_learning",
+        status="running",
+        method_version=1,
+    )
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        for index in range(2, 6):
+            await repo.create_materials(
+                project_id,
+                [
+                    {
+                        "material_id": f"{project_id}-m{index}",
+                        "title": f"材料 {index}",
+                        "source_path": f"m{index}.md",
+                        "raw_path": f"raw/m{index}.md",
+                        "text_path": f"text/m{index}.md",
+                        "file_type": ".md",
+                        "status": "pending",
+                        "line_count": 1,
+                    }
+                ],
+            )
+        await db.commit()
+    async with worker_env() as db:
+        repo = ExpertRepository(db)
+        # 2 份在途（learning + review_revise），上限 3：只应再投 1 份 pending。
+        await repo.update_material(f"{project_id}-material", status="learning")
+        await repo.update_material(f"{project_id}-m2", status="review_revise")
+        project = await repo.lock_project(project_id)
+        project.max_concurrency = 3
+        await db.commit()
+
+    enqueued: list[str] = []
+
+    class FakePool:
+        async def enqueue_job(self, function, *args, **_kwargs):
+            assert function == "process_expert_material_learning"
+            enqueued.append(args[1])
+
+    async def fake_get_arq_pool():
+        return FakePool()
+
+    monkeypatch.setattr(worker, "get_arq_pool", fake_get_arq_pool)
+    await worker.enqueue_pending_material_learning(project_id, 1)
+    assert enqueued == [f"{project_id}-m3"]
+
+    # 上限 0（默认，不限制）应投全部未完成材料。
+    async with worker_env() as db:
+        project = await ExpertRepository(db).lock_project(project_id)
+        project.max_concurrency = 0
+        await db.commit()
+    enqueued.clear()
+    await worker.enqueue_pending_material_learning(project_id, 1)
+    assert sorted(enqueued) == sorted(
+        [
+            f"{project_id}-material",
+            f"{project_id}-m2",
+            f"{project_id}-m3",
+            f"{project_id}-m4",
+            f"{project_id}-m5",
+        ]
+    )

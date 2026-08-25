@@ -60,7 +60,9 @@ async def expert_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         service.model_cache,
         "get_model_info",
         lambda model_spec: (
-            SimpleNamespace(model_type="chat", context_length=128_000) if model_spec == "provider:model" else None
+            SimpleNamespace(model_type="chat", context_length=128_000)
+            if model_spec in {"provider:model", "provider:other"}
+            else None
         ),
     )
 
@@ -2533,6 +2535,139 @@ async def test_first_calibration_backfills_review_before_calibrating(expert_env)
     assert calibration_input["samples"][0]["review"]["issues"]
     assessment_input = model_tasks.assessment_inputs[0]
     assert assessment_input["v1_samples"] == calibration_input["samples"]
+
+
+@pytest.mark.asyncio
+async def test_method_calibration_records_start_and_assessment_activities(expert_env) -> None:
+    """校准流水至少包含任务开始与评估结论两条，事件阶段为 orientation。"""
+
+    project_id, _ = await _create_project(expert_env, count=2)
+    material_ids = await _make_materials_ready(expert_env, project_id)
+    model_tasks = CalibrationModelTasks()
+    async with expert_env.factory() as db:
+        method_version = await service.start_project_orientation(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            representative_material_ids=material_ids,
+        )
+    await service.run_project_orientation(project_id, method_version, model_tasks=model_tasks)
+    async with expert_env.factory() as db:
+        calibrated_version = await service.confirm_project_method(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+        )
+
+    result = await service.run_method_calibration(project_id, calibrated_version, model_tasks=model_tasks)
+    assert result["status"] == "running"
+
+    activities = await _list_activities(expert_env, project_id)
+    messages = [(item["current_step"], item["message"]) for item in activities]
+    start = [item for item in messages if item[0] == "calibration_start"]
+    assess = [item for item in messages if item[0] == "assess"]
+    assert len(start) == 1
+    assert len(assess) == 1
+    assert assess[0][1].startswith("校准评估：")
+    calibration_events = [
+        item for item in activities if item["current_step"] in {"calibration_start", "assess", "calibration"}
+    ]
+    assert calibration_events
+    assert all(item["stage"] == service.ORIENTATION_STAGE for item in calibration_events)
+    # 定向计划事件也应存在：首次定向会生成方法候选。
+    plan = [item for item in messages if item[0] == "plan"]
+    assert plan and "定向计划已生成" in plan[0][1]
+
+
+@pytest.mark.asyncio
+async def test_update_project_model_applies_immediately_for_new_tasks(expert_env) -> None:
+    """owner 可在运行中改模型：写库即生效，流水记录切换，非 owner 被拒绝。"""
+
+    project_id, _ = await _create_project(expert_env, count=1)
+    async with expert_env.factory() as db:
+        project = await service.update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            model_spec="provider:model",
+        )
+    assert project.model_spec == "provider:model"
+    # 创建时已是同款模型：无变化即无流水（防重复事件噪音）。
+    assert await _list_activities(expert_env, project_id) == []
+    async with expert_env.factory() as db:
+        project = await service.update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            model_spec="provider:other",
+        )
+    assert project.model_spec == "provider:other"
+
+    # 新任务读取的是最新项目事实：模型取自项目快照。
+    async with expert_env.factory() as db:
+        stored = await ExpertRepository(db).get_project(project_id)
+    assert stored is not None and stored.model_spec == "provider:other"
+
+    activities = await _list_activities(expert_env, project_id)
+    switches = [item for item in activities if item["current_step"] == "model_switch"]
+    assert len(switches) == 1
+    assert switches[0]["message"].startswith("模型已切换为 provider:other")
+    # 相同配置重复保存不产生流水也不报错。
+    async with expert_env.factory() as db:
+        unchanged = await service.update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            model_spec="provider:other",
+        )
+    assert unchanged.model_spec == "provider:other"
+    assert len(await _list_activities(expert_env, project_id)) == 1
+
+    # 格式校验与权限边界。
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="不可用"):
+            await service.update_expert_project_model(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+                model_spec="provider:missing",
+            )
+        with pytest.raises(PermissionError):
+            await service.update_expert_project_model(
+                db,
+                project_id=project_id,
+                created_by="user-2",
+                model_spec="provider:model",
+            )
+
+    # 并发数量校验与流水：合法值落库，越界拒绝。
+    async with expert_env.factory() as db:
+        with pytest.raises(ValueError, match="并发数量"):
+            await service.update_expert_project_model(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+                max_concurrency=service.EXPERT_MAX_MATERIAL_CONCURRENCY + 1,
+            )
+        with pytest.raises(ValueError, match="并发数量"):
+            await service.update_expert_project_model(
+                db,
+                project_id=project_id,
+                created_by="user-1",
+                max_concurrency=-1,
+            )
+        updated = await service.update_expert_project_model(
+            db,
+            project_id=project_id,
+            created_by="user-1",
+            max_concurrency=3,
+        )
+    assert updated.max_concurrency == 3
+    activities = await _list_activities(expert_env, project_id)
+    concurrency_switches = [
+        item for item in activities if item["current_step"] == "model_switch" and "并发数量调整为 3" in item["message"]
+    ]
+    assert len(concurrency_switches) == 1
 
 
 async def _enter_material_learning(expert_env, *, count: int = 2) -> tuple[str, list[str]]:

@@ -43,6 +43,10 @@
           </a-button>
           <template #overlay>
             <a-menu @click="handleProjectMenu">
+              <a-menu-item key="model" :disabled="!canUpdateModel">
+                <Bot :size="15" />
+                模型设置
+              </a-menu-item>
               <a-menu-item v-if="project.status === 'enabled'" key="uninstall">
                 <PackageMinus :size="15" />
                 卸载专家 Skill
@@ -1214,6 +1218,40 @@
         placeholder="说明为什么本轮明确排除这份材料"
       />
     </a-modal>
+
+    <a-modal
+      v-model:open="modelSettingsOpen"
+      title="模型设置"
+      ok-text="保存并立即生效"
+      cancel-text="取消"
+      :confirm-loading="actionKey === 'model'"
+      @ok="submitModelSettings"
+      @cancel="modelSettingsOpen = false"
+    >
+      <p class="modal-copy">
+        保存后，之后发起的模型调用一律使用新配置；已在执行中的任务会按旧配置跑完。
+      </p>
+      <a-form layout="vertical">
+        <a-form-item label="学习模型">
+          <ModelSelectorComponent
+            :model_spec="modelSettingsSpec"
+            size="middle"
+            placeholder="请选择模型"
+            @select-model="(spec) => (modelSettingsSpec = spec)"
+          />
+        </a-form-item>
+        <a-form-item label="并发数量" extra="同时学习的材料份数上限，0 表示不限制。">
+          <a-input-number
+            v-model:value="modelSettingsConcurrency"
+            :min="0"
+            :max="20"
+            :precision="0"
+            style="width: 100%"
+            placeholder="0 表示不限制"
+          />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -1224,6 +1262,7 @@ import { message, Modal } from 'ant-design-vue'
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   Check,
   ChevronDown,
   CircleAlert,
@@ -1247,6 +1286,7 @@ import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import ExpertTopicReader from '@/components/extensions/ExpertTopicReader.vue'
 import ExpertTopicOutline from '@/components/extensions/ExpertTopicOutline.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
+import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 import {
   EXPERT_STAGE_ITEMS,
   canDeleteExpertProject,
@@ -1337,7 +1377,13 @@ const ACTIVITY_STEP_LABELS = {
   review: 'Review 中',
   material_done: '材料完成',
   material_failed: '材料失败',
-  model_retry: '自动重试'
+  model_retry: '自动重试',
+  calibration_start: '方法校准开始',
+  calibration: '方法校准',
+  calibration_failed: '方法校准失败',
+  plan: '定向计划',
+  assess: '校准评估',
+  model_switch: '模型切换'
 }
 const activityStepLabel = (step) => {
   if (step in ACTIVITY_STEP_LABELS) return ACTIVITY_STEP_LABELS[step]
@@ -1901,6 +1947,42 @@ const deleteProject = () => {
 const handleProjectMenu = ({ key }) => {
   if (key === 'uninstall') uninstallProject()
   if (key === 'delete') deleteProject()
+  if (key === 'model') openModelSettings()
+}
+
+/** 终态项目不能再改模型；与后端校验保持一致。 */
+const canUpdateModel = computed(() => !['enabled', 'paused', 'deleted'].includes(project.value?.status))
+const modelSettingsOpen = ref(false)
+const modelSettingsSpec = ref('')
+const modelSettingsConcurrency = ref(0)
+
+/** 打开模型设置弹窗并预填当前配置。 */
+const openModelSettings = () => {
+  if (!canUpdateModel.value) return
+  modelSettingsSpec.value = project.value?.model_spec || ''
+  modelSettingsConcurrency.value = Number(project.value?.max_concurrency) || 0
+  modelSettingsOpen.value = true
+}
+
+/** 保存新模型与并发配置；后端写库即生效，刷新项目事实拿最新流水。 */
+const submitModelSettings = async () => {
+  if (actionKey.value) return
+  if (!modelSettingsSpec.value) {
+    message.warning('请先选择一个模型')
+    return
+  }
+  const concurrency = Math.max(0, Math.min(20, Math.floor(modelSettingsConcurrency.value || 0)))
+  actionKey.value = 'model'
+  try {
+    await expertApi.updateModel(projectId.value, modelSettingsSpec.value, concurrency)
+    message.success('设置已更新，从下一批任务起生效')
+    modelSettingsOpen.value = false
+    await loadProject()
+  } catch (error) {
+    message.error(error.message || '保存设置失败')
+  } finally {
+    actionKey.value = ''
+  }
 }
 
 /** 打开当前项目已经启用的通用 Skill 管理页。 */

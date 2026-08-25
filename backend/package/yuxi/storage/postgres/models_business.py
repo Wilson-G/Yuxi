@@ -291,6 +291,13 @@ class ExpertProject(Base):
     name = Column(String(255), nullable=False, comment="项目名称")
     description = Column(Text, nullable=False, default="", comment="项目说明")
     model_spec = Column(String(512), nullable=False, comment="项目使用的模型规格")
+    max_concurrency = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="材料学习并发上限；0 表示不限制",
+    )
     compiler_profile_id = Column(
         String(64),
         nullable=False,
@@ -384,6 +391,7 @@ class ExpertProject(Base):
             "name": self.name,
             "description": self.description,
             "model_spec": self.model_spec,
+            "max_concurrency": int(self.max_concurrency or 0),
             "compiler_profile_id": self.compiler_profile_id,
             "stage": self.stage,
             "status": self.status,

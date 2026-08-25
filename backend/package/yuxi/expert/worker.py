@@ -117,7 +117,11 @@ async def enqueue_material_learning(project_id: str, material_id: str, method_ve
 
 
 async def enqueue_pending_material_learning(project_id: str, method_version: int) -> None:
-    """只投递当前方法版本下尚未完成的材料工作。"""
+    """只投递当前方法版本下尚未完成的材料工作，按项目并发上限截断投递量。
+
+    learning/review_revise 视为已占用并发额度（含在途任务），只截断 pending；
+    在途任务自然跑完后，剩余 pending 由完成结算时再次投递补齐到新上限。
+    """
 
     async with pg_manager.get_async_session_context() as db:
         repo = ExpertRepository(db)
@@ -135,6 +139,16 @@ async def enqueue_pending_material_learning(project_id: str, method_version: int
             for material in materials
             if material.status in {"pending", "learning", "review_revise"}
         ]
+        limit = int(project.max_concurrency or 0)
+        if limit > 0:
+            # learning/review_revise 已在途（重复投递由稳定 job_id 幂等去重），只补足差额的 pending。
+            in_flight = sum(
+                1 for material in materials if material.status in {"learning", "review_revise"}
+            )
+            remaining = max(0, limit - in_flight)
+            pending_ids = [
+                material.material_id for material in materials if material.status == "pending"
+            ][:remaining]
     for material_id in pending_ids:
         await enqueue_material_learning(project_id, material_id, method_version)
 

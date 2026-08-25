@@ -172,6 +172,10 @@ class PostgresManager(metaclass=SingletonMeta):
             ),
             (
                 "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
+                "max_concurrency INTEGER NOT NULL DEFAULT 0"
+            ),
+            (
+                "ALTER TABLE IF EXISTS expert_projects ADD COLUMN IF NOT EXISTS "
                 "method_calibration_rounds INTEGER NOT NULL DEFAULT 0"
             ),
             """

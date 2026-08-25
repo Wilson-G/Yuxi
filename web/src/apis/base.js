@@ -229,13 +229,28 @@ export function apiSuperAdminPut(url, data = {}, options = {}, responseType = 'j
 }
 
 /**
- * 发送DELETE请求
+ * 发送PATCH请求
  * @param {string} url - API端点
- * @param {Object} options - 请求选项
- * @param {boolean} requiresAuth - 是否需要认证
- * @param {string} responseType - 响应类型: 'json' | 'text' | 'blob'
- * @returns {Promise} - 请求结果
+ * @param {Object} data - 请求体数据
  */
+export function apiPatch(url, data = {}, options = {}, requiresAuth = true, responseType = 'json') {
+  return apiRequest(
+    url,
+    {
+      method: 'PATCH',
+      body: data instanceof FormData ? undefined : JSON.stringify(data),
+      ...options
+    },
+    requiresAuth,
+    responseType
+  )
+}
+
+export function apiAdminPatch(url, data = {}, options = {}, responseType = 'json') {
+  checkAdminPermission()
+  return apiPatch(url, data, options, true, responseType)
+}
+
 export function apiDelete(url, options = {}, requiresAuth = true, responseType = 'json') {
   return apiRequest(url, { method: 'DELETE', ...options }, requiresAuth, responseType)
 }
