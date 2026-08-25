@@ -903,3 +903,38 @@ def test_validate_asset_note_structure_rejects_duplicate_node_id():
 
     with pytest.raises(ValueError, match="重复节点 ID"):
         organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+def test_normalize_asset_note_repairs_missing_heading_labels():
+    note = _wellformed_asset_note().replace(
+        "### N01 [输入事实][原文明说]",
+        "### N01 音乐天赋断言（结论端）",
+    ).replace("### N02 [连续推导][领域补链]", "### N02 [连续推导][领域补链][原文明说] 重复标签")
+
+    normalized = organization_service.normalize_asset_note_markdown(note, material_alias="N001")
+
+    assert "### N01 [输入事实][原文明说] 音乐天赋断言（结论端）" in normalized
+    assert "### N02 [连续推导][领域补链] 重复标签" in normalized
+    organization_service.validate_asset_note_structure(normalized, material_alias="N001")
+
+
+def test_normalize_asset_note_keeps_note_when_catalog_missing():
+    note = "# 资产\n\n## 资产正文\n\n### N01 仅有正文\n"
+
+    assert organization_service.normalize_asset_note_markdown(note, material_alias="N001") == note
+
+
+def test_validate_asset_note_structure_accepts_trailing_heading_text():
+    note = _wellformed_asset_note().replace(
+        "### N02 [连续推导][领域补链]",
+        "### N02 [连续推导][领域补链] 标题短语",
+    )
+
+    organization_service.validate_asset_note_structure(note, material_alias="N001")
+
+
+def test_validate_asset_note_structure_reports_first_body_heading():
+    note = _wellformed_asset_note().replace("### N02 [连续推导][领域补链]", "### N02 仅有编号")
+
+    with pytest.raises(ValueError, match="正文首个标题: 'N01"):
+        organization_service.validate_asset_note_structure(note, material_alias="N001")

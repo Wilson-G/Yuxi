@@ -88,6 +88,18 @@ async def run_organization_stage(
             validate_assets=False,
         )
         include_asset_nodes = compiler_profile.includes_asset_node_catalog
+        if include_asset_nodes:
+            async with pg_manager.get_async_session_context() as db:
+                repo = ExpertRepository(db)
+                for material in materials:
+                    if not material.note:
+                        continue
+                    normalized_note = normalize_asset_note_markdown(
+                        material.note, material_alias=note_aliases[material.material_id]
+                    )
+                    if normalized_note != material.note:
+                        await repo.update_material(material.material_id, note=normalized_note)
+                        material.note = normalized_note
         grouping = await tasks.plan_note_groups(
             model_spec=snapshot["model_spec"],
             learning_plan=snapshot["learning_plan"],
@@ -833,8 +845,64 @@ _ASSET_NODE_ENTRY_PATTERN = re.compile(
     r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\] .+$"
 )
 _ASSET_BODY_HEADING_PATTERN = re.compile(
-    r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\]$"
+    r"^(?P<node_id>N\d{2}) \[(?P<node_type>[^[\]]+)\]\[(?P<source_label>[^[\]]+)\](?: (?P<trailing>.+))?$"
 )
+_ASSET_BODY_HEADING_LOOSE_PATTERN = re.compile(r"^(?P<node_id>N\d{2})(?P<rest>.*)$")
+
+
+def normalize_asset_note_markdown(note_markdown: str, *, material_alias: str) -> str:
+    """按目录条目机械修复正文三级标题的节点类型与来源标签。
+
+    仅处理确定性格式偏差：标题缺标签时按同 ID 目录条目补齐、标签重复或标签后
+    悬挂多余方括号时修剪。保留模型自然写出的标题短语（放在标签之后），
+    ID 集合或顺序不一致不在此修复，仍由结构校验 fail-fast 交回内容修订。
+    """
+
+    lines = str(note_markdown or "").splitlines()
+    catalog_by_id: dict[str, tuple[str, str]] = {}
+    in_catalog = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not in_catalog:
+            in_catalog = line == "## 资产节点目录"
+            continue
+        if line.startswith("# "):
+            break
+        if line.startswith("## "):
+            in_catalog = False
+            continue
+        if not line.startswith(("- ", "* ", "+ ")):
+            continue
+        entry_match = _ASSET_NODE_ENTRY_PATTERN.fullmatch(line[2:].strip())
+        if entry_match is None:
+            continue
+        catalog_by_id.setdefault(
+            entry_match["node_id"], (entry_match["node_type"], entry_match["source_label"])
+        )
+
+    if not catalog_by_id:
+        return note_markdown
+
+    normalized: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if not stripped.startswith("### "):
+            normalized.append(raw_line)
+            continue
+        heading = stripped[4:].strip()
+        loose = _ASSET_BODY_HEADING_LOOSE_PATTERN.fullmatch(heading)
+        if loose is None or loose["node_id"] not in catalog_by_id:
+            normalized.append(raw_line)
+            continue
+        node_id = loose["node_id"]
+        node_type, source_label = catalog_by_id[node_id]
+        canonical = f"{node_id} [{node_type}][{source_label}]"
+        if heading == canonical:
+            normalized.append(raw_line)
+            continue
+        trailing_text = re.sub(r"^(?:\s*\[[^[\]]*\])+", "", loose["rest"]).strip()
+        normalized.append(f"### {canonical}" + (f" {trailing_text}" if trailing_text else ""))
+    return "\n".join(normalized)
 
 
 def validate_asset_note_structure(note_markdown: str, *, material_alias: str) -> None:
@@ -879,8 +947,15 @@ def validate_asset_note_structure(note_markdown: str, *, material_alias: str) ->
     if catalog_entries != body_nodes:
         catalog_ids = [node_id for node_id, _, _ in catalog_entries]
         body_ids = [node_id for node_id, _, _ in body_nodes]
+        raw_body_headings = [
+            line.strip()[4:]
+            for line in str(note_markdown or "").splitlines()
+            if line.strip().startswith("### ")
+        ]
+        first_heading = f"，正文首个标题: '{raw_body_headings[0]}'" if raw_body_headings else ""
         raise ValueError(
-            f"{material_alias} 的资产节点目录与资产正文三级标题必须同序一一对应: 目录 {catalog_ids} vs 正文 {body_ids}"
+            f"{material_alias} 的资产节点目录与资产正文三级标题必须同序一一对应: "
+            f"目录 {catalog_ids} vs 正文 {body_ids}{first_heading}"
         )
 
 

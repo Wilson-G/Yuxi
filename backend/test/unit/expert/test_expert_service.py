@@ -234,7 +234,12 @@ class OrientationModelTasks:
         self.call_counts[f"note:{title}"] += 1
         return MaterialNoteResult(
             decision="learned",
-            note_markdown="# 学艺笔记",
+            note_markdown=(
+                "# 当前材料的领域推导资产\n\n## 资产定位\n定位。\n\n"
+                "## 资产节点目录\n- N01 [输入事实][原文明说] 事实\n\n"
+                "## 资产正文\n\n### N01 [输入事实][原文明说]\n内容。\n\n"
+                "## CoT 推导示范\nInput: ...\n"
+            ),
             routing_labels=["判断条件"],
             evidence=[
                 {

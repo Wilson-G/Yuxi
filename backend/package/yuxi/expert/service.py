@@ -15,7 +15,12 @@ from yuxi.expert.compiler_profiles import (
     get_expert_compiler_profile,
     list_expert_compiler_profiles,
 )
-from yuxi.expert.contracts import MaterialNoteResult, MaterialReviewResult, ProjectPromptPack
+from yuxi.expert.contracts import (
+    MaterialNoteResult,
+    MaterialReviewResult,
+    ProjectPromptPack,
+    ReviewIssue,
+)
 from yuxi.expert.materials import read_expert_material_text
 from yuxi.expert.model_tasks import ExpertModelTasks
 from yuxi.expert.storage import (
@@ -35,6 +40,70 @@ MAX_MATERIAL_REVISIONS = 2
 MIN_REPRESENTATIVE_MATERIALS = 4
 MAX_REPRESENTATIVE_MATERIALS = 20
 MAX_METHOD_SAMPLES = 5
+
+# 编译方法是否含资产节点目录的判定缓存，避免修复/校准流程重复读取中央 Profile。
+_ASSET_NODE_PROFILE_CACHE: dict[str, bool] = {}
+
+
+def _project_uses_asset_nodes(compiler_profile_id: str) -> bool:
+    """当前编译方法是否要求领域推导资产节点目录结构；结果按 profile 缓存。"""
+
+    clean_id = str(compiler_profile_id or "")
+    cached = _ASSET_NODE_PROFILE_CACHE.get(clean_id)
+    if cached is None:
+        profile = get_expert_compiler_profile(clean_id, validate_assets=False)
+        cached = profile.includes_asset_node_catalog
+        _ASSET_NODE_PROFILE_CACHE[clean_id] = cached
+    return cached
+
+
+def _apply_asset_note_structure_gate(
+    note: MaterialNoteResult,
+    *,
+    uses_asset_nodes: bool,
+    alias: str,
+    auto_advance: bool,
+    synthesized_review_out: list[MaterialReviewResult] | None = None,
+) -> None:
+    """对资产方法的学习结果执行规范化与结构合同检查。
+
+    可修复的标题格式偏差已在规范化中自动补齐；规范化后仍不满足结构合同说明
+    节点目录与正文存在真实不一致，需要 Author 补内容，按自动模式分别处理：
+    无人值守时合成 revise Review 经 synthesized_review_out 交回修订循环，
+    人工模式抛错进入 needs_attention。
+    """
+
+    if not uses_asset_nodes or note.decision != "learned":
+        return
+
+    from yuxi.expert.organization_service import normalize_asset_note_markdown, validate_asset_note_structure
+
+    normalized = normalize_asset_note_markdown(note.note_markdown, material_alias=alias)
+    try:
+        validate_asset_note_structure(normalized, material_alias=alias)
+    except ValueError as exc:
+        if not auto_advance:
+            raise
+        synthesized_review = MaterialReviewResult(
+            decision="revise",
+            summary=str(exc),
+            issues=[
+                ReviewIssue(
+                    problem=str(exc),
+                    affected_part="资产节点目录/资产正文",
+                    revision_direction=(
+                        "按异常信息修正节点目录与正文三级标题，使两者同序一一对应；"
+                        "结构由系统校验，不要增删正文标题以外的层级"
+                    ),
+                )
+            ],
+        )
+        if synthesized_review_out is not None:
+            synthesized_review_out.append(synthesized_review)
+        return
+    note.note_markdown = normalized
+
+
 # 每个方法确认代际允许的自动校准执行上限：首次校准加两次续跑；耗尽后停在需要处理，防止无人值守无限烧钱。
 MAX_METHOD_CALIBRATION_ROUNDS = 3
 ORIENTATION_STAGE = "orientation"
@@ -528,6 +597,7 @@ async def run_project_orientation(
         }
 
     aliases = {material.material_id: f"M{index:03d}" for index, material in enumerate(materials, start=1)}
+    uses_asset_nodes = _project_uses_asset_nodes(project_snapshot["compiler_profile_id"])
     catalog = _build_material_catalog(materials, aliases)
     samples = []
     representative_materials = []
@@ -642,6 +712,7 @@ async def run_project_orientation(
             alias=sample["alias"],
             text=sample["text"],
             auto_advance=auto_advance,
+            uses_asset_nodes=uses_asset_nodes,
         )
         async with pg_manager.get_async_session_context() as db:
             project = await ExpertRepository(db).lock_project(project_id)
@@ -1365,6 +1436,7 @@ async def _learn_one_material(
         ),
         starting_revision_count=snapshot["resume_revision_count"],
         auto_advance=snapshot["auto_advance"],
+        uses_asset_nodes=_project_uses_asset_nodes(project.compiler_profile_id),
     )
 
     async with pg_manager.get_async_session_context() as db:
@@ -1464,7 +1536,21 @@ async def _run_method_sample(
     starting_review: MaterialReviewResult | None = None,
     starting_revision_count: int = 0,
     auto_advance: bool = False,
+    uses_asset_nodes: bool = False,
 ) -> dict[str, Any]:
+    def _structure_gate(candidate: MaterialNoteResult) -> MaterialReviewResult | None:
+        """规范化并校验资产结构；不合格时返回合成 revise 意见供修订循环消费。"""
+
+        review_holder: list[MaterialReviewResult] = []
+        _apply_asset_note_structure_gate(
+            candidate,
+            uses_asset_nodes=uses_asset_nodes,
+            alias=alias,
+            auto_advance=auto_advance,
+            synthesized_review_out=review_holder,
+        )
+        return review_holder[0] if review_holder else None
+
     if (starting_note is None) != (starting_review is None):
         raise ValueError("材料恢复缺少笔记或 Review")
     if starting_note is None:
@@ -1492,6 +1578,9 @@ async def _run_method_sample(
                 note=note,
             )
             _validate_review(review)
+            structure_issue = _structure_gate(note)
+            if structure_issue is not None and review.decision == "pass":
+                review = structure_issue
     else:
         note = starting_note
         review = starting_review
@@ -1531,6 +1620,9 @@ async def _run_method_sample(
             note=current_note,
         )
         _validate_review(final_review)
+        structure_issue = _structure_gate(revision)
+        if structure_issue is not None and final_review.decision == "pass":
+            final_review = structure_issue
 
     needs_content_resolution = current_note.decision == "needs_attention" or (
         final_review is not None and final_review.decision in {"revise", "needs_attention"}
@@ -1551,7 +1643,8 @@ async def _run_method_sample(
         _validate_note(resolution, alias=alias, line_count=material.line_count)
         revision = resolution
         current_note = resolution
-        final_review = MaterialReviewResult(
+        structure_issue = _structure_gate(resolution)
+        final_review = structure_issue if structure_issue is not None else MaterialReviewResult(
             decision="pass" if resolution.decision == "learned" else "no_value",
             summary=resolution.reason,
             issues=[],
