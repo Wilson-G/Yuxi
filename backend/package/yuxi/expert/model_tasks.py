@@ -144,7 +144,11 @@ def _is_openai_unexpected_stream_end(exc: Exception) -> bool:
     供应商明确返回的 API 状态错误误判成可重试。
     """
 
-    return isinstance(exc, APIError) and "unexpected EOF" in str(exc)
+    return isinstance(exc, APIError) and any(
+        marker in str(exc)
+        # 上游网关在 SSE data 里直接下发 {"error":...}，SDK 包装成泛型 APIError 抛出。
+        for marker in ("unexpected EOF", "JSON error injected into SSE stream")
+    )
 
 
 class ExpertActivityEvent:

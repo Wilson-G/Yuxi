@@ -508,6 +508,9 @@ async def process_expert_material_learning(
             organization_version = await _enqueue_material_learning_handoff(project_id)
         else:
             organization_version = None
+            # 完成结算不改投递：并发额度释放后必须在这里补投下一批 pending，
+            # 否则最后一批在途任务结束后剩余材料会永久滞留。
+            await enqueue_pending_material_learning(project_id, method_version)
         if organization_version is not None:
             result["organization_version"] = organization_version
         return result
